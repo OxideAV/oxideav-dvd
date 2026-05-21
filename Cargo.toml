@@ -1,0 +1,29 @@
+[package]
+name = "oxideav-dvd"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+authors = ["Mark Karpeles <admin@echelle.co.jp>"]
+description = "Read-only DVD-Video disc reader — ISO 9660 + UDF 1.02 mount + VIDEO_TS directory walk — clean-room per ECMA-267/268 + OSTA UDF 1.02"
+repository = "https://github.com/OxideAV/oxideav-dvd"
+homepage = "https://github.com/OxideAV/oxideav-dvd"
+readme = "README.md"
+keywords = ["dvd", "video_ts", "iso9660", "udf", "ifo"]
+categories = ["multimedia", "filesystem", "parser-implementations"]
+
+[features]
+default = ["registry"]
+
+# `registry` wires up the `dvd://` source driver against
+# `oxideav-core::SourceRegistry` so this crate plugs into the broader
+# oxideav framework. Drop it (`default-features = false`) for a
+# free-standing build that only exposes the ISO 9660 + UDF 1.02 mount
+# and `DvdDisc` API without the framework dependency tree.
+registry = ["dep:oxideav-core"]
+
+[dependencies]
+# Optional under the `registry` feature so consumers can depend on
+# `oxideav-dvd` with `default-features = false` and avoid the framework
+# dependency tree entirely.
+oxideav-core = { version = "0.1", optional = true }
