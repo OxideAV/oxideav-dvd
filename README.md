@@ -6,18 +6,23 @@
 
 Read-only **DVD-Video** disc reader — ISO 9660 + UDF 1.02 mount +
 `VIDEO_TS/` directory walk + IFO body parser (VMGI / VTSI / PGC /
-TT_SRPT / VTS_PTT_SRPT / VTS_C_ADT). Clean-room per ECMA-267 /
+TT_SRPT / VTS_PTT_SRPT / VTS_C_ADT) + VOB demuxer (MPEG-PS pack
++ nav-pack + DVD substream router). Clean-room per ECMA-267 /
 ECMA-268 + OSTA UDF 1.02 + the ECMA-167 UDF base standard +
 mpucoder + stnsoft community RE references.
 
 ## Scope
 
-Phase 1 + Phase 2 (this release) handle the **physical + filesystem +
-disc-identification + IFO structural** layers — enough to point a
-player at a DVD-Video disc image or block device, enumerate the
-title-set files, and pull the title / chapter / program-chain /
-cell layout out of every IFO. **No VOB demuxing, no VM execution,
-no CSS yet** — those land in Phase 3.
+Phases 1, 2, and 3a (this release) handle the **physical +
+filesystem + disc-identification + IFO structural + VOB demux**
+layers — enough to point a player at a DVD-Video disc image or
+block device, enumerate the title-set files, pull the title /
+chapter / program-chain / cell layout out of every IFO, and demux
+each cell's VOBUs into raw MPEG-2 video + AC-3 / DTS / LPCM audio
++ subpicture elementary streams keyed by track ID. The Phase 3a
+nav-pack decoder also surfaces the `VOBU_SRI` search-pointer table
+that chapter-accurate seek needs. **No VM execution, no CSS yet**
+— those land in Phase 3b/3c.
 
 | Layer | Status |
 |-------|--------|
@@ -29,9 +34,12 @@ no CSS yet** — those land in Phase 3.
 | TT_SRPT (title list) + VTS_PTT_SRPT (chapter list) | landed |
 | VTS_PGCI + PGC (program chains + cells) | landed |
 | VTS_C_ADT (cell-to-VOB-sector lookup) | landed |
-| VOB demux (MPEG-2 PS + nav-packs) | Phase 3 |
-| VM execution (HDMV nav opcodes + SPRMs/GPRMs) | Phase 3 |
-| CSS authentication + descrambling | Phase 3 (external `oxideav-css` crate) |
+| VOB demux (MPEG-PS pack + nav-pack + PES) | landed (Phase 3a) |
+| DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed (Phase 3a) |
+| VOBU_SRI search-table decode | landed (Phase 3a) |
+| MKV mux + chapter encoding wiring | Phase 3b |
+| VM execution (HDMV nav opcodes + SPRMs/GPRMs) | Phase 3c |
+| CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |
 
 ## Quick start
 
@@ -85,6 +93,15 @@ This crate was written entirely against:
   the PGC body structure (PGC_GI header, audio/sub-picture stream
   control, palette, program map, Cell Playback Information Table,
   Cell Position Information Table).
+- `docs/container/dvd/application/mpucoder-packhdr.html`,
+  `mpucoder-pes-hdr.html`, `mpucoder-mpeghdrs.html`,
+  `mpucoder-pci_pkt.html`, `mpucoder-dsi_pkt.html`,
+  `mpucoder-dvdmpeg.html`, `stnsoft-vobov.html`,
+  `stnsoft-sys_hdr.html` — VOB MPEG-PS pack header, PES header
+  (DVD subset), MPEG-PS stream-ID table, NAV-pack PCI / DSI
+  packet layouts, DVD substream allocations, VOBU / cell / VOB
+  semantics, and the Program Stream System Header used by the
+  Phase 3a VOB demuxer.
 
 **Not consulted**: libdvdread, libdvdnav, libdvdcss, FFmpeg, xine,
 mpv, VLC, or any other open-source DVD player or library. The

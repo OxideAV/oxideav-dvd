@@ -67,6 +67,7 @@ pub mod ifo;
 pub mod iso9660;
 pub mod source;
 pub mod udf;
+pub mod vob;
 
 pub use disc::{DvdDisc, DvdFile, DvdFileKind};
 pub use error::{Error, Result};
@@ -84,6 +85,10 @@ pub use udf::{
     AdType, AnchorVolumeDescriptorPointer, DescriptorTag, ExtAd, Extent, FileEntry,
     FileIdentifierDescriptor, FileSetDescriptor, IcbTag, LbAddr, LogicalVolumeDescriptor, LongAd,
     PartitionDescriptor, ShortAd, TagId, UdfFile, UdfVolume,
+};
+pub use vob::{
+    demux_vobs, demux_vobs_path, looks_like_nav_pack, CellId, DsiPacket, DvdSubstream,
+    ElementaryStream, NavPack, PackHeader, PciPacket, PesPacket, VobDemuxer, VobId, VobStreams,
 };
 
 #[cfg(feature = "registry")]

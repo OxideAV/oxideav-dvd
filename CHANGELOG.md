@@ -9,6 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Phase 3a (VOB demuxer): clean-room MPEG-PS pack + nav-pack walker
+  + DVD-substream router per mpucoder-{packhdr,pes-hdr,mpeghdrs,
+  pci_pkt,dsi_pkt,dvdmpeg}.html + stnsoft-{vobov,sys_hdr}.html. No
+  libdvdread, libdvdnav, FFmpeg, VLC, mpv, or xine source consulted.
+  - **`PackHeader`** — 14-byte MPEG-2 Program Stream pack header
+    decoder: `00 00 01 BA` sync + 33-bit SCR base + 9-bit SCR_ext +
+    22-bit `program_mux_rate` + 3-bit `pack_stuffing_length`. All
+    five marker bits are validated; bad sync / missing marker /
+    `mux_rate == 0` raise `Error::InvalidUdf`.
+  - **`PesPacket<'a>`** — zero-copy PES decoder for the DVD subset:
+    `0xBA` pack, `0xBB` system header, `0xBD` private_stream_1,
+    `0xBE` padding, `0xBF` private_stream_2 (no extension), and
+    `0xC0..=0xDF` / `0xE0..=0xEF` (MPEG-2 extension with 5-byte PTS
+    or 10-byte PTS+DTS). `PTS_DTS_flags == 01` is rejected per spec.
+  - **`DvdSubstream`** — typed substream classifier for the first
+    payload byte of a 0xBD packet: `Subpicture(0x20..=0x3F)`,
+    `Ac3(0x80..=0x87)`, `Dts(0x88..=0x8F)`, `Lpcm(0xA0..=0xA7)`
+    with `track()` accessor normalising to 0..=7 (audio) / 0..=31
+    (subpicture).
+  - **`PciPacket`** — Presentation Control Information decoder for
+    the DVD-Video NAV-pack's PCI half: `nv_pck_lbn`, `vobu_cat`,
+    `vobu_uop_ctl`, `vobu_s_ptm`, `vobu_e_ptm`, `vobu_se_e_ptm`,
+    `c_eltm`, `hli_ss`.
+  - **`DsiPacket`** — Data Search Information decoder for the
+    DSI half: `nv_pck_scr`, `nv_pck_lbn`, `vobu_ea`,
+    `vobu_{1,2,3}stref_ea`, `vobu_vob_idn`, `vobu_c_idn`, `c_eltm`,
+    and the 43-entry `vobu_sri` search-pointer table (0xEA..0x196)
+    used for chapter-accurate forward/backward seek.
+  - **`NavPack`** — 2048-byte sector-level decoder that validates
+    pack header + system header + 0xBF/0x00 PCI prefix + 0xBF/0x01
+    DSI prefix and surfaces `(pci, dsi)`. A cheap `looks_like_nav_pack`
+    probe skips the full parse on demux routing.
+  - **`VobDemuxer`** — stateful walker that consumes 2048-byte
+    sectors and routes packets into per-stream buffers. Nav-packs
+    are consumed and stashed in `VobStreams::nav_packs`; video PES
+    payloads append to `video`; private_stream_1 payloads are
+    classified and routed to AC-3 / DTS / LPCM / subpicture
+    `BTreeMap<u8, Vec<u8>>` per track. The first substream-ID byte
+    is stripped before append so consumers see clean substream
+    bytes. `0xC0..=0xC7` (MPEG audio) is pooled into `ac3` so
+    callers can probe codec from the first frame.
+  - **`demux_vobs(&mut reader, &disc, ts, &cells) -> VobStreams`**
+    + `demux_vobs_path(...)` convenience wrapper: resolves
+    `(VobId, CellId)` pairs through `VtsCAdt::lookup`, translates
+    title-relative sector positions to absolute LBA via
+    `VTS_xx_1.VOB`'s base LBA, then runs each cell's range through
+    `VobDemuxer`.
+- Phase 3a tests (all synthetic, 12 cases): pack-header roundtrip
+  + bad-sync + zero-mux-rate rejection, PES with/without PTS +
+  bad-start-code rejection, DVD substream classification across all
+  four substream families, NavPack parse + corrupt-DSI rejection,
+  and an end-to-end synthetic VOBU (nav sector + video PES sector +
+  AC-3 PES sector) showing the demuxer routes payloads correctly
+  while preserving nav-pack metadata.
+
 - Phase 2 (IFO body parsing): clean-room IFO structural decoder per
   mpucoder + stnsoft DVD-Video reference pages (no libdvdread /
   libdvdnav / libdvdcss / FFmpeg / VLC / mpv / xine source consulted).
