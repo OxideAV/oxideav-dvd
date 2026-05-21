@@ -30,10 +30,11 @@
 //! but no `VIDEO_TS.IFO` is rejected as non-DVD-Video.
 
 use std::fs::File;
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::error::{Error, Result};
+use crate::ifo::{DvdTitleEntry, TtSrpt, VmgIfo, VtsIfo};
 use crate::iso9660::Iso9660Volume;
 use crate::udf::{UdfFile, UdfVolume};
 
@@ -253,6 +254,88 @@ impl DvdDisc {
             .iter()
             .find(|f| f.kind == DvdFileKind::Vmgi)
     }
+
+    /// Look up `VTS_xx_0.IFO` for a given title-set number (1..=99).
+    pub fn vtsi(&self, ts: u8) -> Option<&DvdFile> {
+        self.video_ts_files
+            .iter()
+            .find(|f| f.kind == DvdFileKind::Vtsi(ts))
+    }
+
+    /// Read `VIDEO_TS.IFO` from `reader` and parse the VMG IFO body.
+    ///
+    /// This consumes the IFO's first sector(s) (currently only the
+    /// `VMGI_MAT` region at offset 0). Phase 3 will materialise the
+    /// remaining tables (`TT_SRPT`, `VMGM_PGCI_UT`, `VMG_PTL_MAIT`,
+    /// `VMG_VTS_ATRT`); for now we surface those via separate
+    /// [`Self::parse_vmg_tt_srpt`] / etc.
+    pub fn parse_vmg<R: Read + Seek>(&self, reader: &mut R) -> Result<VmgIfo> {
+        let f = self
+            .vmgi()
+            .ok_or(Error::NotDvdVideo("VIDEO_TS.IFO absent"))?;
+        let buf = read_sector_range(reader, f.lba, 1)?;
+        VmgIfo::parse(&buf)
+    }
+
+    /// Read `VTS_xx_0.IFO` and parse its body (VTSI_MAT + PTT_SRPT +
+    /// PGCI + C_ADT, all materialised through [`VtsIfo`]).
+    pub fn parse_vts<R: Read + Seek>(&self, reader: &mut R, ts_index: u8) -> Result<VtsIfo> {
+        let f = self
+            .vtsi(ts_index)
+            .ok_or(Error::NotDvdVideo("VTS_xx_0.IFO absent"))?;
+        // Read the whole IFO into RAM. IFO files are tiny (usually
+        // <512 KB even on multi-hour discs) so the simplicity of a
+        // single in-memory buffer outweighs streaming.
+        let sectors = (f.size.div_ceil(crate::ifo::DVD_SECTOR as u64)) as u32;
+        let buf = read_sector_range(reader, f.lba, sectors.max(1))?;
+        VtsIfo::parse(&buf, ts_index)
+    }
+
+    /// Read `VIDEO_TS.IFO`'s `TT_SRPT` table (the disc's title list)
+    /// and return its entries.
+    pub fn enumerate_titles<R: Read + Seek>(&self, reader: &mut R) -> Result<Vec<DvdTitleEntry>> {
+        let f = self
+            .vmgi()
+            .ok_or(Error::NotDvdVideo("VIDEO_TS.IFO absent"))?;
+        // Parse the MAT to find TT_SRPT's sector.
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = VmgIfo::parse(&mat_buf)?;
+        if mat.tt_srpt_sector == 0 {
+            return Err(Error::InvalidUdf("VMG_MAT: tt_srpt_sector is zero"));
+        }
+        // Read TT_SRPT — one sector covers up to ~170 titles (sector
+        // is 2048 bytes; entry is 12 bytes; 8-byte header). DVDs cap
+        // at 99 title sets and ~99 titles total per spec.
+        let tt_buf = read_sector_range(reader, f.lba + mat.tt_srpt_sector, 1)?;
+        let tt = TtSrpt::parse(&tt_buf)?;
+        Ok(tt.entries)
+    }
+
+    /// Stand-alone helper used by [`Self::parse_vmg`] callers who only
+    /// need the title list (and not the IFO's MAT structure).
+    pub fn parse_vmg_tt_srpt<R: Read + Seek>(&self, reader: &mut R) -> Result<TtSrpt> {
+        let f = self
+            .vmgi()
+            .ok_or(Error::NotDvdVideo("VIDEO_TS.IFO absent"))?;
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = VmgIfo::parse(&mat_buf)?;
+        let tt_buf = read_sector_range(reader, f.lba + mat.tt_srpt_sector, 1)?;
+        TtSrpt::parse(&tt_buf)
+    }
+}
+
+/// Read `count` consecutive 2048-byte logical sectors starting at
+/// disc-LBA `start` from `reader`.
+pub(crate) fn read_sector_range<R: Read + Seek>(
+    reader: &mut R,
+    start: u32,
+    count: u32,
+) -> Result<Vec<u8>> {
+    let sector = crate::ifo::DVD_SECTOR as u64;
+    reader.seek(SeekFrom::Start(u64::from(start) * sector))?;
+    let mut buf = vec![0u8; (count as usize) * sector as usize];
+    reader.read_exact(&mut buf)?;
+    Ok(buf)
 }
 
 fn build_dvd_file(e: &UdfFile, kind: DvdFileKind) -> DvdFile {

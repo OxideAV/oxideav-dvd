@@ -5,16 +5,19 @@
 [![CI](https://github.com/OxideAV/oxideav-dvd/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-dvd/actions/workflows/ci.yml)
 
 Read-only **DVD-Video** disc reader — ISO 9660 + UDF 1.02 mount +
-`VIDEO_TS/` directory walk. Clean-room per ECMA-267 / ECMA-268 +
-OSTA UDF 1.02 + the ECMA-167 UDF base standard.
+`VIDEO_TS/` directory walk + IFO body parser (VMGI / VTSI / PGC /
+TT_SRPT / VTS_PTT_SRPT / VTS_C_ADT). Clean-room per ECMA-267 /
+ECMA-268 + OSTA UDF 1.02 + the ECMA-167 UDF base standard +
+mpucoder + stnsoft community RE references.
 
 ## Scope
 
-Phase 1 (this release) handles the **physical + filesystem + disc-
-identification** layers — everything needed to point a player at a
-DVD-Video disc image or block device and enumerate the title-set
-files. **No IFO / VOB / PGC / VM / CSS parsing yet** — those land
-in Phase 2 and Phase 3.
+Phase 1 + Phase 2 (this release) handle the **physical + filesystem +
+disc-identification + IFO structural** layers — enough to point a
+player at a DVD-Video disc image or block device, enumerate the
+title-set files, and pull the title / chapter / program-chain /
+cell layout out of every IFO. **No VOB demuxing, no VM execution,
+no CSS yet** — those land in Phase 3.
 
 | Layer | Status |
 |-------|--------|
@@ -22,8 +25,11 @@ in Phase 2 and Phase 3.
 | UDF 1.02 mount (PVD / PD / LVD / FSD / FE / FID) | landed |
 | VIDEO_TS file enumeration (VIDEO_TS.IFO / .VOB / .BUP + VTS_xx) | landed |
 | `dvd://` source driver (registry feature) | landed |
-| IFO body parsing (VMGI / VTSI / PGC / cell address tables) | Phase 2 |
-| VOB demux (MPEG-2 PS + nav-packs) | Phase 2 |
+| VMGI / VTSI MAT parse (header + sector pointers) | landed |
+| TT_SRPT (title list) + VTS_PTT_SRPT (chapter list) | landed |
+| VTS_PGCI + PGC (program chains + cells) | landed |
+| VTS_C_ADT (cell-to-VOB-sector lookup) | landed |
+| VOB demux (MPEG-2 PS + nav-packs) | Phase 3 |
 | VM execution (HDMV nav opcodes + SPRMs/GPRMs) | Phase 3 |
 | CSS authentication + descrambling | Phase 3 (external `oxideav-css` crate) |
 
@@ -69,12 +75,16 @@ This crate was written entirely against:
   underlying UDF base standard (cross-referenced; UDF 1.02 is a
   strict subset of UDF 2.50 by ECMA-167).
 - `docs/container/dvd/application/mpucoder-ifo.html`,
-  `mpucoder-ifo_vmg.html`, `mpucoder-ifo_vts.html` — community
+  `mpucoder-ifo_vmg.html`, `mpucoder-ifo_vts.html`,
+  `mpucoder-pgc.html`, `stnsoft-vmindx.html` — community
   reverse-engineering references mirrored under
   [`docs/container/dvd/application/`](../../docs/container/dvd/application/)
-  for the VIDEO_TS layout discriminator (file names, BUP backups,
-  per-VTS numbering scheme). These pages are reference-only; the
-  Phase 1 file enumerator does not parse IFO bodies.
+  for the VIDEO_TS layout, the IFO field layouts (VMGI_MAT /
+  VTSI_MAT / TT_SRPT / VTS_PTT_SRPT / VTS_PGCI / VTS_C_ADT /
+  VTSM_PGCI_UT / VMGM_PGCI_UT / VMG_VTS_ATRT / VMG_PTL_MAIT) and
+  the PGC body structure (PGC_GI header, audio/sub-picture stream
+  control, palette, program map, Cell Playback Information Table,
+  Cell Position Information Table).
 
 **Not consulted**: libdvdread, libdvdnav, libdvdcss, FFmpeg, xine,
 mpv, VLC, or any other open-source DVD player or library. The

@@ -63,12 +63,18 @@
 
 pub mod disc;
 pub mod error;
+pub mod ifo;
 pub mod iso9660;
 pub mod source;
 pub mod udf;
 
 pub use disc::{DvdDisc, DvdFile, DvdFileKind};
 pub use error::{Error, Result};
+pub use ifo::{
+    CellAddrEntry, CellPlaybackInfo, CellPositionInfo, DvdChapter, DvdTitle, DvdTitleEntry,
+    FrameRate, Pgc, PgcTime, Pgci, PgciSrp, Ptt, PttTitle, TtSrpt, VmgIfo, VtsCAdt, VtsIfo,
+    VtsPttSrpt, VtsiMat, DVD_SECTOR, VMG_MAGIC, VTS_MAGIC,
+};
 pub use iso9660::{
     DirectoryRecord, Iso9660Entry, Iso9660Volume, PathTableEntry, PrimaryVolumeDescriptor,
     VolumeDescriptorType,
