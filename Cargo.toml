@@ -22,8 +22,22 @@ default = ["registry"]
 # and `DvdDisc` API without the framework dependency tree.
 registry = ["dep:oxideav-core"]
 
+# `mkv-output` glues the Phase 3a VOB demuxer to `oxideav-mkv`'s muxer
+# so callers can do `convert_dvd_to_mkv("dvd:///path/disc.iso", title,
+# out_path)`. Default-off so the dvd crate stays useful for callers
+# that only want chapter introspection — and so default-feature CI
+# builds don't pull the (still-unpublished at time of writing)
+# `MkvMuxer::add_chapter` API in.
+mkv-output = ["dep:oxideav-core", "dep:oxideav-mkv"]
+
 [dependencies]
 # Optional under the `registry` feature so consumers can depend on
 # `oxideav-dvd` with `default-features = false` and avoid the framework
 # dependency tree entirely.
 oxideav-core = { version = "0.1", optional = true }
+
+# Optional under the `mkv-output` feature — see the feature comment
+# above. Pin loose (`"0.0"`) so any patch-level mkv release picks up
+# the chapter-API surface this crate needs (`add_chapter` was added
+# on mkv master and ships in the next 0.0.x release).
+oxideav-mkv = { version = "0.0", optional = true }

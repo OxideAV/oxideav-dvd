@@ -7,8 +7,10 @@
 Read-only **DVD-Video** disc reader — ISO 9660 + UDF 1.02 mount +
 `VIDEO_TS/` directory walk + IFO body parser (VMGI / VTSI / PGC /
 TT_SRPT / VTS_PTT_SRPT / VTS_C_ADT) + VOB demuxer (MPEG-PS pack
-+ nav-pack + DVD substream router). Clean-room per ECMA-267 /
-ECMA-268 + OSTA UDF 1.02 + the ECMA-167 UDF base standard +
++ nav-pack + DVD substream router) + optional **VOB → Matroska
+mux** with `ChapterTimeStart` / `ChapterTimeEnd` carried over from
+the PGC playback-time fields. Clean-room per ECMA-267 / ECMA-268 +
+OSTA UDF 1.02 + the ECMA-167 UDF base standard + RFC 9559 §5.1.7 +
 mpucoder + stnsoft community RE references.
 
 ## Scope
@@ -37,7 +39,7 @@ that chapter-accurate seek needs. **No VM execution, no CSS yet**
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed (Phase 3a) |
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed (Phase 3a) |
 | VOBU_SRI search-table decode | landed (Phase 3a) |
-| MKV mux + chapter encoding wiring | Phase 3b |
+| MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |
 | VM execution (HDMV nav opcodes + SPRMs/GPRMs) | Phase 3c |
 | CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |
 
@@ -67,6 +69,35 @@ oxideav-dvd = { version = "0.0", default-features = false }
 
 The `DvdDisc`, `iso9660::*`, and `udf::*` parser surface stays
 available; only the `dvd://` source-registry plumbing disappears.
+
+## DVD → MKV (Phase 3b)
+
+Enable the **`mkv-output`** feature to convert a DVD title to a
+Matroska file:
+
+```toml
+oxideav-dvd = { version = "0.0", features = ["mkv-output"] }
+```
+
+```rust,no_run
+oxideav_dvd::convert_dvd_to_mkv(
+    "dvd:///mnt/disc.iso",  // or a bare /path/to/disc.iso
+    1,                       // title number (1-based)
+    "/tmp/title-01.mkv",
+).unwrap();
+```
+
+The muxer preserves each PES packet's 90 kHz PTS, sizes the MKV
+`Tracks` element to the streams the title actually carries
+(video + AC-3 / DTS / LPCM / subpicture), and emits one MKV
+`ChapterAtom` per `DvdChapter` with `ChapterTimeStart` /
+`ChapterTimeEnd` computed from the PGC playback-time BCD field
+(30 fps for NTSC, 25 fps for PAL — per `mpucoder-pgc.html`).
+
+The feature is **default-off** so the parse-only surface above
+keeps compiling against any `oxideav-mkv` patch release on
+crates.io. Toggle it on once you've got `oxideav-mkv >= 0.0.8`
+(the release that landed `MkvMuxer::add_chapter`).
 
 ## Clean-room sources
 

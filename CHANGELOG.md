@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Phase 3b (VOB → MKV mux): clean-room glue between the Phase 3a VOB
+  demuxer and `oxideav-mkv`'s `MkvMuxer::{add_chapter,write_packet,
+  write_trailer}`. Gated behind a default-off `mkv-output` cargo
+  feature so the dvd crate stays useful for chapter-introspection
+  consumers and so default-feature CI doesn't have to pull the
+  (still-unreleased at time of writing) MKV chapter API in. No
+  external library source (libdvdread, libdvdnav, libdvdcss, FFmpeg,
+  VLC, mpv, xine, HandBrake) was consulted.
+  - **`pgc_time_to_ns(PgcTime) -> u64`** — RFC 9559 §5.1.7 needs
+    `ChapterTimeStart` / `ChapterTimeEnd` in nanoseconds; DVD's BCD
+    `hh:mm:ss:ff` field uses 30 fps (NTSC) or 25 fps (PAL) per
+    `mpucoder-pgc.html`. Conversion is exact rational math so
+    `0:0:1.15 @ 30 fps` becomes the spec-exact 1_500_000_000 ns
+    (truncating with the obvious `1e9 / 30` constant would have
+    rounded to 1_499_999_995 ns — see the regression test).
+  - **`mkv_writer::write_title_to_mkv(disc, title_idx, image_path,
+    out_path)`** — two-pass DVD → MKV converter. Pass 1 probes the
+    title's cells to enumerate the (video, AC-3 × N, DTS × N, LPCM
+    × N, subpicture × N) stream set so MKV's mandatory upfront
+    `Tracks` element can be sized correctly. Pass 2 re-walks the
+    cells and forwards each PES packet to `MkvMuxer::write_packet`
+    with PTS preserved verbatim in the PES's 90 kHz time base; the
+    muxer rescales to its internal 1 ms `TimecodeScale`. Chapter
+    atoms are queued via `MkvMuxer::add_chapter` before
+    `write_header`, one per `DvdChapter` from the PGC's PTT list,
+    titled `"Chapter N"`.
+  - **`pipeline::convert_dvd_to_mkv(source, title_idx, out_path)`**
+    — high-level front door accepting either a `dvd://...` URI or a
+    bare filesystem path. Auto-detect (`dvd://`) is rejected as a
+    Phase-2 followup, matching the existing source-driver semantics.
+  - **`pipeline::list_titles(source)`** — convenience wrapper around
+    `DvdDisc::enumerate_titles` for CLI front-ends that want to
+    surface the title list before letting the user pick one.
+  - **Sector walker** — `walk_cell_sectors` re-uses the constants
+    from `vob::{SC_*, looks_like_nav_pack, PackHeader, PesPacket}`
+    so the pack-header + system-header + nav-pack + padding
+    transitions are decoded once across the round. Nav-packs are
+    consumed (validated via `NavPack::parse`) but not surfaced
+    further; subpicture / DTS / LPCM PES payloads' first byte (the
+    substream ID) is stripped before the body lands in MKV.
+- Phase 3b tests (10 cases, all gated behind `--features
+  mkv-output`): PgcTime → ns for NTSC 30 fps / PAL 25 fps / illegal-
+  frame-rate / hour-boundary; stream classification (codec id +
+  media type) for video / AC-3 / DTS / LPCM / subpicture; sort
+  determinism for the stream set; plus three `pipeline::resolve_*`
+  tests covering URI parsing (`dvd:///abs`, bare path, `dvd://`
+  auto-detect rejection).
+
 - Phase 3a (VOB demuxer): clean-room MPEG-PS pack + nav-pack walker
   + DVD-substream router per mpucoder-{packhdr,pes-hdr,mpeghdrs,
   pci_pkt,dsi_pkt,dvdmpeg}.html + stnsoft-{vobov,sys_hdr}.html. No

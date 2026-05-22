@@ -26,6 +26,15 @@
 //! - CSS authentication + descrambling (lives in a future
 //!   `oxideav-css` sibling crate).
 //!
+//! ## Phase 3b — `mkv-output` feature (default off)
+//!
+//! Enable `mkv-output` to pull in [`pipeline::convert_dvd_to_mkv`],
+//! which walks a title's VOBs and writes a Matroska file with the
+//! PGC's chapter timeline. The feature pulls in `oxideav-mkv` as a
+//! runtime dependency; default builds (and default-feature CI) stay
+//! free of it so the crate keeps compiling against any published
+//! `oxideav-mkv` version.
+//!
 //! ## Clean-room references
 //!
 //! - `docs/container/dvd/physical/ECMA-267_3rd_edition_april_2001.pdf`
@@ -69,6 +78,11 @@ pub mod source;
 pub mod udf;
 pub mod vob;
 
+#[cfg(feature = "mkv-output")]
+pub mod mkv_writer;
+#[cfg(feature = "mkv-output")]
+pub mod pipeline;
+
 pub use disc::{DvdDisc, DvdFile, DvdFileKind};
 pub use error::{Error, Result};
 pub use ifo::{
@@ -93,6 +107,11 @@ pub use vob::{
 
 #[cfg(feature = "registry")]
 pub use source::register;
+
+#[cfg(feature = "mkv-output")]
+pub use mkv_writer::{pgc_time_to_ns, write_title_to_mkv};
+#[cfg(feature = "mkv-output")]
+pub use pipeline::{convert_dvd_to_mkv, list_titles};
 
 // Canonical sibling entry point. Registers the `dvd://` source driver
 // under `oxideav_core::RuntimeContext::sources`.
