@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- PGC palette + command-table parse (richer Phase 2 IFO body): the
+  `Pgc` materialiser now decodes the two PGC-header tables it
+  previously skipped, both clean-room per `mpucoder-pgc.html` (no
+  libdvdread / libdvdnav / libdvdcss / FFmpeg / VLC / mpv / xine
+  source consulted).
+  - **`PaletteEntry` + `Pgc::palette: [PaletteEntry; 16]`** — the
+    subpicture/highlight colour-LUT at PGC offset `0x00A4`, sixteen
+    `(0, Y, Cr, Cb)` cells (leading reserved byte dropped) surfaced
+    as `{ y, cr, cb }`. This is the table an SPU display-control
+    sequence indexes into via its 4-bit colour codes
+    (`mpucoder-spu.html`), so a subtitle/menu renderer needs it to
+    resolve a pixel to an actual YCrCb value.
+  - **`NavCommand` + `PgcCommandTable` + `Pgc::commands:
+    Option<PgcCommandTable>`** — the command table at
+    `offset_commands` (previously only the *offset* was read). The
+    8-byte header (pre/post/cell counts + `end_address`) is decoded
+    and each list is carved into fixed 8-byte `NavCommand` words.
+    The `pre + post + cell <= 128` spec invariant is enforced;
+    truncated lists and over-long counts raise `Error::InvalidUdf`.
+    Executing the words is deferred to the Phase 3c VM
+    (`mpucoder-vmi.html`); at the container layer we expose the raw
+    words plus a `NavCommand::command_type()` convenience (top three
+    bits of byte 0 — the VMI command-group selector) so a downstream
+    interpreter has what it needs without a full opcode model here.
+  - 6 new unit tests (`palette_entry_skips_reserved_byte`,
+    `command_table_carves_three_lists`,
+    `command_table_rejects_overlong_count`,
+    `command_table_rejects_truncated_list`,
+    `pgc_without_command_table_yields_none`, plus extended
+    palette/command assertions in
+    `pgci_parses_one_pgc_with_three_cells`). The
+    `build_pgc_with_cells` test helper now emits a real palette +
+    4-word command table so the existing round-trip exercises the
+    new fields.
+
 - Phase 3b (VOB → MKV mux): clean-room glue between the Phase 3a VOB
   demuxer and `oxideav-mkv`'s `MkvMuxer::{add_chapter,write_packet,
   write_trailer}`. Gated behind a default-off `mkv-output` cargo

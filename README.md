@@ -34,7 +34,7 @@ that chapter-accurate seek needs. **No VM execution, no CSS yet**
 | `dvd://` source driver (registry feature) | landed |
 | VMGI / VTSI MAT parse (header + sector pointers) | landed |
 | TT_SRPT (title list) + VTS_PTT_SRPT (chapter list) | landed |
-| VTS_PGCI + PGC (program chains + cells) | landed |
+| VTS_PGCI + PGC (program chains + cells + colour-LUT + command table) | landed |
 | VTS_C_ADT (cell-to-VOB-sector lookup) | landed |
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed (Phase 3a) |
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed (Phase 3a) |
@@ -122,8 +122,11 @@ This crate was written entirely against:
   VTSI_MAT / TT_SRPT / VTS_PTT_SRPT / VTS_PGCI / VTS_C_ADT /
   VTSM_PGCI_UT / VMGM_PGCI_UT / VMG_VTS_ATRT / VMG_PTL_MAIT) and
   the PGC body structure (PGC_GI header, audio/sub-picture stream
-  control, palette, program map, Cell Playback Information Table,
-  Cell Position Information Table).
+  control, the 16-entry `(0, Y, Cr, Cb)` subpicture colour-LUT at
+  PGC offset `0x00A4`, the pre/post/cell command table, program
+  map, Cell Playback Information Table, Cell Position Information
+  Table). The command words are surfaced raw (8-byte `NavCommand`s);
+  executing them is Phase 3c VM work per `mpucoder-vmi.html`.
 - `docs/container/dvd/application/mpucoder-packhdr.html`,
   `mpucoder-pes-hdr.html`, `mpucoder-mpeghdrs.html`,
   `mpucoder-pci_pkt.html`, `mpucoder-dsi_pkt.html`,

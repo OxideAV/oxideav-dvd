@@ -604,14 +604,164 @@ impl CellPositionInfo {
     }
 }
 
+/// One entry of the PGC subpicture/highlight colour-LUT.
+///
+/// Per mpucoder-pgc.html the PGC header at offset `0x00A4` carries a
+/// `16 × 4`-byte palette laid out as `(0, Y, Cr, Cb)`: byte 0 is a
+/// reserved/zero pad, then the luma + the two chroma-difference
+/// samples in 8-bit BT.601-range form. These sixteen entries are the
+/// colour source a subpicture (SPU) display-control sequence indexes
+/// into via its 4-bit colour codes (the SPU itself only stores the
+/// 0..=15 palette index + a contrast/alpha nibble — see
+/// mpucoder-spu.html), so a renderer needs this table to resolve a
+/// subtitle/menu pixel to an actual YCrCb value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PaletteEntry {
+    /// Luma (Y) sample, 8-bit.
+    pub y: u8,
+    /// Cr (red chroma-difference) sample, 8-bit.
+    pub cr: u8,
+    /// Cb (blue chroma-difference) sample, 8-bit.
+    pub cb: u8,
+}
+
+impl PaletteEntry {
+    /// Parse one 4-byte `(0, Y, Cr, Cb)` palette cell. The leading
+    /// byte is reserved and ignored.
+    fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 4 {
+            return Err(Error::InvalidUdf("PGC palette entry shorter than 4 bytes"));
+        }
+        Ok(Self {
+            y: buf[1],
+            cr: buf[2],
+            cb: buf[3],
+        })
+    }
+}
+
+/// One 8-byte DVD-Video navigation command (VM instruction word).
+///
+/// Per mpucoder-pgc.html every command in a PGC command table is a
+/// fixed 8-byte word. Decoding the opcode/operand semantics is
+/// Phase 3c VM work (mpucoder-vmi.html); at the container layer we
+/// surface the raw word so a downstream interpreter can execute it.
+/// We expose the leading byte's top three bits as `command_type`
+/// (the VMI command-group selector) for convenience without
+/// committing to a full opcode model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NavCommand {
+    /// The eight raw command bytes, big-endian on the wire.
+    pub bytes: [u8; 8],
+}
+
+impl NavCommand {
+    /// Wrap an 8-byte command word.
+    fn parse(buf: &[u8]) -> Result<Self> {
+        let slice = buf
+            .get(0..8)
+            .ok_or(Error::InvalidUdf("PGC command shorter than 8 bytes"))?;
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(slice);
+        Ok(Self { bytes })
+    }
+
+    /// VMI command-type selector — the top three bits of byte 0.
+    ///
+    /// This is the coarse command-group field per mpucoder-vmi.html;
+    /// full opcode decode is deferred to the Phase 3c VM. Provided so
+    /// callers can classify a word (e.g. distinguish a link/jump from
+    /// a SetSystem/Compare) without a full interpreter.
+    pub fn command_type(&self) -> u8 {
+        self.bytes[0] >> 5
+    }
+}
+
+/// PGC command table — pre, post, and cell command lists.
+///
+/// Per mpucoder-pgc.html "command table" the table opens with an
+/// 8-byte header (`pre count`, `post count`, `cell count`, and an
+/// `end address` relative to the table start), followed by the three
+/// command lists back to back, each entry a fixed 8-byte
+/// [`NavCommand`]. The total `pre + post + cell` count is `<= 128`.
+///
+/// *Pre* commands run before the PGC's first cell; *post* commands
+/// run after the last cell finishes; *cell* commands are referenced
+/// by the per-cell `cell_command` index in [`CellPlaybackInfo`]
+/// (1-based; `0` = none). Executing the words is Phase 3c VM work —
+/// here we only carve the raw 8-byte words out of the table.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PgcCommandTable {
+    /// Commands executed when the PGC starts.
+    pub pre: Vec<NavCommand>,
+    /// Commands executed when the PGC ends.
+    pub post: Vec<NavCommand>,
+    /// Commands indexed by a cell's `cell_command` field (1-based).
+    pub cell: Vec<NavCommand>,
+    /// `end address` field — last byte offset of the table relative
+    /// to its own start.
+    pub end_address: u16,
+}
+
+impl PgcCommandTable {
+    /// Parse a command table. `buf` must start at the table's first
+    /// byte (the `pre count` u16) and span at least through the last
+    /// command word.
+    fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 8 {
+            return Err(Error::InvalidUdf("PGC command table shorter than header"));
+        }
+        let pre_count = read_u16(buf, 0)?;
+        let post_count = read_u16(buf, 2)?;
+        let cell_count = read_u16(buf, 4)?;
+        let end_address = read_u16(buf, 6)?;
+
+        let total = usize::from(pre_count) + usize::from(post_count) + usize::from(cell_count);
+        // Spec invariant: the three lists together hold <= 128 words.
+        if total > 128 {
+            return Err(Error::InvalidUdf("PGC command table claims > 128 commands"));
+        }
+
+        let read_list = |start: usize, count: u16| -> Result<Vec<NavCommand>> {
+            let mut out = Vec::with_capacity(usize::from(count));
+            for i in 0..usize::from(count) {
+                let off = start + i * 8;
+                let word = buf
+                    .get(off..off + 8)
+                    .ok_or(Error::InvalidUdf("PGC command table list past end"))?;
+                out.push(NavCommand::parse(word)?);
+            }
+            Ok(out)
+        };
+
+        let pre_start = 8usize;
+        let post_start = pre_start + usize::from(pre_count) * 8;
+        let cell_start = post_start + usize::from(post_count) * 8;
+
+        let pre = read_list(pre_start, pre_count)?;
+        let post = read_list(post_start, post_count)?;
+        let cell = read_list(cell_start, cell_count)?;
+
+        Ok(Self {
+            pre,
+            post,
+            cell,
+            end_address,
+        })
+    }
+}
+
 /// Parsed PGC header + cell tables.
 ///
 /// Layout per mpucoder-pgc.html:
 ///
 /// - 0x0000..0x00E4: PGC general information (PGC_GI) +
 ///   PGC_AST_CTL + PGC_SPST_CTL + PGC_PB_TIME + still time +
-///   playback mode + palette.
-/// - 0x00E4: u16 offset_to_commands (relative to PGC start).
+///   playback mode + palette (16 × 4-byte `(0, Y, Cr, Cb)` at
+///   0x00A4).
+/// - 0x00E4: u16 offset_to_commands (relative to PGC start). The
+///   command table at that offset holds the pre/post/cell
+///   navigation command lists ([`PgcCommandTable`]).
 /// - 0x00E6: u16 offset_to_program_map.
 /// - 0x00E8: u16 offset_to_cell_playback_information.
 /// - 0x00EA: u16 offset_to_cell_position_information.
@@ -636,6 +786,9 @@ pub struct Pgc {
     /// Playback mode (0 = sequential; non-zero encodes
     /// random/shuffle + program count, see spec).
     pub playback_mode: u8,
+    /// Subpicture/highlight colour-LUT — 16 `(Y, Cr, Cb)` entries
+    /// from PGC offset `0x00A4` per mpucoder-pgc.html.
+    pub palette: [PaletteEntry; 16],
     /// Offset within PGC to commands table (`0` = absent).
     pub offset_commands: u16,
     /// Offset within PGC to program map (`0` = absent).
@@ -650,6 +803,9 @@ pub struct Pgc {
     pub cells: Vec<CellPlaybackInfo>,
     /// Per-cell position info (VOB id + Cell id pairs).
     pub cell_positions: Vec<CellPositionInfo>,
+    /// Parsed pre/post/cell navigation command table. `None` when
+    /// `offset_commands == 0` (no command table present).
+    pub commands: Option<PgcCommandTable>,
 }
 
 impl Pgc {
@@ -671,6 +827,16 @@ impl Pgc {
         let goup_pgcn = read_u16(buf, 0x00A0)?;
         let still_time = read_u8(buf, 0x00A2)?;
         let playback_mode = read_u8(buf, 0x00A3)?;
+
+        // Palette (subpicture colour-LUT): 16 × 4-byte (0, Y, Cr, Cb)
+        // entries at PGC offset 0x00A4. This is part of the fixed
+        // header (which the 0xEC length check above already covers).
+        let mut palette = [PaletteEntry::default(); 16];
+        for (i, slot) in palette.iter_mut().enumerate() {
+            let base = 0x00A4 + i * 4;
+            *slot = PaletteEntry::parse(&buf[base..base + 4])?;
+        }
+
         let offset_commands = read_u16(buf, 0x00E4)?;
         let offset_program_map = read_u16(buf, 0x00E6)?;
         let offset_cell_playback = read_u16(buf, 0x00E8)?;
@@ -710,6 +876,18 @@ impl Pgc {
             }
         }
 
+        // Command table (pre/post/cell command lists). Absent when
+        // offset_commands == 0 per mpucoder-pgc.html.
+        let commands = if offset_commands != 0 {
+            let base = usize::from(offset_commands);
+            let tbl = buf
+                .get(base..)
+                .ok_or(Error::InvalidUdf("PGC: command table past end of buffer"))?;
+            Some(PgcCommandTable::parse(tbl)?)
+        } else {
+            None
+        };
+
         Ok(Self {
             number_of_programs,
             number_of_cells,
@@ -720,6 +898,7 @@ impl Pgc {
             goup_pgcn,
             still_time,
             playback_mode,
+            palette,
             offset_commands,
             offset_program_map,
             offset_cell_playback,
@@ -727,6 +906,7 @@ impl Pgc {
             program_map,
             cells,
             cell_positions,
+            commands,
         })
     }
 }
@@ -1305,9 +1485,13 @@ mod tests {
         let header_size = 0xEC;
         let prog_count = 1u8;
         let prog_map_size = (usize::from(prog_count) + 1) & !1; // pad to word
+        let pre_n = 1usize; // command table: 1 pre + 1 post + 2 cell = 4 words
+        let post_n = 1usize;
+        let cmd_cell_n = 2usize;
+        let cmd_table_size = 8 + (pre_n + post_n + cmd_cell_n) * 8;
         let cpbi_size = n * 24;
         let cpos_size = n * 4;
-        let mut b = vec![0u8; header_size + prog_map_size + cpbi_size + cpos_size];
+        let mut b = vec![0u8; header_size + cmd_table_size + prog_map_size + cpbi_size + cpos_size];
 
         // number_of_programs at 0x0002
         b[0x0002] = prog_count;
@@ -1318,22 +1502,54 @@ mod tests {
                                                                       // 0x0008..: prohibited UOPs = 0
                                                                       // next/prev/goup at 0x009C / 0x009E / 0x00A0 = 0
                                                                       // still time, playback mode = 0
-        let off_cmd = 0u16; // no commands
-        let off_pmap = header_size as u16; // immediately after header
-        let off_cpbi = (header_size + prog_map_size) as u16;
-        let off_cpos = (header_size + prog_map_size + cpbi_size) as u16;
+
+        // Palette at 0x00A4: 16 × (0, Y, Cr, Cb). Fill entry i with a
+        // deterministic (Y=0x10+i, Cr=0x80, Cb=0x80) so the round-trip
+        // can assert the layout decode.
+        for i in 0..16usize {
+            let base = 0x00A4 + i * 4;
+            b[base] = 0x00; // reserved
+            b[base + 1] = 0x10 + i as u8; // Y
+            b[base + 2] = 0x80; // Cr
+            b[base + 3] = 0x80; // Cb
+        }
+
+        let off_cmd = header_size as u16; // command table right after header
+        let off_pmap = (header_size + cmd_table_size) as u16;
+        let off_cpbi = (header_size + cmd_table_size + prog_map_size) as u16;
+        let off_cpos = (header_size + cmd_table_size + prog_map_size + cpbi_size) as u16;
         b[0x00E4..0x00E6].copy_from_slice(&off_cmd.to_be_bytes());
         b[0x00E6..0x00E8].copy_from_slice(&off_pmap.to_be_bytes());
         b[0x00E8..0x00EA].copy_from_slice(&off_cpbi.to_be_bytes());
         b[0x00EA..0x00EC].copy_from_slice(&off_cpos.to_be_bytes());
 
+        // Command table header + words. Each word is tagged in byte 0
+        // so the round-trip can tell pre/post/cell apart.
+        let ct = header_size;
+        b[ct..ct + 2].copy_from_slice(&(pre_n as u16).to_be_bytes());
+        b[ct + 2..ct + 4].copy_from_slice(&(post_n as u16).to_be_bytes());
+        b[ct + 4..ct + 6].copy_from_slice(&(cmd_cell_n as u16).to_be_bytes());
+        b[ct + 6..ct + 8].copy_from_slice(&((cmd_table_size - 1) as u16).to_be_bytes());
+        let mut w = ct + 8;
+        b[w] = 0xA0; // pre[0]: command_type = 0b101
+        b[w + 7] = 0x01;
+        w += 8;
+        b[w] = 0xB0; // post[0]
+        b[w + 7] = 0x02;
+        w += 8;
+        b[w] = 0xC0; // cell[0]
+        b[w + 7] = 0x03;
+        w += 8;
+        b[w] = 0xC1; // cell[1]
+        b[w + 7] = 0x04;
+
         // program map: 1 program starting at cell 1
-        b[header_size] = 1;
+        b[off_pmap as usize] = 1;
         // (no padding needed since prog_map_size already includes pad)
 
         // C_PBI
         for (i, c) in cells.iter().enumerate() {
-            let base = header_size + prog_map_size + i * 24;
+            let base = off_cpbi as usize + i * 24;
             b[base] = c.category_byte0;
             b[base + 1] = if c.restricted { 0x80 } else { 0 };
             b[base + 2] = c.still_time;
@@ -1351,7 +1567,7 @@ mod tests {
 
         // C_POS
         for (i, p) in positions.iter().enumerate() {
-            let base = header_size + prog_map_size + cpbi_size + i * 4;
+            let base = off_cpos as usize + i * 4;
             b[base..base + 2].copy_from_slice(&p.vob_id.to_be_bytes());
             b[base + 3] = p.cell_id;
         }
@@ -1424,6 +1640,117 @@ mod tests {
         assert_eq!(pgc.cells[2].last_vobu_end_sector, 3999);
         assert_eq!(pgc.cell_positions[1].cell_id, 2);
         assert_eq!(pgc.playback_time.frame_rate, FrameRate::Ntsc30);
+
+        // Palette decode: entry i carries (Y=0x10+i, Cr=0x80, Cb=0x80).
+        assert_eq!(
+            pgc.palette[0],
+            PaletteEntry {
+                y: 0x10,
+                cr: 0x80,
+                cb: 0x80
+            }
+        );
+        assert_eq!(
+            pgc.palette[15],
+            PaletteEntry {
+                y: 0x1F,
+                cr: 0x80,
+                cb: 0x80
+            }
+        );
+
+        // Command table: 1 pre + 1 post + 2 cell, tagged in byte 0.
+        let cmds = pgc.commands.as_ref().expect("command table present");
+        assert_eq!(cmds.pre.len(), 1);
+        assert_eq!(cmds.post.len(), 1);
+        assert_eq!(cmds.cell.len(), 2);
+        assert_eq!(cmds.pre[0].bytes[0], 0xA0);
+        assert_eq!(cmds.pre[0].bytes[7], 0x01);
+        assert_eq!(cmds.pre[0].command_type(), 0b101);
+        assert_eq!(cmds.post[0].bytes[0], 0xB0);
+        assert_eq!(cmds.post[0].bytes[7], 0x02);
+        assert_eq!(cmds.cell[0].bytes[7], 0x03);
+        assert_eq!(cmds.cell[1].bytes[7], 0x04);
+    }
+
+    // -------------------------------------------------------------
+    // PGC palette + command table — focused unit tests
+    // -------------------------------------------------------------
+
+    #[test]
+    fn palette_entry_skips_reserved_byte() {
+        // (reserved, Y, Cr, Cb)
+        let e = PaletteEntry::parse(&[0xFF, 0x42, 0x10, 0xC0]).unwrap();
+        assert_eq!(
+            e,
+            PaletteEntry {
+                y: 0x42,
+                cr: 0x10,
+                cb: 0xC0
+            }
+        );
+        // Too short → error.
+        assert!(PaletteEntry::parse(&[0x00, 0x01, 0x02]).is_err());
+    }
+
+    #[test]
+    fn command_table_carves_three_lists() {
+        // 2 pre + 1 post + 1 cell = 4 words.
+        let pre = 2u16;
+        let post = 1u16;
+        let cell = 1u16;
+        let total = (pre + post + cell) as usize;
+        let size = 8 + total * 8;
+        let mut b = vec![0u8; size];
+        b[0..2].copy_from_slice(&pre.to_be_bytes());
+        b[2..4].copy_from_slice(&post.to_be_bytes());
+        b[4..6].copy_from_slice(&cell.to_be_bytes());
+        b[6..8].copy_from_slice(&((size - 1) as u16).to_be_bytes());
+        // Tag each word's last byte with its 1-based index.
+        for i in 0..total {
+            b[8 + i * 8 + 7] = (i + 1) as u8;
+        }
+        let t = PgcCommandTable::parse(&b).unwrap();
+        assert_eq!(t.pre.len(), 2);
+        assert_eq!(t.post.len(), 1);
+        assert_eq!(t.cell.len(), 1);
+        assert_eq!(t.end_address, (size - 1) as u16);
+        // pre = words 1,2; post = word 3; cell = word 4.
+        assert_eq!(t.pre[0].bytes[7], 1);
+        assert_eq!(t.pre[1].bytes[7], 2);
+        assert_eq!(t.post[0].bytes[7], 3);
+        assert_eq!(t.cell[0].bytes[7], 4);
+    }
+
+    #[test]
+    fn command_table_rejects_overlong_count() {
+        // pre alone claims 129 words → > 128 invariant violated.
+        let mut b = vec![0u8; 8];
+        b[0..2].copy_from_slice(&129u16.to_be_bytes());
+        assert!(PgcCommandTable::parse(&b).is_err());
+    }
+
+    #[test]
+    fn command_table_rejects_truncated_list() {
+        // Header claims 2 words but the buffer only holds one.
+        let mut b = vec![0u8; 8 + 8];
+        b[0..2].copy_from_slice(&2u16.to_be_bytes());
+        assert!(PgcCommandTable::parse(&b).is_err());
+    }
+
+    #[test]
+    fn pgc_without_command_table_yields_none() {
+        // build_pgc_with_cells always emits a command table; build a
+        // minimal header-only PGC with offset_commands == 0.
+        let mut b = vec![0u8; 0xEC];
+        b[0x0002] = 0; // 0 programs
+        b[0x0003] = 0; // 0 cells
+        b[0x0004..0x0008].copy_from_slice(&[0x00, 0x00, 0x00, 0xC0]); // PAL 25 fps
+                                                                      // all four table offsets stay 0
+        let pgc = Pgc::parse(&b).unwrap();
+        assert!(pgc.commands.is_none());
+        // Palette defaults to all-zero when bytes are zero.
+        assert_eq!(pgc.palette[7], PaletteEntry::default());
     }
 
     // -------------------------------------------------------------
