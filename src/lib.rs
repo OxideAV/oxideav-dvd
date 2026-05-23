@@ -102,8 +102,9 @@ pub use udf::{
     PartitionDescriptor, ShortAd, TagId, UdfFile, UdfVolume,
 };
 pub use vob::{
-    demux_vobs, demux_vobs_path, looks_like_nav_pack, CellId, DsiPacket, DvdSubstream,
-    ElementaryStream, NavPack, PackHeader, PciPacket, PesPacket, VobDemuxer, VobId, VobStreams,
+    demux_vobs, demux_vobs_path, looks_like_nav_pack, ButtonInfo, CellId, DsiPacket, DvdSubstream,
+    ElementaryStream, HighlightInfo, NavPack, PackHeader, PciPacket, PesPacket, SlColi, SlColiCell,
+    VobDemuxer, VobId, VobStreams,
 };
 
 #[cfg(feature = "registry")]

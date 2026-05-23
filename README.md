@@ -23,8 +23,12 @@ chapter / program-chain / cell layout out of every IFO, and demux
 each cell's VOBUs into raw MPEG-2 video + AC-3 / DTS / LPCM audio
 + subpicture elementary streams keyed by track ID. The Phase 3a
 nav-pack decoder also surfaces the `VOBU_SRI` search-pointer table
-that chapter-accurate seek needs. **No VM execution, no CSS yet**
-— those land in Phase 3b/3c.
+that chapter-accurate seek needs and the PCI **highlight information**
+(HLI_GI timing + the three SL_COLI selection/action colour-contrast
+schemes + the per-button BTN_IT table — geometry, D-pad adjacency and
+the raw action command) that a menu renderer needs to draw and route
+button input. **No VM execution, no CSS yet** — those land in
+Phase 3b/3c.
 
 | Layer | Status |
 |-------|--------|
@@ -39,6 +43,7 @@ that chapter-accurate seek needs. **No VM execution, no CSS yet**
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed (Phase 3a) |
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed (Phase 3a) |
 | VOBU_SRI search-table decode | landed (Phase 3a) |
+| NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed (Phase 3a) |
 | MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |
 | VM execution (HDMV nav opcodes + SPRMs/GPRMs) | Phase 3c |
 | CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |

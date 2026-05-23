@@ -24,7 +24,8 @@
 //! * `mpucoder-pes-hdr.html`  — MPEG-PS PES header + DVD substream
 //!   conventions for private_stream_1 (0xBD)
 //! * `mpucoder-mpeghdrs.html` — MPEG-PS stream-ID table
-//! * `mpucoder-pci_pkt.html`  — PCI packet (substream 0x00)
+//! * `mpucoder-pci_pkt.html`  — PCI packet (substream 0x00) incl.
+//!   the HLI_GI / SL_COLI / BTN_IT highlight sub-structure
 //! * `mpucoder-dsi_pkt.html`  — DSI packet (substream 0x01)
 //! * `mpucoder-dvdmpeg.html`  — DVD substream allocations
 //! * `stnsoft-vobov.html`     — pack/sector/VOBU/cell semantics
@@ -366,13 +367,184 @@ fn parse_timestamp(buf: &[u8], expected_tag: u8) -> Result<u64> {
 // Nav Pack — PCI + DSI (mpucoder-{pci,dsi}_pkt.html)
 // ------------------------------------------------------------------
 
+/// A single (color, contrast) scheme cell of an [`SlColi`] table.
+///
+/// Both `color` and `contrast` are 4-bit fields: `color` indexes the
+/// PGC subpicture colour-LUT (`crate::ifo::PaletteEntry`) and
+/// `contrast` is a 0..=15 blend weight (0 = transparent, 15 = opaque)
+/// per `mpucoder-pci_pkt.html`'s SL_COLI table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SlColiCell {
+    /// 4-bit colour code (LUT index).
+    pub color: u8,
+    /// 4-bit contrast (transparency) value.
+    pub contrast: u8,
+}
+
+/// One of the three selection/action colour-and-contrast schemes a
+/// highlight can assign to its buttons (`SL_COLI_1..3`).
+///
+/// Each scheme carries four emphasis levels — `background` (code 0),
+/// `pattern` (code 1), `emphasis1` (code 2), `emphasis2` (code 3) —
+/// for both the *selection* and *action* highlight states, exactly
+/// as laid out in the SL_COLI sub-table of `mpucoder-pci_pkt.html`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SlColi {
+    /// Selection-state cells, indexed by emphasis code 0..=3
+    /// (`[background, pattern, emphasis1, emphasis2]`).
+    pub selection: [SlColiCell; 4],
+    /// Action-state cells, indexed by emphasis code 0..=3.
+    pub action: [SlColiCell; 4],
+}
+
+impl SlColi {
+    /// Decode one 8-byte SL_COLI scheme.
+    ///
+    /// Byte layout (`mpucoder-pci_pkt.html`):
+    /// `0,1` = selection colour (e2 e1 / pat bg nibbles),
+    /// `2,3` = selection contrast, `4,5` = action colour,
+    /// `6,7` = action contrast. Each byte packs the higher emphasis
+    /// code in the high nibble and the lower code in the low nibble.
+    fn parse(b: &[u8; 8]) -> Self {
+        // selection colour: byte0 = [e2 | e1], byte1 = [pat | bg]
+        // selection contr:  byte2 = [e2 | e1], byte3 = [pat | bg]
+        // action colour:    byte4 = [e2 | e1], byte5 = [pat | bg]
+        // action contr:     byte6 = [e2 | e1], byte7 = [pat | bg]
+        let mut selection = [SlColiCell::default(); 4];
+        let mut action = [SlColiCell::default(); 4];
+        // emphasis codes: 3 = emphasis2, 2 = emphasis1, 1 = pattern, 0 = bg
+        selection[3].color = b[0] >> 4;
+        selection[2].color = b[0] & 0x0F;
+        selection[1].color = b[1] >> 4;
+        selection[0].color = b[1] & 0x0F;
+        selection[3].contrast = b[2] >> 4;
+        selection[2].contrast = b[2] & 0x0F;
+        selection[1].contrast = b[3] >> 4;
+        selection[0].contrast = b[3] & 0x0F;
+        action[3].color = b[4] >> 4;
+        action[2].color = b[4] & 0x0F;
+        action[1].color = b[5] >> 4;
+        action[0].color = b[5] & 0x0F;
+        action[3].contrast = b[6] >> 4;
+        action[2].contrast = b[6] & 0x0F;
+        action[1].contrast = b[7] >> 4;
+        action[0].contrast = b[7] & 0x0F;
+        Self { selection, action }
+    }
+}
+
+/// One button's entry in the Button Information Table (`BTN_IT`).
+///
+/// 18 bytes per `mpucoder-pci_pkt.html`: a colour-scheme selector, a
+/// rectangular pixel region (10-bit X/Y coordinates), an auto-action
+/// flag, four adjacent-button selectors for D-pad navigation, and an
+/// 8-byte VM command executed when the button is actioned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonInfo {
+    /// `btn_coln` — colour-scheme selector (0 = none, 1..=3 pick
+    /// `SL_COLI_1..3`). 2-bit field.
+    pub btn_coln: u8,
+    /// Starting X pixel (10-bit, inclusive).
+    pub start_x: u16,
+    /// Ending X pixel (10-bit, inclusive).
+    pub end_x: u16,
+    /// Starting Y pixel (10-bit, inclusive).
+    pub start_y: u16,
+    /// Ending Y pixel (10-bit, inclusive).
+    pub end_y: u16,
+    /// Auto-action flag — if set, selecting the button immediately
+    /// executes its command (no separate "enter" press).
+    pub auto_action: bool,
+    /// Button number to move to on "Up" (`AJBTN_POSI_UP`, 6-bit).
+    pub up: u8,
+    /// Button number to move to on "Down" (`AJBTN_POSI_DN`, 6-bit).
+    pub down: u8,
+    /// Button number to move to on "Left" (`AJBTN_POSI_LT`, 6-bit).
+    pub left: u8,
+    /// Button number to move to on "Right" (`AJBTN_POSI_RT`, 6-bit).
+    pub right: u8,
+    /// The 8-byte VM command run on action. Surfaced raw; executing
+    /// it is Phase 3c VM work (`mpucoder-vmi.html`).
+    pub command: [u8; 8],
+}
+
+impl ButtonInfo {
+    /// Decode one 18-byte `BTN_IT` entry.
+    fn parse(b: &[u8; 18]) -> Self {
+        // 00: [btn_coln:2][start_x_hi:6]
+        // 01: [start_x_lo:4][rsv:2][end_x_hi:2]
+        // 02: [end_x_lo:8]
+        // 03: [auto_action:2][start_y_hi:6]
+        // 04: [start_y_lo:4][rsv:2][end_y_hi:2]
+        // 05: [end_y_lo:8]
+        // 06..09: [rsv:2][adj button:6]
+        // 0a..11: 8-byte vm command
+        let start_x = (((b[0] & 0x3F) as u16) << 4) | ((b[1] >> 4) as u16);
+        let end_x = (((b[1] & 0x03) as u16) << 8) | (b[2] as u16);
+        let start_y = (((b[3] & 0x3F) as u16) << 4) | ((b[4] >> 4) as u16);
+        let end_y = (((b[4] & 0x03) as u16) << 8) | (b[5] as u16);
+        let mut command = [0u8; 8];
+        command.copy_from_slice(&b[0x0A..0x12]);
+        Self {
+            btn_coln: b[0] >> 6,
+            start_x,
+            end_x,
+            start_y,
+            end_y,
+            auto_action: (b[3] >> 6) != 0,
+            up: b[6] & 0x3F,
+            down: b[7] & 0x3F,
+            left: b[8] & 0x3F,
+            right: b[9] & 0x3F,
+            command,
+        }
+    }
+}
+
+/// Highlight Information (`HLI`) — the menu-button overlay a VOBU
+/// carries in its PCI NAV-pack half.
+///
+/// Decoded from `HLI_GI` + `SL_COLI` + `BTN_IT` per
+/// `mpucoder-pci_pkt.html`. Only present when `hli_ss & 0b11` selects
+/// "all new" or "use previous" highlight info; [`PciPacket::parse`]
+/// only materialises it when `btn_ns > 0`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HighlightInfo {
+    /// `hli_s_ptm` — highlight start presentation time (90 kHz).
+    pub hli_s_ptm: u32,
+    /// `hli_e_ptm` — highlight end presentation time (90 kHz).
+    pub hli_e_ptm: u32,
+    /// `btn_sl_e_ptm` — button-selection end time (user input after
+    /// this is ignored).
+    pub btn_sl_e_ptm: u32,
+    /// `btn_md` — the raw button-grouping word (4 nibbles describing
+    /// up to 3 button groups). Surfaced raw; the group-type decode is
+    /// left to a renderer.
+    pub btn_md: u16,
+    /// `btn_sn` — starting button number (1-based).
+    pub btn_sn: u8,
+    /// `btn_ns` — number of buttons in this highlight (0..=36).
+    pub btn_ns: u8,
+    /// `nsl_btn_ns` — number of numerically selectable buttons.
+    pub nsl_btn_ns: u8,
+    /// `fosl_btnn` — force-select button number (0 = none).
+    pub fosl_btnn: u8,
+    /// `foac_btnn` — force-action button number (0 = none).
+    pub foac_btnn: u8,
+    /// The three `SL_COLI` colour-and-contrast schemes buttons pick
+    /// from via [`ButtonInfo::btn_coln`].
+    pub sl_coli: [SlColi; 3],
+    /// The button table — exactly `btn_ns` entries (a VOBU declares
+    /// up to 36 buttons).
+    pub buttons: Vec<ButtonInfo>,
+}
+
 /// PCI packet — Presentation Control Information.
 ///
-/// Layout per mpucoder-pci_pkt.html. We surface only the fields
-/// downstream chapter / seek logic actually needs in Phase 3a; the
-/// HLI / button / SL_COLI tables are present in the underlying bytes
-/// (`raw`) and can be lazily decoded by callers if needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Layout per mpucoder-pci_pkt.html. Surfaces the `PCI_GI` general
+/// information block (timing + UOP mask) plus, when the VOBU carries
+/// a menu, the decoded [`HighlightInfo`] (HLI_GI + SL_COLI + BTN_IT).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PciPacket {
     /// `PCI_GI 00` — `nv_pck_lbn`: disc-LBA of this NAV pack.
     pub nv_pck_lbn: u32,
@@ -390,9 +562,23 @@ pub struct PciPacket {
     pub c_eltm: u32,
     /// `HLI_GI 00` — `hli_ss`: highlight status (lower 2 bits).
     pub hli_ss: u16,
+    /// Decoded highlight / button overlay for this VOBU. `None` when
+    /// the VOBU declares no buttons (`btn_ns == 0`).
+    pub highlight: Option<HighlightInfo>,
 }
 
 impl PciPacket {
+    /// Packet-relative offset of `HLI_GI 00` (`hli_ss`).
+    const HLI_GI: usize = 0x60;
+    /// Packet-relative offset of the first `SL_COLI` scheme.
+    const SL_COLI: usize = 0x76;
+    /// Packet-relative offset of the first `BTN_IT` entry.
+    const BTN_IT: usize = 0x8E;
+    /// Bytes per `BTN_IT` entry.
+    const BTN_IT_SIZE: usize = 18;
+    /// Maximum buttons a VOBU may declare.
+    const MAX_BUTTONS: usize = 36;
+
     /// Parse a PCI packet body. `buf` is the payload that follows
     /// the `0x000001BF` + length + substream-ID prefix — that is,
     /// it starts at `PCI_GI 00` (sector offset 0x2D).
@@ -400,11 +586,13 @@ impl PciPacket {
         // The PCI_GI block alone occupies 0x1C bytes; HLI_GI starts
         // at 0x60 (packet-relative) so we need at least 0x62 bytes
         // for a meaningful read.
-        if buf.len() < 0x62 {
+        if buf.len() < Self::HLI_GI + 2 {
             return Err(Error::InvalidUdf(
                 "PCI: shorter than PCI_GI + HLI_GI prefix",
             ));
         }
+        let hli_ss = read_u16_be(buf, Self::HLI_GI)?;
+        let highlight = Self::parse_highlight(buf)?;
         Ok(Self {
             nv_pck_lbn: read_u32_be(buf, 0x00)?,
             vobu_cat: read_u16_be(buf, 0x04)?,
@@ -413,8 +601,69 @@ impl PciPacket {
             vobu_e_ptm: read_u32_be(buf, 0x10)?,
             vobu_se_e_ptm: read_u32_be(buf, 0x14)?,
             c_eltm: read_u32_be(buf, 0x18)?,
-            hli_ss: read_u16_be(buf, 0x60)?,
+            hli_ss,
+            highlight,
         })
+    }
+
+    /// Decode the `HLI_GI` + `SL_COLI` + `BTN_IT` sub-structure.
+    ///
+    /// Returns `Ok(None)` when the VOBU declares no buttons
+    /// (`btn_ns == 0`) or when the PCI body is too short to carry the
+    /// `HLI_GI` header — a button-less VOBU is the common case and is
+    /// not an error. When `btn_ns > 0` the buffer must hold the full
+    /// `SL_COLI` block plus `btn_ns` `BTN_IT` entries, else
+    /// `Error::InvalidUdf`.
+    fn parse_highlight(buf: &[u8]) -> Result<Option<HighlightInfo>> {
+        // HLI_GI runs HLI_GI+0x00..0x16 (btn_ns lives at HLI_GI+0x11).
+        let btn_ns_off = Self::HLI_GI + 0x11;
+        if buf.len() <= btn_ns_off {
+            return Ok(None);
+        }
+        let btn_ns = buf[btn_ns_off];
+        if btn_ns == 0 {
+            return Ok(None);
+        }
+        if btn_ns as usize > Self::MAX_BUTTONS {
+            return Err(Error::InvalidUdf("PCI HLI: btn_ns exceeds 36"));
+        }
+        // The SL_COLI block (3 × 8 B) starts at SL_COLI; BTN_IT
+        // entries follow at BTN_IT. Require the whole declared button
+        // table to be present.
+        let need = Self::BTN_IT + (btn_ns as usize) * Self::BTN_IT_SIZE;
+        if buf.len() < need {
+            return Err(Error::InvalidUdf(
+                "PCI HLI: body shorter than declared BTN_IT table",
+            ));
+        }
+
+        let mut sl_coli = [SlColi::default(); 3];
+        for (i, scheme) in sl_coli.iter_mut().enumerate() {
+            let off = Self::SL_COLI + i * 8;
+            let cell: [u8; 8] = buf[off..off + 8].try_into().unwrap();
+            *scheme = SlColi::parse(&cell);
+        }
+
+        let mut buttons = Vec::with_capacity(btn_ns as usize);
+        for i in 0..btn_ns as usize {
+            let off = Self::BTN_IT + i * Self::BTN_IT_SIZE;
+            let entry: [u8; 18] = buf[off..off + Self::BTN_IT_SIZE].try_into().unwrap();
+            buttons.push(ButtonInfo::parse(&entry));
+        }
+
+        Ok(Some(HighlightInfo {
+            hli_s_ptm: read_u32_be(buf, Self::HLI_GI + 0x02)?,
+            hli_e_ptm: read_u32_be(buf, Self::HLI_GI + 0x06)?,
+            btn_sl_e_ptm: read_u32_be(buf, Self::HLI_GI + 0x0A)?,
+            btn_md: read_u16_be(buf, Self::HLI_GI + 0x0E)?,
+            btn_sn: buf[Self::HLI_GI + 0x10],
+            btn_ns,
+            nsl_btn_ns: buf[Self::HLI_GI + 0x12],
+            fosl_btnn: buf[Self::HLI_GI + 0x14],
+            foac_btnn: buf[Self::HLI_GI + 0x15],
+            sl_coli,
+            buttons,
+        }))
     }
 }
 
@@ -1099,6 +1348,8 @@ mod tests {
                              // PCI_GI 00..1C
         sector[0x2D..0x31].copy_from_slice(&nv_lbn.to_be_bytes());
         sector[0x39..0x3D].copy_from_slice(&vobu_s_ptm.to_be_bytes()); // vobu_s_ptm at 0x2D+0x0C = 0x39
+                                                                       // By default no buttons: PCI HLI_GI btn_ns (packet 0x71 ->
+                                                                       // sector 0x2D + 0x71 = 0x9E) stays 0 so highlight == None.
 
         // DSI prefix at 0x400: 00 00 01 BF 03 FA 01
         sector[0x400] = 0x00;
@@ -1132,6 +1383,134 @@ mod tests {
         sector[0x403] = 0xCC; // corrupt DSI start code
         assert!(NavPack::parse(&sector).is_err());
         assert!(!looks_like_nav_pack(&sector));
+    }
+
+    // ----- PCI highlight (HLI / SL_COLI / BTN_IT) -------------------
+
+    /// Sector offset of packet-relative PCI byte `p` (PCI body begins
+    /// at sector 0x2D per mpucoder-pci_pkt.html).
+    fn pci(p: usize) -> usize {
+        0x2D + p
+    }
+
+    /// Inject a single-button HLI block into a nav sector built by
+    /// `build_nav_sector`. Encodes one button with a known geometry +
+    /// colour scheme + command so the decode can be asserted exactly.
+    fn add_one_button_hli(sector: &mut [u8]) {
+        // HLI_GI 00 (hli_ss) — "all new" status.
+        sector[pci(0x60)] = 0x00;
+        sector[pci(0x61)] = 0x01;
+        // hli_s_ptm @0x62, hli_e_ptm @0x66, btn_sl_e_ptm @0x6a.
+        sector[pci(0x62)..pci(0x66)].copy_from_slice(&0x0000_1111u32.to_be_bytes());
+        sector[pci(0x66)..pci(0x6A)].copy_from_slice(&0x0000_2222u32.to_be_bytes());
+        sector[pci(0x6A)..pci(0x6E)].copy_from_slice(&0x0000_3333u32.to_be_bytes());
+        // btn_md @0x6e (raw), btn_sn @0x70, btn_ns @0x71.
+        sector[pci(0x6E)] = 0x01;
+        sector[pci(0x6F)] = 0x00;
+        sector[pci(0x70)] = 1; // btn_sn
+        sector[pci(0x71)] = 1; // btn_ns
+        sector[pci(0x72)] = 1; // nsl_btn_ns
+        sector[pci(0x74)] = 1; // fosl_btnn
+        sector[pci(0x75)] = 1; // foac_btnn
+
+        // SL_COLI_1 @0x76: selection colour [e2|e1]=0x21, [pat|bg]=0x43,
+        // selection contr [e2|e1]=0x65, [pat|bg]=0x87; action colour
+        // [e2|e1]=0xA9, [pat|bg]=0xCB, action contr [e2|e1]=0xED,
+        // [pat|bg]=0x0F.
+        sector[pci(0x76)..pci(0x7E)]
+            .copy_from_slice(&[0x21, 0x43, 0x65, 0x87, 0xA9, 0xCB, 0xED, 0x0F]);
+
+        // BTN_IT[0] @0x8e — 18 bytes.
+        //   00: btn_coln=1 (bits7-6), start_x_hi=0x05 -> 0x45
+        //   01: start_x_lo=0x6, end_x_hi=0x1 -> 0x61
+        //   02: end_x_lo=0x23 -> end_x = 0x123
+        //   03: auto_action=1 (bits7-6), start_y_hi=0x07 -> 0x47
+        //   04: start_y_lo=0x8, end_y_hi=0x2 -> 0x82
+        //   05: end_y_lo=0x9A -> end_y = 0x29A
+        //   06: up=5, 07: down=6, 08: left=7, 09: right=8
+        //   0a..11: command bytes 0xC0..0xC7
+        let entry: [u8; 18] = [
+            0x45, 0x61, 0x23, 0x47, 0x82, 0x9A, 0x05, 0x06, 0x07, 0x08, 0xC0, 0xC1, 0xC2, 0xC3,
+            0xC4, 0xC5, 0xC6, 0xC7,
+        ];
+        let off = pci(0x8E);
+        sector[off..off + 18].copy_from_slice(&entry);
+    }
+
+    #[test]
+    fn pci_without_buttons_yields_no_highlight() {
+        let sector = build_nav_sector(1, 0, 0);
+        let nav = NavPack::parse(&sector).unwrap();
+        assert_eq!(nav.pci.hli_ss, 0);
+        assert!(nav.pci.highlight.is_none());
+    }
+
+    #[test]
+    fn pci_decodes_single_button_highlight() {
+        let mut sector = build_nav_sector(1, 0, 0);
+        add_one_button_hli(&mut sector);
+        let nav = NavPack::parse(&sector).unwrap();
+        let hli = nav.pci.highlight.expect("highlight present");
+
+        assert_eq!(hli.hli_s_ptm, 0x0000_1111);
+        assert_eq!(hli.hli_e_ptm, 0x0000_2222);
+        assert_eq!(hli.btn_sl_e_ptm, 0x0000_3333);
+        assert_eq!(hli.btn_md, 0x0100);
+        assert_eq!(hli.btn_sn, 1);
+        assert_eq!(hli.btn_ns, 1);
+        assert_eq!(hli.nsl_btn_ns, 1);
+        assert_eq!(hli.fosl_btnn, 1);
+        assert_eq!(hli.foac_btnn, 1);
+
+        // SL_COLI_1 selection colour: bg=byte1.lo=3, pat=byte1.hi=4,
+        // e1=byte0.lo=1, e2=byte0.hi=2.
+        let sel = hli.sl_coli[0].selection;
+        assert_eq!(sel[0].color, 3); // background
+        assert_eq!(sel[1].color, 4); // pattern
+        assert_eq!(sel[2].color, 1); // emphasis1
+        assert_eq!(sel[3].color, 2); // emphasis2
+                                     // selection contrast byte2=0x65,byte3=0x87: bg=7,pat=8,e1=5,e2=6.
+        assert_eq!(sel[0].contrast, 7);
+        assert_eq!(sel[1].contrast, 8);
+        assert_eq!(sel[2].contrast, 5);
+        assert_eq!(sel[3].contrast, 6);
+        // action colour byte4=0xA9,byte5=0xCB: bg=B,pat=C,e1=9,e2=A.
+        let act = hli.sl_coli[0].action;
+        assert_eq!(act[0].color, 0xB);
+        assert_eq!(act[1].color, 0xC);
+        assert_eq!(act[2].color, 0x9);
+        assert_eq!(act[3].color, 0xA);
+
+        assert_eq!(hli.buttons.len(), 1);
+        let b = &hli.buttons[0];
+        assert_eq!(b.btn_coln, 1);
+        assert_eq!(b.start_x, 0x56);
+        assert_eq!(b.end_x, 0x123);
+        assert_eq!(b.start_y, 0x78);
+        assert_eq!(b.end_y, 0x29A);
+        assert!(b.auto_action);
+        assert_eq!(b.up, 5);
+        assert_eq!(b.down, 6);
+        assert_eq!(b.left, 7);
+        assert_eq!(b.right, 8);
+        assert_eq!(b.command, [0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7]);
+    }
+
+    #[test]
+    fn pci_rejects_overlong_btn_ns() {
+        let mut sector = build_nav_sector(1, 0, 0);
+        add_one_button_hli(&mut sector);
+        sector[pci(0x71)] = 37; // btn_ns > 36
+        assert!(NavPack::parse(&sector).is_err());
+    }
+
+    #[test]
+    fn pci_rejects_truncated_button_table() {
+        // A PCI body that declares 36 buttons but is only long enough
+        // to reach HLI_GI must error rather than read past the slice.
+        let mut buf = vec![0u8; PciPacket::BTN_IT + 18]; // room for one button
+        buf[0x71] = 36; // btn_ns = 36 but only 1 entry of room
+        assert!(PciPacket::parse(&buf).is_err());
     }
 
     // ----- End-to-end synthetic VOBU --------------------------------

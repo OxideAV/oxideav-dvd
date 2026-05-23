@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- NAV-pack PCI **highlight information** (menu buttons): the
+  `PciPacket` decoder previously read only `hli_ss`; it now
+  materialises the full HLI_GI / SL_COLI / BTN_IT sub-structure when
+  a VOBU declares buttons, clean-room per `mpucoder-pci_pkt.html` (no
+  libdvdread / libdvdnav / libdvdcss / FFmpeg / VLC / mpv / xine
+  source consulted).
+  - **`HighlightInfo` + `PciPacket::highlight: Option<HighlightInfo>`**
+    — the HLI_GI general-information block (`hli_s_ptm`, `hli_e_ptm`,
+    `btn_sl_e_ptm`, raw `btn_md` grouping word, `btn_sn`, `btn_ns`,
+    `nsl_btn_ns`, `fosl_btnn`, `foac_btnn`). `None` when the VOBU
+    declares no buttons (`btn_ns == 0`) — the common case, not an
+    error.
+  - **`SlColi` + `SlColiCell`** — the three `SL_COLI_1..3`
+    selection/action colour-and-contrast schemes. Each 8-byte scheme
+    is decoded into selection + action arrays of four
+    `{ color, contrast }` cells, indexed by emphasis code
+    (`0` = background, `1` = pattern, `2` = emphasis1, `3` =
+    emphasis2). `color` is a 4-bit PGC colour-LUT index; `contrast`
+    is the 4-bit blend weight a subpicture/menu renderer applies.
+  - **`ButtonInfo`** — one 18-byte `BTN_IT` entry: `btn_coln`
+    colour-scheme selector, the 10-bit X/Y rectangular region
+    (`start_x`/`end_x`/`start_y`/`end_y`), the auto-action flag, the
+    four `up`/`down`/`left`/`right` D-pad adjacency selectors, and the
+    raw 8-byte VM `command` (executing it is Phase 3c VM work per
+    `mpucoder-vmi.html`). The button table holds exactly `btn_ns`
+    entries; an over-long count (`> 36`) or a body too short to carry
+    the declared table raises `Error::InvalidUdf`.
+  - 4 new unit tests (`pci_without_buttons_yields_no_highlight`,
+    `pci_decodes_single_button_highlight`,
+    `pci_rejects_overlong_btn_ns`,
+    `pci_rejects_truncated_button_table`); a new `add_one_button_hli`
+    test helper injects a known single-button HLI block into the
+    synthetic nav sector so every decoded field is asserted exactly.
+  - **Note:** `PciPacket` and `NavPack` no longer derive `Copy`
+    (`HighlightInfo` owns a `Vec<ButtonInfo>`); they remain `Clone`.
+
 - PGC palette + command-table parse (richer Phase 2 IFO body): the
   `Pgc` materialiser now decodes the two PGC-header tables it
   previously skipped, both clean-room per `mpucoder-pgc.html` (no
