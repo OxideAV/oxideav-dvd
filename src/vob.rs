@@ -667,56 +667,65 @@ impl PciPacket {
     }
 }
 
-/// DSI packet — Data Search Information.
+// ------------------------------------------------------------------
+// DSI packet (mpucoder-dsi_pkt.html)
+// ------------------------------------------------------------------
+
+/// DSI_GI — DSI General Information block.
 ///
-/// Layout per mpucoder-dsi_pkt.html. We expose DSI_GI + the
-/// VOBU_SRI seek-pointer table because that's the structure
-/// chapter-accurate seeking needs. SML_PBI / SML_AGLI / SYNCI are
-/// available in `raw` for future angle / sync-audio work.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DsiPacket {
-    /// `DSI_GI 00` — `nv_pck_scr`.
+/// 32-byte preamble of the DSI packet, covering the nav-pack system-
+/// clock reference, the disc LBA cross-check field (redundant with
+/// the PCI half), the VOBU end-address triplet that fast-play uses,
+/// the (VOB, cell) identifier pair, and the per-cell elapsed-time
+/// BCD field (whose top two bits also encode the frame rate).
+///
+/// Layout per `mpucoder-dsi_pkt.html`:
+///
+/// | Offset | Field            | Size |
+/// |--------|------------------|------|
+/// | `0x00` | `nv_pck_scr`     | 4    |
+/// | `0x04` | `nv_pck_lbn`     | 4    |
+/// | `0x08` | `vobu_ea`        | 4    |
+/// | `0x0C` | `vobu_1stref_ea` | 4    |
+/// | `0x10` | `vobu_2ndref_ea` | 4    |
+/// | `0x14` | `vobu_3rdref_ea` | 4    |
+/// | `0x18` | `vobu_vob_idn`   | 2    |
+/// | `0x1A` | reserved (00)    | 1    |
+/// | `0x1B` | `vobu_c_idn`     | 1    |
+/// | `0x1C` | `c_eltm`         | 4    |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DsiGi {
+    /// System clock reference for this nav-pack.
     pub nv_pck_scr: u32,
-    /// `DSI_GI 04` — `nv_pck_lbn`: disc-LBA of this NAV pack
-    /// (redundant with PCI but kept for cross-check).
+    /// Logical Block Number (sector) of this nav-pack.
     pub nv_pck_lbn: u32,
-    /// `DSI_GI 08` — `vobu_ea`: VOBU end address (relative).
+    /// VOBU end address — relative offset to the last sector of the VOBU.
     pub vobu_ea: u32,
-    /// `DSI_GI 0C` — `vobu_1stref_ea`: first reference frame end.
+    /// First-reference-frame end block, relative — used for fast play.
     pub vobu_1stref_ea: u32,
-    /// `DSI_GI 10` — `vobu_2ndref_ea`.
+    /// Second-reference-frame end block, relative — used for fast play.
     pub vobu_2ndref_ea: u32,
-    /// `DSI_GI 14` — `vobu_3rdref_ea`.
+    /// Third-reference-frame end block, relative — used for fast play.
     pub vobu_3rdref_ea: u32,
-    /// `DSI_GI 18` — `vobu_vob_idn`: VOB number.
+    /// VOB number containing this VOBU.
     pub vobu_vob_idn: u16,
-    /// `DSI_GI 1B` — `vobu_c_idn`: cell number within VOB.
+    /// Cell number within the VOB.
     pub vobu_c_idn: u8,
-    /// `DSI_GI 1C` — `c_eltm` (BCD + frame-rate bits).
+    /// Cell elapsed time — BCD `hh:mm:ss:ff`. Bits 7&6 of the frame
+    /// (last) byte encode the frame rate: `11` = 30 fps, `01` = 25 fps,
+    /// other combinations are spec-illegal.
     pub c_eltm: u32,
-    /// VOBU_SRI search-information table — 21 forward + 21 backward
-    /// pointers, decoded raw from packet offsets 0xEA..0x192. The
-    /// pointer at index 0 is `sri_nvwv`; index 1..=20 are the
-    /// forward `sri_fwda*` table; index 21..=41 are the backward
-    /// counterparts; index 42 is `sri_pvwv` (the previous-VOBU-
-    /// with-video pointer). The layout mirrors the DSI spec literally.
-    pub vobu_sri: Box<[u32; 43]>,
 }
 
-impl DsiPacket {
-    /// Parse a DSI packet body. `buf` starts at `DSI_GI 00`
-    /// (sector offset 0x407).
-    pub fn parse(buf: &[u8]) -> Result<Self> {
-        // VOBU_SRI extends to packet offset 0x192 + 4 = 0x196.
-        if buf.len() < 0x196 {
-            return Err(Error::InvalidUdf("DSI: shorter than DSI_GI + VOBU_SRI"));
-        }
-        let mut sri = [0u32; 43];
-        // `sri_nvwv` at 0xEA, then 21 forward + 21 backward + pvwv.
-        // The table is contiguous: 43 × 4 bytes = 172 bytes from
-        // 0xEA..0x196.
-        for (i, slot) in sri.iter_mut().enumerate() {
-            *slot = read_u32_be(buf, 0xEA + i * 4)?;
+impl DsiGi {
+    /// Size of the DSI_GI block — 32 bytes.
+    pub const SIZE: usize = 0x20;
+
+    /// Parse the DSI_GI block. `buf` starts at DSI_GI 0x00 (packet
+    /// offset 0x00, sector offset 0x407).
+    fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < Self::SIZE {
+            return Err(Error::InvalidUdf("DSI_GI: short buffer"));
         }
         Ok(Self {
             nv_pck_scr: read_u32_be(buf, 0x00)?,
@@ -726,9 +735,406 @@ impl DsiPacket {
             vobu_2ndref_ea: read_u32_be(buf, 0x10)?,
             vobu_3rdref_ea: read_u32_be(buf, 0x14)?,
             vobu_vob_idn: read_u16_be(buf, 0x18)?,
+            // 0x1A is "reserved 00"; ignored.
             vobu_c_idn: buf[0x1B],
             c_eltm: read_u32_be(buf, 0x1C)?,
-            vobu_sri: Box::new(sri),
+        })
+    }
+}
+
+/// One audio stream's seamless-playback gap pair within `SmlPbi`.
+///
+/// Each VOB allows up to two audio "gaps" (places where playback
+/// pauses one audio stream to preserve A/V sync across an
+/// interleaved-block boundary). Per `mpucoder-dsi_pkt.html` SML_PBI
+/// sub-table, each stream gets the same 16-byte quad of
+/// `{ stp_ptm1, stp_ptm2, gap_len1, gap_len2 }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SmlAudioGap {
+    /// PTM of the first audio-gap stop for this stream (90 kHz).
+    pub stp_ptm1: u32,
+    /// PTM of the second audio-gap stop for this stream (90 kHz).
+    pub stp_ptm2: u32,
+    /// Duration of the first audio gap (90 kHz clocks).
+    pub gap_len1: u32,
+    /// Duration of the second audio gap (90 kHz clocks).
+    pub gap_len2: u32,
+}
+
+/// SML_PBI — Seamless Playback Information.
+///
+/// 148-byte block at packet offset `0x20..0xB4` carrying the
+/// Interleaved-Unit (ILVU) flags + jump-pointer pair that drives
+/// seamless playback across interleaved blocks, the (start, end) PTM
+/// pair of the surrounding VOB's video span, and the per-audio-
+/// stream A/V-sync gap descriptor table (8 streams × 16 bytes).
+///
+/// Layout per `mpucoder-dsi_pkt.html` SML_PBI sub-table:
+///
+/// | Packet | Field          | Size |
+/// |--------|----------------|------|
+/// | `0x20` | `ilvu`         | 2    |
+/// | `0x22` | `ilvu_ea`      | 4    |
+/// | `0x26` | `nxt_ilvu_sa`  | 4    |
+/// | `0x2A` | `nxt_ilvu_sz`  | 2    |
+/// | `0x2C` | `vob_v_s_ptm`  | 4    |
+/// | `0x30` | `vob_v_e_ptm`  | 4    |
+/// | `0x34..0xB4` | 8 × [`SmlAudioGap`] | 16 each |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmlPbi {
+    /// ILVU flag word. Only the top 4 bits of the first byte are
+    /// defined; the rest is reserved-zero. Decode via
+    /// [`SmlPbi::preu`], [`SmlPbi::is_ilvu`], [`SmlPbi::unit_start`]
+    /// and [`SmlPbi::unit_end`].
+    pub ilvu: u16,
+    /// ILVU end address — relative offset to the last sector of this
+    /// ILVU for the current angle/scene. `0x0000_0000` for PREU and
+    /// non-interleaved blocks.
+    pub ilvu_ea: u32,
+    /// Relative offset to the next ILVU block (not VOBU) for the
+    /// current angle/scene. `0x0000_0000` for PREU / non-interleaved
+    /// blocks; `0xFFFF_FFFF` marks the end of interleaving.
+    pub nxt_ilvu_sa: u32,
+    /// Size of the next ILVU block (sectors). `0x0000` for PREU /
+    /// non-interleaved blocks; `0xFFFF` marks the end of interleaving.
+    pub nxt_ilvu_sz: u16,
+    /// PTM of the first video frame in the first GOP of this VOB.
+    pub vob_v_s_ptm: u32,
+    /// PTM of the last video frame in the last GOP of this VOB.
+    pub vob_v_e_ptm: u32,
+    /// Per-audio-stream A/V-sync gap pairs (8 streams).
+    pub audio_gaps: [SmlAudioGap; 8],
+}
+
+impl SmlPbi {
+    /// Size of the SML_PBI block — 148 bytes.
+    pub const SIZE: usize = 0xB4 - 0x20;
+    /// SML_PBI start offset within the DSI packet body.
+    pub const PACKET_OFFSET: usize = 0x20;
+
+    /// PREU flag (ILVU bit 15) — set during the last 3 VOBUs preceding
+    /// an interleaved block.
+    pub fn preu(&self) -> bool {
+        self.ilvu & 0x8000 != 0
+    }
+    /// ILVU flag (ILVU bit 14) — set for every VOBU inside an
+    /// interleaved block.
+    pub fn is_ilvu(&self) -> bool {
+        self.ilvu & 0x4000 != 0
+    }
+    /// Unit_Start flag (ILVU bit 13) — set for the first VOBU of an
+    /// angle/scene within an ILVU, or the first VOBU of a PREU run.
+    pub fn unit_start(&self) -> bool {
+        self.ilvu & 0x2000 != 0
+    }
+    /// Unit_End flag (ILVU bit 12) — set for the last VOBU of an
+    /// angle/scene within an ILVU, or the last VOBU of a PREU run.
+    pub fn unit_end(&self) -> bool {
+        self.ilvu & 0x1000 != 0
+    }
+
+    /// Parse SML_PBI given a slice starting at packet offset
+    /// [`Self::PACKET_OFFSET`].
+    fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < Self::SIZE {
+            return Err(Error::InvalidUdf("SML_PBI: short buffer"));
+        }
+        let mut audio_gaps = [SmlAudioGap::default(); 8];
+        for (i, slot) in audio_gaps.iter_mut().enumerate() {
+            // First audio stream starts at SML_PBI 0x14 (packet 0x34);
+            // each subsequent stream is 16 bytes further on.
+            let base = 0x14 + i * 16;
+            *slot = SmlAudioGap {
+                stp_ptm1: read_u32_be(buf, base)?,
+                stp_ptm2: read_u32_be(buf, base + 4)?,
+                gap_len1: read_u32_be(buf, base + 8)?,
+                gap_len2: read_u32_be(buf, base + 12)?,
+            };
+        }
+        Ok(Self {
+            ilvu: read_u16_be(buf, 0x00)?,
+            ilvu_ea: read_u32_be(buf, 0x02)?,
+            nxt_ilvu_sa: read_u32_be(buf, 0x06)?,
+            nxt_ilvu_sz: read_u16_be(buf, 0x0A)?,
+            vob_v_s_ptm: read_u32_be(buf, 0x0C)?,
+            vob_v_e_ptm: read_u32_be(buf, 0x10)?,
+            audio_gaps,
+        })
+    }
+}
+
+/// One angle's seamless-playback descriptor within `SmlAgli`.
+///
+/// Per `mpucoder-dsi_pkt.html` SML_AGLI sub-table, every angle gets a
+/// 6-byte `{ dsta: u32, sz: u16 }` record. `dsta == 0` flags an
+/// absent angle; `dsta == 0x7FFF_FFFF` means no more video for the
+/// angle; bit 31 toggles forward (0) versus backward (1) direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SmlAngleCell {
+    /// Relative offset to the NEXT ILVU for this angle. Bit 31 is the
+    /// direction (0 = forward, 1 = backward). `0x0000_0000` = angle
+    /// absent; `0x7FFF_FFFF` = no more video for this angle.
+    pub dsta: u32,
+    /// ILVU size in sectors for this angle.
+    pub sz: u16,
+}
+
+/// SML_AGLI — Seamless Angle Information.
+///
+/// 54-byte block at packet offset `0xB4..0xEA` covering the 9 angle
+/// cells of the multi-angle interleaved block. Each cell occupies
+/// 6 bytes (`dsta` 4 + `sz` 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmlAgli {
+    /// SML_AGLI start offset within the DSI packet body.
+    /// 9 angle cells per `mpucoder-dsi_pkt.html`.
+    pub cells: [SmlAngleCell; 9],
+}
+
+impl SmlAgli {
+    /// Size of the SML_AGLI block — 54 bytes.
+    pub const SIZE: usize = 0xEA - 0xB4;
+    /// SML_AGLI start offset within the DSI packet body.
+    pub const PACKET_OFFSET: usize = 0xB4;
+
+    /// Parse SML_AGLI given a slice starting at packet offset
+    /// [`Self::PACKET_OFFSET`].
+    fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < Self::SIZE {
+            return Err(Error::InvalidUdf("SML_AGLI: short buffer"));
+        }
+        let mut cells = [SmlAngleCell::default(); 9];
+        for (i, slot) in cells.iter_mut().enumerate() {
+            // Each cell is 6 bytes wide.
+            let base = i * 6;
+            *slot = SmlAngleCell {
+                dsta: read_u32_be(buf, base)?,
+                sz: read_u16_be(buf, base + 4)?,
+            };
+        }
+        Ok(Self { cells })
+    }
+}
+
+/// VOBU_SRI — VOBU Search Information.
+///
+/// 168-byte block at packet offset `0xEA..0x192`. The fast-seek
+/// table at the heart of DVD playback: 19 forward + 19 backward
+/// scaled jump-pointers, plus the four bracket pointers (next/prev
+/// VOBU with video, next/prev VOBU with possible video).
+///
+/// Per `mpucoder-dsi_pkt.html`, every entry encodes:
+///
+/// - bit 31 = "valid pointer" flag.
+/// - bit 30 (forward/backward span entries only) = "one or more
+///   VOBUs are present between this reference and the reference
+///   closer to the current VOBU".
+/// - the remaining 30 bits are the relative VOBU offset.
+///
+/// Sentinel values:
+///
+/// - forward span: `0x3FFF_FFFF` = no VOBU within the cell for this span.
+/// - backward span: `0x3FFF_FFFF` = no VOBU within the cell for this span.
+/// - `sri_nvwv` / `sri_pvwv`: `0xBFFF_FFFF` = no following/preceding
+///   VOBU contains video.
+/// - `sri_nv` / `sri_pv`: `0x3FFF_FFFF` = no following/preceding VOBU.
+///
+/// `forward` / `backward` are decoded as raw 19-entry tables; the
+/// caller masks bits 30/31 with the helpers below to recover the
+/// offset + flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VobuSri {
+    /// Offset to the next VOBU **with video** (forward; bit 31 = valid).
+    pub sri_nvwv: u32,
+    /// Forward span entries — relative VOBU offsets for 19 fixed
+    /// fast-forward scrub distances. First entry is `sri_fwdi240`;
+    /// the remaining 18 are `sri_fwda*` (decreasing time spans down
+    /// to `sri_fwda1`).
+    pub forward: [u32; 19],
+    /// Offset to the next VOBU with possible video.
+    pub sri_nv: u32,
+    /// Offset to the previous VOBU with possible video (backward).
+    pub sri_pv: u32,
+    /// Backward span entries — 19 fixed scrub distances mirroring the
+    /// forward table (`sri_bwda1` first through `sri_bwda240` last).
+    pub backward: [u32; 19],
+    /// Offset to the previous VOBU **with video** (backward; bit 31 = valid).
+    pub sri_pvwv: u32,
+}
+
+impl VobuSri {
+    /// Size of the VOBU_SRI block — 168 bytes (42 × 4-byte entries).
+    pub const SIZE: usize = 0x192 - 0xEA;
+    /// VOBU_SRI start offset within the DSI packet body.
+    pub const PACKET_OFFSET: usize = 0xEA;
+    /// Bit-31 "valid pointer" mask shared by every entry.
+    pub const VALID_BIT: u32 = 0x8000_0000;
+    /// Bit-30 "VOBUs present between this and the closer reference"
+    /// mask, shared by the forward / backward span entries.
+    pub const INTERMEDIATE_BIT: u32 = 0x4000_0000;
+    /// Mask isolating the 30-bit relative-offset payload.
+    pub const OFFSET_MASK: u32 = 0x3FFF_FFFF;
+
+    /// Parse VOBU_SRI given a slice starting at packet offset
+    /// [`Self::PACKET_OFFSET`].
+    fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < Self::SIZE {
+            return Err(Error::InvalidUdf("VOBU_SRI: short buffer"));
+        }
+        let sri_nvwv = read_u32_be(buf, 0x00)?;
+        let mut forward = [0u32; 19];
+        for (i, slot) in forward.iter_mut().enumerate() {
+            // Forward entries occupy 0x04..0x50 (relative to VOBU_SRI),
+            // matching packet offsets 0xEE..0x13A.
+            *slot = read_u32_be(buf, 0x04 + i * 4)?;
+        }
+        let sri_nv = read_u32_be(buf, 0x50)?; // packet 0x13A
+        let sri_pv = read_u32_be(buf, 0x54)?; // packet 0x13E
+        let mut backward = [0u32; 19];
+        for (i, slot) in backward.iter_mut().enumerate() {
+            // Backward entries occupy 0x58..0xA4 (relative to VOBU_SRI),
+            // matching packet offsets 0x142..0x18E.
+            *slot = read_u32_be(buf, 0x58 + i * 4)?;
+        }
+        let sri_pvwv = read_u32_be(buf, 0xA4)?; // packet 0x18E
+        Ok(Self {
+            sri_nvwv,
+            forward,
+            sri_nv,
+            sri_pv,
+            backward,
+            sri_pvwv,
+        })
+    }
+}
+
+/// SYNCI — Sync Information.
+///
+/// 144-byte block at packet offset `0x192..0x222` covering the
+/// per-substream "where does this VOBU's first audio / subpicture
+/// packet live" pointers an A/V-sync renderer uses to align tracks.
+///
+/// - `a_synca[0..8]`: 8 audio-stream pointers (2 bytes each). Bit 15
+///   is the direction (0 = forward, 1 = backward). `0x0000` =
+///   stream absent; `0x3FFF` = no more audio for this stream.
+/// - `sp_synca[0..32]`: 32 subpicture-stream pointers (4 bytes each).
+///   Bit 31 is the direction. `0x0000_0000` = subpicture absent;
+///   `0x3FFF_FFFF` = no subpicture data for this VOBU;
+///   `0x7FFF_FFFF` = subpicture data is contained inside this VOBU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Synci {
+    /// Per-audio-stream "first audio packet" relative offsets.
+    pub a_synca: [u16; 8],
+    /// Per-subpicture-stream "first subpicture packet" relative offsets.
+    pub sp_synca: [u32; 32],
+}
+
+impl Synci {
+    /// Size of the SYNCI block — 144 bytes (8 × 2 + 32 × 4).
+    pub const SIZE: usize = 0x222 - 0x192;
+    /// SYNCI start offset within the DSI packet body.
+    pub const PACKET_OFFSET: usize = 0x192;
+    /// Audio-pointer direction bit (1 = backward).
+    pub const AUDIO_DIRECTION_BIT: u16 = 0x8000;
+    /// Subpicture-pointer direction bit (1 = backward).
+    pub const SP_DIRECTION_BIT: u32 = 0x8000_0000;
+
+    /// Parse SYNCI given a slice starting at packet offset
+    /// [`Self::PACKET_OFFSET`].
+    fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < Self::SIZE {
+            return Err(Error::InvalidUdf("SYNCI: short buffer"));
+        }
+        let mut a_synca = [0u16; 8];
+        for (i, slot) in a_synca.iter_mut().enumerate() {
+            *slot = read_u16_be(buf, i * 2)?;
+        }
+        let mut sp_synca = [0u32; 32];
+        for (i, slot) in sp_synca.iter_mut().enumerate() {
+            *slot = read_u32_be(buf, 0x10 + i * 4)?;
+        }
+        Ok(Self { a_synca, sp_synca })
+    }
+}
+
+/// DSI packet — Data Search Information (NAV substream `0x01`).
+///
+/// Layout per `mpucoder-dsi_pkt.html`. The DSI packet body extends
+/// from sector offset `0x407` to `0x629` (packet offsets
+/// `0x000..0x222`) covering five concatenated sub-sections:
+///
+/// | Packet | Block        | Size | Field                                  |
+/// |--------|--------------|------|----------------------------------------|
+/// | `0x00` | [`DsiGi`]    | 32   | general info + (VOB, cell) ID + c_eltm |
+/// | `0x20` | [`SmlPbi`]   | 148  | seamless-playback info (ILVU + gaps)   |
+/// | `0xB4` | [`SmlAgli`]  | 54   | seamless-angle info (9 angles)         |
+/// | `0xEA` | [`VobuSri`]  | 168  | fast-seek pointer table                |
+/// | `0x192`| [`Synci`]    | 144  | A/V sync pointer table                 |
+///
+/// Total decoded payload: 546 bytes. The remainder of the 0x3FA-
+/// byte private-stream-2 packet is reserved-zero per spec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DsiPacket {
+    /// DSI_GI — general information block (packet `0x00..0x20`).
+    pub general_info: DsiGi,
+    /// SML_PBI — seamless-playback information (packet `0x20..0xB4`).
+    pub sml_pbi: SmlPbi,
+    /// SML_AGLI — seamless-angle information (packet `0xB4..0xEA`).
+    pub sml_agli: SmlAgli,
+    /// VOBU_SRI — fast-seek pointer table (packet `0xEA..0x192`).
+    pub vobu_sri: VobuSri,
+    /// SYNCI — A/V sync pointer table (packet `0x192..0x222`).
+    pub synci: Synci,
+}
+
+impl DsiPacket {
+    /// Total decoded DSI body size — 546 bytes (DSI_GI + SML_PBI +
+    /// SML_AGLI + VOBU_SRI + SYNCI). The on-wire packet is 0x3FA
+    /// bytes; bytes past `BODY_SIZE` are reserved-zero per spec.
+    pub const BODY_SIZE: usize = Synci::PACKET_OFFSET + Synci::SIZE;
+
+    // Convenience getters that mirror the previous (flat) DSI_GI API
+    // so call-sites that touched the old fields directly keep working.
+
+    /// Shortcut for `general_info.nv_pck_scr`.
+    pub fn nv_pck_scr(&self) -> u32 {
+        self.general_info.nv_pck_scr
+    }
+    /// Shortcut for `general_info.nv_pck_lbn`.
+    pub fn nv_pck_lbn(&self) -> u32 {
+        self.general_info.nv_pck_lbn
+    }
+    /// Shortcut for `general_info.vobu_ea`.
+    pub fn vobu_ea(&self) -> u32 {
+        self.general_info.vobu_ea
+    }
+    /// Shortcut for `general_info.vobu_vob_idn`.
+    pub fn vobu_vob_idn(&self) -> u16 {
+        self.general_info.vobu_vob_idn
+    }
+    /// Shortcut for `general_info.vobu_c_idn`.
+    pub fn vobu_c_idn(&self) -> u8 {
+        self.general_info.vobu_c_idn
+    }
+    /// Shortcut for `general_info.c_eltm`.
+    pub fn c_eltm(&self) -> u32 {
+        self.general_info.c_eltm
+    }
+
+    /// Parse a DSI packet body. `buf` starts at `DSI_GI 00` (sector
+    /// offset `0x407`).
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < Self::BODY_SIZE {
+            return Err(Error::InvalidUdf(
+                "DSI: shorter than DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI",
+            ));
+        }
+        Ok(Self {
+            general_info: DsiGi::parse(&buf[0x00..])?,
+            sml_pbi: SmlPbi::parse(&buf[SmlPbi::PACKET_OFFSET..])?,
+            sml_agli: SmlAgli::parse(&buf[SmlAgli::PACKET_OFFSET..])?,
+            vobu_sri: VobuSri::parse(&buf[VobuSri::PACKET_OFFSET..])?,
+            synci: Synci::parse(&buf[Synci::PACKET_OFFSET..])?,
         })
     }
 }
@@ -1373,8 +1779,10 @@ mod tests {
         let nav = NavPack::parse(&sector).unwrap();
         assert_eq!(nav.pci.nv_pck_lbn, 0xDEAD_BEEF);
         assert_eq!(nav.pci.vobu_s_ptm, 0x0001_2345);
-        assert_eq!(nav.dsi.nv_pck_lbn, 0xDEAD_BEEF);
-        assert_eq!(nav.dsi.vobu_ea, 0x0000_07FF);
+        assert_eq!(nav.dsi.general_info.nv_pck_lbn, 0xDEAD_BEEF);
+        assert_eq!(nav.dsi.general_info.vobu_ea, 0x0000_07FF);
+        assert_eq!(nav.dsi.nv_pck_lbn(), 0xDEAD_BEEF);
+        assert_eq!(nav.dsi.vobu_ea(), 0x0000_07FF);
     }
 
     #[test]
@@ -1549,5 +1957,274 @@ mod tests {
         );
         assert_eq!(streams.nav_packs.len(), 1);
         assert_eq!(streams.nav_packs[0].pci.nv_pck_lbn, 100);
+    }
+
+    // ----- DSI sub-section layout pins (mpucoder-dsi_pkt.html) ------
+
+    /// Compile-time sanity for the DSI section-size + offset map. Every
+    /// constant below is the spec-listed width of one sub-section; the
+    /// running sum has to match the next section's start offset (or
+    /// the total DSI body size).
+    #[test]
+    fn dsi_section_offsets_match_spec() {
+        // DsiGi spans packet 0x00..0x20.
+        assert_eq!(DsiGi::SIZE, 0x20);
+        // SML_PBI is at packet 0x20..0xB4 (148 bytes).
+        assert_eq!(SmlPbi::PACKET_OFFSET, 0x20);
+        assert_eq!(SmlPbi::SIZE, 0xB4 - 0x20);
+        assert_eq!(SmlPbi::PACKET_OFFSET + SmlPbi::SIZE, SmlAgli::PACKET_OFFSET);
+        // SML_AGLI is at packet 0xB4..0xEA (54 bytes).
+        assert_eq!(SmlAgli::PACKET_OFFSET, 0xB4);
+        assert_eq!(SmlAgli::SIZE, 0xEA - 0xB4);
+        assert_eq!(
+            SmlAgli::PACKET_OFFSET + SmlAgli::SIZE,
+            VobuSri::PACKET_OFFSET
+        );
+        // VOBU_SRI is at packet 0xEA..0x192 (168 bytes = 42 × 4).
+        assert_eq!(VobuSri::PACKET_OFFSET, 0xEA);
+        assert_eq!(VobuSri::SIZE, 0x192 - 0xEA);
+        assert_eq!(VobuSri::SIZE, 42 * 4);
+        assert_eq!(VobuSri::PACKET_OFFSET + VobuSri::SIZE, Synci::PACKET_OFFSET);
+        // SYNCI is at packet 0x192..0x222 (144 bytes = 8×2 + 32×4).
+        assert_eq!(Synci::PACKET_OFFSET, 0x192);
+        assert_eq!(Synci::SIZE, 0x222 - 0x192);
+        assert_eq!(Synci::SIZE, 8 * 2 + 32 * 4);
+        // Total decoded DSI body = 546 bytes.
+        assert_eq!(DsiPacket::BODY_SIZE, 0x222);
+    }
+
+    /// Build a DSI packet body (546 bytes, packet offsets `0x00..0x222`)
+    /// with every spec-listed field set to a unique sentinel so the
+    /// parse-side asserts can pin every offset exactly.
+    fn build_dsi_body() -> Vec<u8> {
+        let mut buf = vec![0u8; DsiPacket::BODY_SIZE];
+
+        // ---- DSI_GI (packet 0x00..0x20) ----
+        buf[0x00..0x04].copy_from_slice(&0x1111_2222u32.to_be_bytes()); // nv_pck_scr
+        buf[0x04..0x08].copy_from_slice(&0x3333_4444u32.to_be_bytes()); // nv_pck_lbn
+        buf[0x08..0x0C].copy_from_slice(&0x5555_6666u32.to_be_bytes()); // vobu_ea
+        buf[0x0C..0x10].copy_from_slice(&0x7777_8888u32.to_be_bytes()); // vobu_1stref_ea
+        buf[0x10..0x14].copy_from_slice(&0x9999_AAAAu32.to_be_bytes()); // vobu_2ndref_ea
+        buf[0x14..0x18].copy_from_slice(&0xBBBB_CCCCu32.to_be_bytes()); // vobu_3rdref_ea
+        buf[0x18..0x1A].copy_from_slice(&0xDEADu16.to_be_bytes()); // vobu_vob_idn
+        buf[0x1A] = 0x00; // reserved
+        buf[0x1B] = 0x42; // vobu_c_idn
+        buf[0x1C..0x20].copy_from_slice(&0xC0DE_F00Du32.to_be_bytes()); // c_eltm
+
+        // ---- SML_PBI (packet 0x20..0xB4) ----
+        // ilvu: PREU | ILVU | Unit_Start | Unit_End = 0xF000
+        buf[0x20..0x22].copy_from_slice(&0xF000u16.to_be_bytes());
+        buf[0x22..0x26].copy_from_slice(&0x0123_4567u32.to_be_bytes()); // ilvu_ea
+        buf[0x26..0x2A].copy_from_slice(&0x89AB_CDEFu32.to_be_bytes()); // nxt_ilvu_sa
+        buf[0x2A..0x2C].copy_from_slice(&0xFFFFu16.to_be_bytes()); // nxt_ilvu_sz
+        buf[0x2C..0x30].copy_from_slice(&0x0000_AAAAu32.to_be_bytes()); // vob_v_s_ptm
+        buf[0x30..0x34].copy_from_slice(&0x0000_BBBBu32.to_be_bytes()); // vob_v_e_ptm
+                                                                        // 8 audio streams × 16 bytes each (stp_ptm1, stp_ptm2, gap_len1, gap_len2)
+        for stream in 0..8u32 {
+            let base = 0x34 + stream as usize * 16;
+            buf[base..base + 4].copy_from_slice(&(0x1000_0000 + stream).to_be_bytes());
+            buf[base + 4..base + 8].copy_from_slice(&(0x2000_0000 + stream).to_be_bytes());
+            buf[base + 8..base + 12].copy_from_slice(&(0x3000_0000 + stream).to_be_bytes());
+            buf[base + 12..base + 16].copy_from_slice(&(0x4000_0000 + stream).to_be_bytes());
+        }
+
+        // ---- SML_AGLI (packet 0xB4..0xEA) ---- 9 cells × 6 bytes
+        for cell in 0..9u32 {
+            let base = 0xB4 + cell as usize * 6;
+            buf[base..base + 4].copy_from_slice(&(0x5000_0000 + cell).to_be_bytes());
+            buf[base + 4..base + 6].copy_from_slice(&(0x6000u16 + cell as u16).to_be_bytes());
+        }
+
+        // ---- VOBU_SRI (packet 0xEA..0x192) ----
+        buf[0xEA..0xEE].copy_from_slice(&0x8000_0001u32.to_be_bytes()); // sri_nvwv (valid, +1)
+        for i in 0..19u32 {
+            let off = 0xEE + i as usize * 4;
+            buf[off..off + 4].copy_from_slice(&(0x9000_0000 + i).to_be_bytes());
+            // forward
+        }
+        buf[0x13A..0x13E].copy_from_slice(&0x8000_0002u32.to_be_bytes()); // sri_nv
+        buf[0x13E..0x142].copy_from_slice(&0x8000_0003u32.to_be_bytes()); // sri_pv
+        for i in 0..19u32 {
+            let off = 0x142 + i as usize * 4;
+            buf[off..off + 4].copy_from_slice(&(0xA000_0000 + i).to_be_bytes());
+            // backward
+        }
+        buf[0x18E..0x192].copy_from_slice(&0x8000_0004u32.to_be_bytes()); // sri_pvwv
+
+        // ---- SYNCI (packet 0x192..0x222) ----
+        for i in 0..8u16 {
+            let off = 0x192 + i as usize * 2;
+            buf[off..off + 2].copy_from_slice(&(0x7000u16 + i).to_be_bytes());
+        }
+        for i in 0..32u32 {
+            let off = 0x1A2 + i as usize * 4;
+            buf[off..off + 4].copy_from_slice(&(0xB000_0000 + i).to_be_bytes());
+        }
+
+        buf
+    }
+
+    #[test]
+    fn dsi_parses_general_info_block() {
+        let buf = build_dsi_body();
+        let dsi = DsiPacket::parse(&buf).expect("DSI body parses");
+        let gi = dsi.general_info;
+        assert_eq!(gi.nv_pck_scr, 0x1111_2222);
+        assert_eq!(gi.nv_pck_lbn, 0x3333_4444);
+        assert_eq!(gi.vobu_ea, 0x5555_6666);
+        assert_eq!(gi.vobu_1stref_ea, 0x7777_8888);
+        assert_eq!(gi.vobu_2ndref_ea, 0x9999_AAAA);
+        assert_eq!(gi.vobu_3rdref_ea, 0xBBBB_CCCC);
+        assert_eq!(gi.vobu_vob_idn, 0xDEAD);
+        assert_eq!(gi.vobu_c_idn, 0x42);
+        assert_eq!(gi.c_eltm, 0xC0DE_F00D);
+        // Convenience getters mirror the field accessors.
+        assert_eq!(dsi.nv_pck_scr(), 0x1111_2222);
+        assert_eq!(dsi.nv_pck_lbn(), 0x3333_4444);
+        assert_eq!(dsi.vobu_ea(), 0x5555_6666);
+        assert_eq!(dsi.vobu_vob_idn(), 0xDEAD);
+        assert_eq!(dsi.vobu_c_idn(), 0x42);
+        assert_eq!(dsi.c_eltm(), 0xC0DE_F00D);
+    }
+
+    #[test]
+    fn dsi_parses_sml_pbi_block_and_ilvu_flags() {
+        let buf = build_dsi_body();
+        let dsi = DsiPacket::parse(&buf).expect("DSI body parses");
+        let pbi = dsi.sml_pbi;
+        assert_eq!(pbi.ilvu, 0xF000);
+        // The four ILVU flags occupy the top 4 bits of byte 0.
+        assert!(pbi.preu());
+        assert!(pbi.is_ilvu());
+        assert!(pbi.unit_start());
+        assert!(pbi.unit_end());
+        assert_eq!(pbi.ilvu_ea, 0x0123_4567);
+        assert_eq!(pbi.nxt_ilvu_sa, 0x89AB_CDEF);
+        assert_eq!(pbi.nxt_ilvu_sz, 0xFFFF);
+        assert_eq!(pbi.vob_v_s_ptm, 0x0000_AAAA);
+        assert_eq!(pbi.vob_v_e_ptm, 0x0000_BBBB);
+        // Audio gap table — 8 streams, every field tagged with the
+        // stream index so an off-by-one in the stride would surface.
+        for (i, gap) in pbi.audio_gaps.iter().enumerate() {
+            let i = i as u32;
+            assert_eq!(gap.stp_ptm1, 0x1000_0000 + i);
+            assert_eq!(gap.stp_ptm2, 0x2000_0000 + i);
+            assert_eq!(gap.gap_len1, 0x3000_0000 + i);
+            assert_eq!(gap.gap_len2, 0x4000_0000 + i);
+        }
+    }
+
+    #[test]
+    fn dsi_pbi_ilvu_flag_decoders_isolate_bits() {
+        // Each ILVU flag bit must decode independently — the helper
+        // suite from `mpucoder-dsi_pkt.html` enumerates a0 / 80 / 90
+        // bytes in the PREU window, so the bit-level decode matters.
+        let bits = [
+            (0x8000u16, SmlPbi::preu as fn(&SmlPbi) -> bool),
+            (0x4000, SmlPbi::is_ilvu),
+            (0x2000, SmlPbi::unit_start),
+            (0x1000, SmlPbi::unit_end),
+        ];
+        for (bit, getter) in bits {
+            let mut buf = vec![0u8; SmlPbi::SIZE];
+            buf[0..2].copy_from_slice(&bit.to_be_bytes());
+            let pbi = SmlPbi::parse(&buf).expect("SmlPbi parses");
+            // The targeted bit is set, the other three are clear.
+            assert!(getter(&pbi), "bit {:#06x} should be set", bit);
+            for (other_bit, other_getter) in bits.iter().filter(|(b, _)| *b != bit) {
+                assert!(
+                    !other_getter(&pbi),
+                    "bit {:#06x} leaked into bit {:#06x}",
+                    bit,
+                    other_bit
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dsi_parses_sml_agli_block() {
+        let buf = build_dsi_body();
+        let dsi = DsiPacket::parse(&buf).expect("DSI body parses");
+        // 9 angle cells, 6 bytes each — index 8 is the spec's
+        // sml_agl_c9_* row at packet offset 0xE4.
+        for (i, cell) in dsi.sml_agli.cells.iter().enumerate() {
+            let i = i as u32;
+            assert_eq!(cell.dsta, 0x5000_0000 + i);
+            assert_eq!(cell.sz, 0x6000 + i as u16);
+        }
+        // Spec-prescribed 9-cell stride: the 9th cell ends at the
+        // SML_AGLI / VOBU_SRI boundary (packet 0xEA).
+        assert_eq!(SmlAgli::PACKET_OFFSET + SmlAgli::SIZE, 0xEA);
+    }
+
+    #[test]
+    fn dsi_parses_vobu_sri_block_and_brackets() {
+        let buf = build_dsi_body();
+        let dsi = DsiPacket::parse(&buf).expect("DSI body parses");
+        let sri = dsi.vobu_sri;
+        assert_eq!(sri.sri_nvwv, 0x8000_0001);
+        for (i, slot) in sri.forward.iter().enumerate() {
+            assert_eq!(*slot, 0x9000_0000 + i as u32);
+        }
+        assert_eq!(sri.sri_nv, 0x8000_0002);
+        assert_eq!(sri.sri_pv, 0x8000_0003);
+        for (i, slot) in sri.backward.iter().enumerate() {
+            assert_eq!(*slot, 0xA000_0000 + i as u32);
+        }
+        assert_eq!(sri.sri_pvwv, 0x8000_0004);
+
+        // Bit-31 valid flag + bit-30 intermediate flag + 30-bit offset
+        // mask — these are the three patterns every consumer of the
+        // table works with.
+        assert_eq!(VobuSri::VALID_BIT, 0x8000_0000);
+        assert_eq!(VobuSri::INTERMEDIATE_BIT, 0x4000_0000);
+        assert_eq!(VobuSri::OFFSET_MASK, 0x3FFF_FFFF);
+        assert!(sri.sri_nvwv & VobuSri::VALID_BIT != 0);
+        assert_eq!(sri.sri_nvwv & VobuSri::OFFSET_MASK, 1);
+    }
+
+    #[test]
+    fn dsi_parses_synci_block() {
+        let buf = build_dsi_body();
+        let dsi = DsiPacket::parse(&buf).expect("DSI body parses");
+        let sy = dsi.synci;
+        for (i, a) in sy.a_synca.iter().enumerate() {
+            assert_eq!(*a, 0x7000 + i as u16);
+        }
+        for (i, sp) in sy.sp_synca.iter().enumerate() {
+            assert_eq!(*sp, 0xB000_0000 + i as u32);
+        }
+        // Direction-bit constants land where the spec requires.
+        assert_eq!(Synci::AUDIO_DIRECTION_BIT, 0x8000);
+        assert_eq!(Synci::SP_DIRECTION_BIT, 0x8000_0000);
+    }
+
+    #[test]
+    fn dsi_rejects_short_buffer() {
+        // A buffer one byte short of the full DSI body must error
+        // rather than read past the slice.
+        let short = vec![0u8; DsiPacket::BODY_SIZE - 1];
+        assert!(DsiPacket::parse(&short).is_err());
+    }
+
+    #[test]
+    fn dsi_nav_pack_round_trip_through_full_sector() {
+        // Glue check: a 2048-byte nav sector with the build_dsi_body
+        // payload injected at sector offset 0x407 must round-trip
+        // through NavPack::parse and surface every sub-section.
+        let body = build_dsi_body();
+        let mut sector = build_nav_sector(1, 0, 0);
+        // build_nav_sector already wrote DSI_GI[0x04] (nv_pck_lbn) and
+        // DSI_GI[0x08] (vobu_ea) — overwrite the whole DSI body with
+        // the richer fixture.
+        sector[0x407..0x407 + body.len()].copy_from_slice(&body);
+        let nav = NavPack::parse(&sector).expect("nav pack parses");
+        // Every sub-section comes through unchanged.
+        assert_eq!(nav.dsi.general_info.nv_pck_lbn, 0x3333_4444);
+        assert_eq!(nav.dsi.sml_pbi.ilvu, 0xF000);
+        assert_eq!(nav.dsi.sml_agli.cells[0].dsta, 0x5000_0000);
+        assert_eq!(nav.dsi.vobu_sri.sri_nvwv, 0x8000_0001);
+        assert_eq!(nav.dsi.synci.a_synca[0], 0x7000);
     }
 }

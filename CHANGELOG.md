@@ -9,6 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- NAV-pack DSI **typed sub-section decode** (Data Search Information):
+  the `DsiPacket` decoder previously surfaced only the DSI_GI preamble
+  and a flat 43-entry VOBU_SRI array; it now returns a typed
+  `DsiPacket { general_info, sml_pbi, sml_agli, vobu_sri, synci }`
+  with every spec-listed field exposed by name, clean-room per
+  `mpucoder-dsi_pkt.html` (no libdvdread / libdvdnav / FFmpeg / VLC /
+  mpv / xine source consulted).
+  - **`DsiGi`** — DSI_GI general information (packet 0x00..0x20):
+    `nv_pck_scr`, `nv_pck_lbn`, `vobu_ea`, the 1st/2nd/3rd reference-
+    frame end-address triplet, the `(vobu_vob_idn, vobu_c_idn)`
+    identifier pair, and the BCD `c_eltm` cell-elapsed-time + frame-
+    rate bits field. Convenience getters
+    (`DsiPacket::nv_pck_scr()` etc.) mirror the pre-refactor flat-field
+    accessors so the bump stays source-compatible for call-sites that
+    only read DSI_GI.
+  - **`SmlPbi` + `SmlAudioGap`** — SML_PBI seamless-playback info
+    (packet 0x20..0xB4, 148 bytes): the 16-bit `ilvu` flag word with
+    `preu()` / `is_ilvu()` / `unit_start()` / `unit_end()` bit
+    decoders, the `(ilvu_ea, nxt_ilvu_sa, nxt_ilvu_sz)` interleaved-
+    block jump pointers, the VOB-span video PTM pair, and the 8 ×
+    16-byte per-audio-stream gap table (`stp_ptm1`, `stp_ptm2`,
+    `gap_len1`, `gap_len2` per stream).
+  - **`SmlAgli` + `SmlAngleCell`** — SML_AGLI seamless-angle info
+    (packet 0xB4..0xEA, 54 bytes): 9 angle cells, each 6 bytes wide
+    (`dsta: u32` with bit-31 direction flag + sentinel values for
+    "absent" and "no more video"; `sz: u16` ILVU size in sectors).
+  - **`VobuSri`** — VOBU search-information table (packet 0xEA..0x192,
+    168 bytes = 42 × 4): `sri_nvwv` (next-VOBU-with-video), 19 forward
+    scaled-distance entries, `sri_nv` + `sri_pv` brackets, 19 backward
+    entries, `sri_pvwv` (previous-VOBU-with-video). The bit-31
+    `VALID_BIT`, bit-30 `INTERMEDIATE_BIT`, and 30-bit `OFFSET_MASK`
+    constants make sentinel handling explicit. (Previous flat-array
+    decode over-read by 4 bytes into SYNCI; the typed layout fixes
+    that.)
+  - **`Synci`** — SYNCI A/V-sync pointer table (packet 0x192..0x222,
+    144 bytes): `a_synca: [u16; 8]` audio + `sp_synca: [u32; 32]`
+    subpicture per-stream first-packet offsets. `AUDIO_DIRECTION_BIT`
+    (bit 15) and `SP_DIRECTION_BIT` (bit 31) constants surface the
+    spec-defined direction flag.
+  - 9 new unit tests (`dsi_section_offsets_match_spec`,
+    `dsi_parses_general_info_block`,
+    `dsi_parses_sml_pbi_block_and_ilvu_flags`,
+    `dsi_pbi_ilvu_flag_decoders_isolate_bits`,
+    `dsi_parses_sml_agli_block`,
+    `dsi_parses_vobu_sri_block_and_brackets`,
+    `dsi_parses_synci_block`, `dsi_rejects_short_buffer`,
+    `dsi_nav_pack_round_trip_through_full_sector`) and a new
+    `build_dsi_body` helper that emits a fully-populated 546-byte DSI
+    body so every per-section offset is pinned exactly.
+
+### Changed
+
+- **Breaking** — `DsiPacket`'s public field layout. The previous flat
+  `{ nv_pck_scr, nv_pck_lbn, vobu_ea, vobu_1stref_ea, vobu_2ndref_ea,
+  vobu_3rdref_ea, vobu_vob_idn, vobu_c_idn, c_eltm, vobu_sri: Box<[u32;
+  43]> }` shape was replaced by the typed sub-section struct described
+  above. Source-compatible getters (`nv_pck_scr()` etc.) are provided
+  for the DSI_GI fields; the `vobu_sri` field is now a `VobuSri` struct
+  rather than a flat boxed array. Pre-0.0.2 release — no published
+  consumer to break.
+
 - NAV-pack PCI **highlight information** (menu buttons): the
   `PciPacket` decoder previously read only `hli_ss`; it now
   materialises the full HLI_GI / SL_COLI / BTN_IT sub-structure when

@@ -22,13 +22,17 @@ block device, enumerate the title-set files, pull the title /
 chapter / program-chain / cell layout out of every IFO, and demux
 each cell's VOBUs into raw MPEG-2 video + AC-3 / DTS / LPCM audio
 + subpicture elementary streams keyed by track ID. The Phase 3a
-nav-pack decoder also surfaces the `VOBU_SRI` search-pointer table
-that chapter-accurate seek needs and the PCI **highlight information**
-(HLI_GI timing + the three SL_COLI selection/action colour-contrast
-schemes + the per-button BTN_IT table — geometry, D-pad adjacency and
-the raw action command) that a menu renderer needs to draw and route
-button input. **No VM execution, no CSS yet** — those land in
-Phase 3b/3c.
+nav-pack decoder also surfaces the typed **DSI** sub-sections
+(`DSI_GI` general info; `SML_PBI` seamless-playback interleaved-unit
+flags + jump pointers + per-stream audio-gap table; `SML_AGLI` 9-cell
+seamless-angle table; `VOBU_SRI` 19-forward + 19-backward seek
+pointers + bracket pointers; `SYNCI` per-audio + per-subpicture
+sync pointers) that chapter-accurate seek and A/V sync need, plus the
+PCI **highlight information** (HLI_GI timing + the three SL_COLI
+selection/action colour-contrast schemes + the per-button BTN_IT
+table — geometry, D-pad adjacency and the raw action command) that a
+menu renderer needs to draw and route button input. **No VM
+execution, no CSS yet** — those land in Phase 3b/3c.
 
 | Layer | Status |
 |-------|--------|
@@ -44,6 +48,7 @@ Phase 3b/3c.
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed (Phase 3a) |
 | VOBU_SRI search-table decode | landed (Phase 3a) |
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed (Phase 3a) |
+| NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI) | landed (Phase 3a) |
 | MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |
 | VM execution (HDMV nav opcodes + SPRMs/GPRMs) | Phase 3c |
 | CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |
