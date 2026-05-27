@@ -31,8 +31,20 @@ sync pointers) that chapter-accurate seek and A/V sync need, plus the
 PCI **highlight information** (HLI_GI timing + the three SL_COLI
 selection/action colour-contrast schemes + the per-button BTN_IT
 table — geometry, D-pad adjacency and the raw action command) that a
-menu renderer needs to draw and route button input. **No VM
-execution, no CSS yet** — those land in Phase 3b/3c.
+menu renderer needs to draw and route button input. A new
+**`nav` module** (Phase 3c precursor) decodes each 8-byte
+`NavCommand` word into a typed `NavInstruction` tree —
+NOP / Goto / Break / SetTmpPML, the full `Link*` family (with
+the 13-entry link-subset table), `Exit` / `JumpTT` /
+`JumpVTS_TT` / `JumpVTS_PTT`, the four-way `JumpSS` /
+`CallSS` target selector, the `SetSystem` family
+(`SetSTN` / `SetNVTMR` / `SetGPRMMD` with counter-mode bit /
+`SetAMXMD` / `SetHL_BTNN`), the plain `Set` arithmetic family
+(12 SET sub-ops × GPRM-or-SPRM source), and classifier sub-ops
+for the compound Type 4..6 CMP/SET/LNK encodings. **No VM
+execution yet** — an interpreter that owns SPRMs / GPRMs / PC /
+RSM stack is the bulk of Phase 3c proper. **No CSS yet** — Phase
+3c via the external `oxideav-css` crate.
 
 | Layer | Status |
 |-------|--------|
@@ -50,7 +62,8 @@ execution, no CSS yet** — those land in Phase 3b/3c.
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed (Phase 3a) |
 | NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI) | landed (Phase 3a) |
 | MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |
-| VM execution (HDMV nav opcodes + SPRMs/GPRMs) | Phase 3c |
+| VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed (Phase 3c precursor) |
+| VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | Phase 3c |
 | CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |
 
 ## Quick start
@@ -109,6 +122,32 @@ keeps compiling against any `oxideav-mkv` patch release on
 crates.io. Toggle it on once you've got `oxideav-mkv >= 0.0.8`
 (the release that landed `MkvMuxer::add_chapter`).
 
+## Disassembling a NavCommand (Phase 3c precursor)
+
+The `nav` module decodes each 8-byte PGC command word into a typed
+`NavInstruction` tree without executing anything — useful for disc
+debuggers, analysers, and the future Phase-3c executor:
+
+```rust,no_run
+use oxideav_dvd::{NavInstruction, JumpSSTarget};
+use oxideav_dvd::ifo::NavCommand;
+
+// A JumpSS-to-First-Play command (type=1 jump family, selector=0).
+let nc = NavCommand { bytes: [0x30, 0x06, 0, 0, 0, 0x00, 0, 0] };
+assert_eq!(nc.decode(), NavInstruction::JumpSs(JumpSSTarget::FirstPlay));
+```
+
+The decoder covers the well-defined opcodes in Types 0..3 (NOP,
+Goto, Break, SetTmpPML, the full Link family with the 13-entry
+link-subset table, Exit, JumpTT, JumpVTS_TT, JumpVTS_PTT, the
+four-way JumpSS / CallSS target selector, the SetSystem family,
+the plain Set arithmetic family with 12 SET sub-ops × GPRM-or-SPRM
+source). The compound Type 4..6 forms (`SetCLnk`, `CSetCLnk`,
+`CmpSetLnk`) surface their classifier `SetOp` / `CmpOp` sub-ops but
+leave full operand decoding to a future executor. The `Register`
+enum maps an operand byte to `Gprm(0..=15)` / `Sprm(0..=23)` /
+`Invalid(_)` per the asterisk note on `mpucoder-vmi.html`.
+
 ## Clean-room sources
 
 This crate was written entirely against:
@@ -135,8 +174,16 @@ This crate was written entirely against:
   control, the 16-entry `(0, Y, Cr, Cb)` subpicture colour-LUT at
   PGC offset `0x00A4`, the pre/post/cell command table, program
   map, Cell Playback Information Table, Cell Position Information
-  Table). The command words are surfaced raw (8-byte `NavCommand`s);
-  executing them is Phase 3c VM work per `mpucoder-vmi.html`.
+  Table). Decoding each `NavCommand` into a typed `NavInstruction`
+  tree lives in the `nav` module; executing the decoded form is the
+  remaining Phase 3c VM work.
+- `docs/container/dvd/application/mpucoder-vmi.html`,
+  `mpucoder-vmi-sum.html`, `mpucoder-vmi-jmp.html`,
+  `mpucoder-sprm.html` — the VM instruction set (the full opcode
+  table including SET/CMP sub-ops and the link-subset inner table,
+  the plain-English instruction-family summary, the jump/call target
+  table, and the 24-entry SPRM map) feeding the `nav` module's
+  `NavInstruction` decoder.
 - `docs/container/dvd/application/mpucoder-packhdr.html`,
   `mpucoder-pes-hdr.html`, `mpucoder-mpeghdrs.html`,
   `mpucoder-pci_pkt.html`, `mpucoder-dsi_pkt.html`,

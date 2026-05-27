@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`nav` module** — typed VM instruction decoder (Phase 3c precursor).
+  The previous `NavCommand` surface exposed only an 8-byte raw word
+  plus the 3-bit `command_type` classifier; the new `NavCommand::decode()
+  -> NavInstruction` returns a typed-enum disassembly tree clean-room
+  per `docs/container/dvd/application/mpucoder-vmi.html` +
+  `mpucoder-vmi-sum.html` + `mpucoder-vmi-jmp.html` +
+  `mpucoder-sprm.html` (no libdvdread / libdvdnav / libdvdcss /
+  FFmpeg / VLC / mpv / xine / HandBrake source consulted; no web
+  search). **No execution** — an interpreter that owns
+  SPRMs / GPRMs / PC / RSM stack is the bulk of Phase 3c proper;
+  decoding the stream is the prerequisite step shared by a future
+  executor, an analyser, and a disc debugger.
+  - **`Register`** — 8-bit operand classifier: `Gprm(0..=15)` /
+    `Sprm(0..=23)` / `Invalid(raw)` per the asterisk note on the VMI
+    spec page (only `0x00..=0x0F` and `0x80..=0x97` are valid).
+  - **`SetOp`** + **`CmpOp`** — the SET (12 named codes: `mov`,
+    `swp`, `add`, `sub`, `mul`, `div`, `mod`, `rnd`, `and`, `or`,
+    `xor`) and CMP (7 named codes: `BC`, `EQ`, `NE`, `GE`, `GT`,
+    `LE`, `LT`) sub-op tables from the same page.
+  - **`LinkSubset`** — the 13-entry inner table for the `Type-1 0x20
+    0x01` Link command: `LinkTopCell` / `LinkNextCell` /
+    `LinkPrevCell` / `LinkTopPG` / `LinkNextPG` / `LinkPrevPG` /
+    `LinkTopPGC` / `LinkNextPGC` / `LinkPrevPGC` / `LinkGoupPGC` /
+    `LinkTailPGC` / `Rsm` + `Nop`, with the spec's invalid bag
+    (`0x04, 0x08, 0x0E, 0x0F, 0x11..0x1F`) preserved via
+    `Invalid(raw)`.
+  - **`JumpSSTarget`** + **`CallSSTarget`** — the four-way
+    destination selector (`FirstPlay` / `VmgmMenu { menu }` /
+    `VtsmMenu { vts, ttn, menu }` / `VmgmPgcn { pgcn }`) from the
+    `JumpSS` / `CallSS` rows in `mpucoder-vmi.html`. `CallSSTarget`
+    additionally carries the `rsm_cell` resume-cell byte shared by
+    all four CallSS variants.
+  - **`NavInstruction`** — top-level decode enum. Variants for the
+    well-defined opcodes: `Nop`, `Goto { line }`, `Break`,
+    `SetTmpPml { level, line }`, `LinkSub { subset, hl_bn }`,
+    `LinkPgcn { pgcn }`, `LinkPttn { pttn, hl_bn }`,
+    `LinkPgn { pgn, hl_bn }`, `LinkCn { cn, hl_bn }`, `Exit`,
+    `JumpTT { ttn }`, `JumpVtsTt { ttn }`,
+    `JumpVtsPtt { ttn, pttn }`, `JumpSs(JumpSSTarget)`,
+    `CallSs(CallSSTarget)`, `SetStn` (with `af`/`sf`/`nf` flag
+    bits and per-channel register-or-immediate source), `SetNvtmr`,
+    `SetGprmMd` (with `counter` mode bit), `SetAmxMd`, `SetHlBtnn`,
+    `Set { op, dst, src }`. Compound Type 4..6 forms surface their
+    classifier `SetOp` + `CmpOp` sub-ops via `SetCLnk` (Type 4),
+    `CSetCLnk` (Type 5), `CmpSetLnk` (Type 6); the per-operand
+    sub-decode is deferred to the executor. Type 7 returns
+    `Unknown` (the VMI page documents the family has never been
+    observed in real-world streams); structurally-impossible
+    encodings return `Invalid`.
+  - 42 new unit tests covering the `Register` GPRM / SPRM /
+    invalid-hole classifier, the full `SetOp` / `CmpOp` /
+    `LinkSubset` named-code tables, the spec's named-but-invalid
+    sub-codes (`SetSystem` sub=5, `Set` sub=0/C/F, Type 0 cmd
+    nibble 4..F, Link cmd nibble 2), the round-trip from a
+    `NavCommand::default()` (all zero) decoding to `Nop`, and one
+    decoded form per `NavInstruction` variant including the
+    JumpSS four-way target selector and the CallSS rsm_cell field.
+
 - NAV-pack DSI **typed sub-section decode** (Data Search Information):
   the `DsiPacket` decoder previously surfaced only the DSI_GI preamble
   and a flat 43-entry VOBU_SRI array; it now returns a typed

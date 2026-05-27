@@ -74,6 +74,7 @@ pub mod disc;
 pub mod error;
 pub mod ifo;
 pub mod iso9660;
+pub mod nav;
 pub mod source;
 pub mod udf;
 pub mod vob;
@@ -94,6 +95,9 @@ pub use ifo::{
 pub use iso9660::{
     DirectoryRecord, Iso9660Entry, Iso9660Volume, PathTableEntry, PrimaryVolumeDescriptor,
     VolumeDescriptorType,
+};
+pub use nav::{
+    CallSSTarget, CmpOp, JumpSSTarget, LinkSubset, NavInstruction, Operand, Register, SetOp,
 };
 pub use source::{parse_dvd_uri, DvdDiscSource, DvdUri};
 pub use udf::{
