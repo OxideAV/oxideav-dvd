@@ -31,8 +31,8 @@
 //! * `stnsoft-vobov.html`     — pack/sector/VOBU/cell semantics
 //! * `stnsoft-sys_hdr.html`   — Program Stream System Header (0xBB)
 //!
-//! No libdvdread, libdvdnav, libdvdcss, FFmpeg, VLC, mpv, or xine
-//! source was consulted.
+//! No external implementation source consulted — clean-room from the
+//! `docs/container/dvd/application/` references listed above.
 
 use std::collections::BTreeMap;
 use std::fs::File;

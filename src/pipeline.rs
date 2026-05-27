@@ -27,8 +27,8 @@
 //!
 //! ## Wall
 //!
-//! No external library source (libdvdread / libdvdnav / libdvdcss /
-//! FFmpeg / VLC / mpv / xine / HandBrake) was consulted.
+//! No external implementation source consulted — clean-room from the
+//! `docs/container/dvd/` references only.
 
 use std::path::{Path, PathBuf};
 

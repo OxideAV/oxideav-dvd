@@ -47,9 +47,8 @@
 //!
 //! ## Wall
 //!
-//! No external library source (libdvdread, libdvdnav, libdvdcss,
-//! FFmpeg, VLC, mpv, xine, HandBrake) was consulted while writing
-//! this glue.
+//! No external implementation source consulted — clean-room from the
+//! `docs/container/dvd/` references and the spec citations above.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
@@ -355,9 +354,8 @@ pub fn write_title_to_mkv(
                         flags.keyframe = true;
                     }
                     // Audio/subtitle packets are independently
-                    // decodable, so mark them keyframes too — matches
-                    // FFmpeg's behaviour and lets the MKV Cues
-                    // entries cover audio random-access.
+                    // decodable, so mark them keyframes too — lets the
+                    // MKV Cues entries cover audio random-access.
                     if matches!(stream.media_type(), oxideav_core::MediaType::Audio)
                         || matches!(stream.media_type(), oxideav_core::MediaType::Subtitle)
                     {

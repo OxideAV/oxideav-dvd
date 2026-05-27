@@ -37,8 +37,9 @@
 //! - `docs/container/dvd/application/stnsoft-vmindx.html`
 //!   (cross-reference for VTS_C_ADT entry layout).
 //!
-//! No `libdvdread` / `libdvdnav` / `libdvdcss` / FFmpeg / VLC / mpv /
-//! xine source was consulted at any point.
+//! No external implementation source consulted at any point —
+//! clean-room from the `docs/container/dvd/application/` references
+//! listed above.
 
 use crate::error::{Error, Result};
 
