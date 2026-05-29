@@ -9,6 +9,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`spu` module** — DVD Sub-Picture Unit decoder, the overlay
+  graphics stream that carries subtitles, menu button highlights,
+  and karaoke captions. Pure-bytes decoder clean-room per
+  `docs/container/dvd/application/mpucoder-spu.html` (sole 160-line
+  source; no libdvdread / libdvdnav / libdvdcss / FFmpeg / VLC / mpv
+  / xine / HandBrake source consulted; no web search).
+  - **`SpuHeader`** — the 4-byte SPUH (`SPDSZ` total size +
+    `SP_DCSQTA` offset to the Sub-Picture Display Control Sequence
+    Table).
+  - **`SpuCommand`** — typed enum for the eight SP_DCSQ command
+    codes: `ForcedStartDisplay` (`0x00`) / `StartDisplay` (`0x01`)
+    / `StopDisplay` (`0x02`) / `SetColor` (`0x03`, four 4-bit
+    palette indices) / `SetContrast` (`0x04`, four 4-bit alpha
+    values) / `SetDisplayArea` (`0x05`, four 12-bit coordinates)
+    / `SetPixelDataAddresses` (`0x06`, top/bottom field offsets) /
+    `ChangeColorContrast` (`0x07`, raw `LN_CTLI` / `PX_CTLI`
+    parameter blob preserved for the caller) / `EndOfSequence`
+    (`0xFF`, the `CMD_END` terminator).
+  - **`SpDcSq`** — one display-control sequence: a 4-byte header
+    (90 kHz/1024 `start_time` + `next_offset` chain pointer) plus
+    the decoded command list. Chain-walk validates per-block
+    forward progress and rejects loops.
+  - **`SubPictureUnit::parse`** — top-level entry that walks SPUH
+    + every chained DCSQ from the `SP_DCSQTA` offset until a
+    terminal block (whose `next_offset` points back at itself).
+    Convenience accessors `pixel_data_offsets()` / `display_dimensions()`
+    pull the PXDtf/PXDbf offsets and rectangle width/height out of
+    the command stream.
+  - **`decode_rle_field`** — the 2-bit / four-form PXD run-length
+    decoder. Implements the nested-prefix encoding (`n n c c` /
+    `0 0 n n n n c c` / `0 0 0 0 n n n n n n c c` /
+    `0 0 0 0 0 0 n n n n n n n n c c`) and the 16-bit
+    "count=0 = until end of line" terminator, with byte alignment
+    at every row boundary per mpucoder-spu.html §PXDtf.
+  - **`render_field`** — flattens the run vector into a row-major
+    `Vec<u8>` of palette indices (`0..=3`), one byte per pixel,
+    ready for blending against the PGC's 16-entry `PaletteEntry`
+    table.
+  - **`spdcsq_stm_to_ms`** — converts an `SP_DCSQ_STM` 90 kHz/1024
+    delay to integer milliseconds via the inverse of the
+    mpucoder-spu.html conversion table.
+
+  Producing a final framebuffer (YCrCb + alpha) is intentionally
+  left to the caller — that step needs the PGC `PaletteEntry`
+  table (already exposed by `crate::ifo`) plus the renderer's
+  preferred pixel format, both outside the SPU bitstream itself.
+
+  +13 unit tests (header parse / delay conversion / one-run RLE
+  for all four forms / end-of-line marker / EOL row padding /
+  full-unit round-trip with six commands / `CHG_COLCON` raw
+  round-trip / DCSQTA-out-of-range rejection / runaway-DCSQ
+  rejection / opcode table). **132 tests total** (was 119).
+
 - **`nav` module** — typed VM instruction decoder (Phase 3c precursor).
   The previous `NavCommand` surface exposed only an 8-byte raw word
   plus the 3-bit `command_type` classifier; the new `NavCommand::decode()

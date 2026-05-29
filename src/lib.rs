@@ -26,6 +26,17 @@
 //! - CSS authentication + descrambling (lives in a future
 //!   `oxideav-css` sibling crate).
 //!
+//! ## Sub-Picture Unit decoder (`spu` module)
+//!
+//! The `spu` module parses one DVD subpicture (subtitle / menu
+//! overlay) blob assembled from concatenated PES packet payloads
+//! on substream `0x20..=0x3F`: SPUH + the chained
+//! `SP_DCSQT` command stream + the two PXD fields' 2-bit
+//! run-length-encoded pixel data. Producing a final framebuffer
+//! (YCrCb + alpha) is left to the caller — that step needs the
+//! PGC palette ([`ifo::PaletteEntry`]) and the renderer's chosen
+//! pixel format, both outside the SPU bitstream itself.
+//!
 //! ## Phase 3b — `mkv-output` feature (default off)
 //!
 //! Enable `mkv-output` to pull in [`pipeline::convert_dvd_to_mkv`],
@@ -76,6 +87,7 @@ pub mod ifo;
 pub mod iso9660;
 pub mod nav;
 pub mod source;
+pub mod spu;
 pub mod udf;
 pub mod vob;
 
@@ -100,6 +112,10 @@ pub use nav::{
     CallSSTarget, CmpOp, JumpSSTarget, LinkSubset, NavInstruction, Operand, Register, SetOp,
 };
 pub use source::{parse_dvd_uri, DvdDiscSource, DvdUri};
+pub use spu::{
+    decode_rle_field, render_field, spdcsq_stm_to_ms, PixelRun, SpDcSq, SpuCommand, SpuHeader,
+    SubPictureUnit,
+};
 pub use udf::{
     AdType, AnchorVolumeDescriptorPointer, DescriptorTag, ExtAd, Extent, FileEntry,
     FileIdentifierDescriptor, FileSetDescriptor, IcbTag, LbAddr, LogicalVolumeDescriptor, LongAd,

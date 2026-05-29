@@ -63,6 +63,7 @@ RSM stack is the bulk of Phase 3c proper. **No CSS yet** — Phase
 | NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI) | landed (Phase 3a) |
 | MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |
 | VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed (Phase 3c precursor) |
+| Sub-Picture Unit (SPU) decode (SPUH + SP_DCSQT command stream + PXDtf/PXDbf 2-bit RLE) | landed |
 | VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | Phase 3c |
 | CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |
 
@@ -121,6 +122,46 @@ The feature is **default-off** so the parse-only surface above
 keeps compiling against any `oxideav-mkv` patch release on
 crates.io. Toggle it on once you've got `oxideav-mkv >= 0.0.8`
 (the release that landed `MkvMuxer::add_chapter`).
+
+## Decoding a Sub-Picture Unit
+
+The `spu` module turns the raw bytes of a DVD subtitle / menu
+overlay into a typed control sequence plus run-length-decoded
+pixel data, without rendering. The PGC palette + final
+framebuffer step stays with the caller:
+
+```rust,no_run
+use oxideav_dvd::{SubPictureUnit, SpuCommand, decode_rle_field, render_field};
+
+// `spu_bytes` is the concatenation of every subpicture PES packet
+// payload for one subpicture stream over one display interval.
+let spu_bytes: &[u8] = &[];
+let unit = SubPictureUnit::parse(spu_bytes).unwrap();
+
+for dcsq in &unit.control_sequences {
+    println!("delay = {} ms", oxideav_dvd::spdcsq_stm_to_ms(dcsq.start_time));
+    for cmd in &dcsq.commands {
+        if let SpuCommand::SetColor { emphasis2, emphasis1, pattern, background } = cmd {
+            println!("palette = {:x}/{:x}/{:x}/{:x}",
+                     background, pattern, emphasis1, emphasis2);
+        }
+    }
+}
+
+// Materialise the top field's 2-bit palette indices given the
+// known display width / line count.
+if let (Some((top_off, _)), Some((w, h))) = (unit.pixel_data_offsets(), unit.display_dimensions()) {
+    let lines = (h + 1) / 2;
+    let pixels = render_field(&spu_bytes[top_off as usize..], w, lines).unwrap();
+    println!("decoded {} top-field palette-index pixels", pixels.len());
+}
+```
+
+The decoder handles the four PXD run-length forms (`n n c c` /
+`0 0 n n n n c c` / `0 0 0 0 n n n n n n c c` /
+`0 0 0 0 0 0 n n n n n n n n c c`), the 16-bit-form "count=0 =
+until end of line" terminator, and the per-row byte alignment
+required by `mpucoder-spu.html` §PXDtf.
 
 ## Disassembling a NavCommand (Phase 3c precursor)
 
@@ -184,6 +225,13 @@ This crate was written entirely against:
   the plain-English instruction-family summary, the jump/call target
   table, and the 24-entry SPRM map) feeding the `nav` module's
   `NavInstruction` decoder.
+- `docs/container/dvd/application/mpucoder-spu.html` — the
+  Sub-Picture Unit layout (SPUH, the four PXD run-length forms +
+  the end-of-line terminator + per-row byte alignment, the eight
+  SP_DCSQ command codes including the `LN_CTLI` / `PX_CTLI`
+  parameter hierarchy of `CHG_COLCON`, and the 90 kHz/1024 delay
+  conversion table) feeding the `spu` module's `SubPictureUnit`
+  decoder.
 - `docs/container/dvd/application/mpucoder-packhdr.html`,
   `mpucoder-pes-hdr.html`, `mpucoder-mpeghdrs.html`,
   `mpucoder-pci_pkt.html`, `mpucoder-dsi_pkt.html`,
