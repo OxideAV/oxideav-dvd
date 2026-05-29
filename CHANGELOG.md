@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.1...v0.0.2) - 2026-05-29
+
+### Other
+
+- composite SPU into RGBA overlay (palette + contrast + BT.601)
+- add DVD Sub-Picture Unit decoder
+- scrub enumerated-denial / decorative-attribution prose (r131 disclaimer-hygiene sweep follow-up)
+- add Phase-3c-precursor NavInstruction disassembler
+- decode NAV-pack DSI typed sub-sections (SML_PBI / SML_AGLI / SYNCI)
+- decode NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT)
+- re-export PaletteEntry / NavCommand / PgcCommandTable at crate root
+- decode PGC palette colour-LUT + pre/post/cell command table
+- Phase 3b: VOB → MKV mux glue + convert_dvd_to_mkv pipeline
+- Phase 3a: VOB demuxer — MPEG-PS pack + nav-pack + DVD substream router
+- Phase 2: IFO body parser — VMGI/VTSI MAT + TT_SRPT + VTS_PTT_SRPT + VTS_PGCI + VTS_C_ADT
+
 ### Added
 
 - **SPU RGBA compositor** — `SubPictureUnit::composite(buf, palette)`
