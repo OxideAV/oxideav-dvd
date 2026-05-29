@@ -32,10 +32,12 @@
 //! overlay) blob assembled from concatenated PES packet payloads
 //! on substream `0x20..=0x3F`: SPUH + the chained
 //! `SP_DCSQT` command stream + the two PXD fields' 2-bit
-//! run-length-encoded pixel data. Producing a final framebuffer
-//! (YCrCb + alpha) is left to the caller — that step needs the
-//! PGC palette ([`ifo::PaletteEntry`]) and the renderer's chosen
-//! pixel format, both outside the SPU bitstream itself.
+//! run-length-encoded pixel data. [`spu::SubPictureUnit::composite`]
+//! optionally resolves those palette indices through the PGC's
+//! 16-entry [`ifo::PaletteEntry`] colour-LUT (BT.601 studio-swing
+//! YCbCr → RGB plus the SET_CONTR alpha) into a finished RGBA
+//! [`spu::SpuBitmap`] overlay; blending it onto the decoded video
+//! frame stays with the player.
 //!
 //! ## Phase 3b — `mkv-output` feature (default off)
 //!
@@ -113,8 +115,8 @@ pub use nav::{
 };
 pub use source::{parse_dvd_uri, DvdDiscSource, DvdUri};
 pub use spu::{
-    decode_rle_field, render_field, spdcsq_stm_to_ms, PixelRun, SpDcSq, SpuCommand, SpuHeader,
-    SubPictureUnit,
+    decode_rle_field, render_field, spdcsq_stm_to_ms, ycbcr_to_rgb, PixelRun, SpDcSq, SpuBitmap,
+    SpuCommand, SpuHeader, SubPictureUnit,
 };
 pub use udf::{
     AdType, AnchorVolumeDescriptorPointer, DescriptorTag, ExtAd, Extent, FileEntry,

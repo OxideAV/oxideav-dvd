@@ -40,11 +40,20 @@
 //! - [`render_field`] — convenience that drives `decode_rle_field`
 //!   to fill a 2D `Vec<u8>` of palette indices for a known
 //!   display-area width.
+//! - [`SubPictureUnit::composite`] / [`SpuBitmap`] — full RGBA
+//!   compositor that resolves the 2-bit codes through the unit's own
+//!   `SET_COLOR` / `SET_CONTR` commands and a supplied 16-entry PGC
+//!   palette, converts BT.601 studio-swing YCbCr to RGB
+//!   ([`ycbcr_to_rgb`]), and interleaves the top/bottom fields into
+//!   one row-major `[R, G, B, A]` overlay.
 //!
-//! Pure-bytes decoder. Producing a final framebuffer (YCrCb +
-//! alpha) is left to the caller because it needs the PGC palette
-//! ([`crate::ifo::PaletteEntry`]) and the renderer's own pixel
-//! format choice — both outside the SPU bitstream itself.
+//! The decoder is pure-bytes: [`SubPictureUnit::parse`] yields the
+//! typed command stream and palette-index pixels without any colour
+//! resolution. [`SubPictureUnit::composite`] is the optional last
+//! step that turns those into a finished overlay bitmap once the
+//! caller supplies the PGC palette ([`crate::ifo::PaletteEntry`]);
+//! blending the overlay onto the decoded MPEG-2 frame (positioning,
+//! scaling, anti-flicker) stays with the player.
 //!
 //! ## Clean-room reference
 //!
@@ -641,6 +650,227 @@ pub fn render_field(bytes: &[u8], width: u16, expected_lines: u16) -> Result<Vec
     Ok(out)
 }
 
+/// Convert one 8-bit BT.601 studio-swing `(Y, Cb, Cr)` triple to
+/// 8-bit full-range `(R, G, B)`.
+///
+/// DVD subpicture palette entries ([`crate::ifo::PaletteEntry`]) carry
+/// BT.601 studio-swing luma/chroma: the `stnsoft-color_pick.html`
+/// reference fixes the luma scale at `Y = 16` (0 %) … `Y = 235`
+/// (100 %), i.e. the 16..=235 / 16..=240 studio-swing ranges shared
+/// with MPEG-2 video. This applies the standard BT.601 inverse matrix
+///
+/// ```text
+/// R = 1.164 (Y-16)                  + 1.596 (Cr-128)
+/// G = 1.164 (Y-16) - 0.391 (Cb-128) - 0.813 (Cr-128)
+/// B = 1.164 (Y-16) + 2.018 (Cb-128)
+/// ```
+///
+/// computed in fixed point and clamped to `0..=255`.
+pub fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
+    // Fixed-point BT.601 limited-range coefficients scaled by 1<<16.
+    // 1.164 ≈ 76309, 1.596 ≈ 104597, 0.391 ≈ 25624, 0.813 ≈ 53279,
+    // 2.018 ≈ 132201. Round-half-up by adding 1<<15 before the shift.
+    let yc = (i32::from(y) - 16) * 76309;
+    let cbc = i32::from(cb) - 128;
+    let crc = i32::from(cr) - 128;
+    let r = (yc + 104597 * crc + (1 << 15)) >> 16;
+    let g = (yc - 25624 * cbc - 53279 * crc + (1 << 15)) >> 16;
+    let b = (yc + 132201 * cbc + (1 << 15)) >> 16;
+    (
+        r.clamp(0, 255) as u8,
+        g.clamp(0, 255) as u8,
+        b.clamp(0, 255) as u8,
+    )
+}
+
+/// A fully composited Sub-Picture Unit: a row-major RGBA bitmap plus
+/// the on-screen rectangle it should be blended into.
+///
+/// Each pixel is four bytes `[R, G, B, A]` in full-range sRGB-ish
+/// space (the BT.601 inverse-matrix output of [`ycbcr_to_rgb`]) with
+/// the SPU's 4-bit contrast value expanded to an 8-bit alpha. The
+/// caller overlays `rgba` at `(x, y)` over the decoded MPEG-2 frame;
+/// no scaling or field-deinterlace beyond the SPU's own top/bottom
+/// field interleave is applied here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpuBitmap {
+    /// Left edge of the overlay (the `SET_DAREA` `start_x`).
+    pub x: u16,
+    /// Top edge of the overlay (the `SET_DAREA` `start_y`).
+    pub y: u16,
+    /// Overlay width in pixels.
+    pub width: u16,
+    /// Overlay height in pixels.
+    pub height: u16,
+    /// Row-major RGBA pixels, `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
+}
+
+/// Expand a 4-bit SPU contrast nibble (`0x0` transparent …
+/// `0xF` opaque, per `mpucoder-spu.html` §SET_CONTR) to an 8-bit
+/// alpha by replicating the nibble into both halves of the byte so
+/// `0xF -> 0xFF` and `0x0 -> 0x00`.
+fn contrast_to_alpha(c: u8) -> u8 {
+    let c = c & 0x0F;
+    (c << 4) | c
+}
+
+impl SubPictureUnit {
+    /// Composite the unit into a finished RGBA bitmap, resolving the
+    /// 2-bit pixel codes through the unit's own `SET_COLOR` /
+    /// `SET_CONTR` commands and the supplied 16-entry PGC palette.
+    ///
+    /// `buf` is the same full SPU byte slice passed to [`Self::parse`]
+    /// — the PXDtf / PXDbf pixel-data fields are sliced out of it at
+    /// the `SET_DSPXA` offsets.
+    ///
+    /// The four 2-bit pixel values (`0` background, `1` pattern,
+    /// `2` emphasis-1, `3` emphasis-2) are mapped:
+    ///
+    /// 1. by `SET_COLOR` to a `0..=15` index into `palette`
+    ///    (the PGC colour-LUT exposed as
+    ///    [`crate::ifo::PaletteEntry`]),
+    /// 2. by `SET_CONTR` to a `0..=15` alpha, expanded to 8-bit.
+    ///
+    /// The palette YCbCr is converted to RGB via [`ycbcr_to_rgb`].
+    /// Top-field pixel data fills lines `0, 2, 4, …` and bottom-field
+    /// data fills lines `1, 3, 5, …` per `mpucoder-spu.html` §PXDtf.
+    ///
+    /// Returns `None` if the unit is missing the `SET_DAREA` /
+    /// `SET_DSPXA` commands needed to know the rectangle and the
+    /// field byte offsets (a malformed unit — both are mandatory in
+    /// the first DCSQ per the spec).
+    pub fn composite(
+        &self,
+        buf: &[u8],
+        palette: &[crate::ifo::PaletteEntry; 16],
+    ) -> Result<Option<SpuBitmap>> {
+        let (start_x, start_y, width, height) = match self.display_rect() {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let (top_off, bot_off) = match self.pixel_data_offsets() {
+            Some(o) => o,
+            None => return Ok(None),
+        };
+        if usize::from(top_off) > buf.len() || usize::from(bot_off) > buf.len() {
+            return Err(Error::InvalidUdf("SPU field offset past buffer"));
+        }
+        let (colors, contrasts) = self.color_contrast_maps();
+
+        // Resolve the four pixel codes to RGBA up front.
+        let mut rgba_lut = [[0u8; 4]; 4];
+        for (code, slot) in rgba_lut.iter_mut().enumerate() {
+            let pal_idx = usize::from(colors[code] & 0x0F);
+            let pe = palette[pal_idx];
+            let (r, g, b) = ycbcr_to_rgb(pe.y, pe.cb, pe.cr);
+            *slot = [r, g, b, contrast_to_alpha(contrasts[code])];
+        }
+
+        let w = usize::from(width);
+        let h = usize::from(height);
+        // Top field holds the ceil(h/2) display lines (1, 3, 5, … in
+        // the spec's 1-based numbering = 0-based even rows 0, 2, 4,
+        // …); bottom field the remaining floor(h/2).
+        let top_lines = height.div_ceil(2);
+        let bot_lines = height / 2;
+
+        let top_idx = render_field(&buf[usize::from(top_off)..], width, top_lines)?;
+        let bot_idx = render_field(&buf[usize::from(bot_off)..], width, bot_lines)?;
+
+        let mut rgba = vec![0u8; w * h * 4];
+        for (field_row, src) in top_idx.chunks_exact(w).enumerate() {
+            let dst_row = field_row * 2;
+            if dst_row < h {
+                blit_row(&mut rgba, dst_row, w, src, &rgba_lut);
+            }
+        }
+        for (field_row, src) in bot_idx.chunks_exact(w).enumerate() {
+            let dst_row = field_row * 2 + 1;
+            if dst_row < h {
+                blit_row(&mut rgba, dst_row, w, src, &rgba_lut);
+            }
+        }
+
+        Ok(Some(SpuBitmap {
+            x: start_x,
+            y: start_y,
+            width,
+            height,
+            rgba,
+        }))
+    }
+
+    /// Locate `SET_DAREA` and return `(start_x, start_y, width,
+    /// height)`. `None` if no DCSQ set the area.
+    fn display_rect(&self) -> Option<(u16, u16, u16, u16)> {
+        for dcsq in &self.control_sequences {
+            for cmd in &dcsq.commands {
+                if let SpuCommand::SetDisplayArea {
+                    start_x,
+                    end_x,
+                    start_y,
+                    end_y,
+                } = cmd
+                {
+                    let w = end_x.saturating_sub(*start_x).saturating_add(1);
+                    let h = end_y.saturating_sub(*start_y).saturating_add(1);
+                    return Some((*start_x, *start_y, w, h));
+                }
+            }
+        }
+        None
+    }
+
+    /// Collect the four-entry colour-index and contrast maps from the
+    /// unit's `SET_COLOR` / `SET_CONTR` commands. The returned arrays
+    /// are indexed by pixel code (`0` background … `3` emphasis-2).
+    ///
+    /// A unit with no `SET_CONTR` is treated as fully opaque (`0xF`),
+    /// and no `SET_COLOR` as the all-zero (background) palette index —
+    /// both degenerate but well-defined fallbacks rather than errors,
+    /// matching what a player shows for a partially-specified unit.
+    fn color_contrast_maps(&self) -> ([u8; 4], [u8; 4]) {
+        let mut colors = [0u8; 4];
+        let mut contrasts = [0x0Fu8; 4];
+        for dcsq in &self.control_sequences {
+            for cmd in &dcsq.commands {
+                match cmd {
+                    SpuCommand::SetColor {
+                        emphasis2,
+                        emphasis1,
+                        pattern,
+                        background,
+                    } => {
+                        colors = [*background, *pattern, *emphasis1, *emphasis2];
+                    }
+                    SpuCommand::SetContrast {
+                        emphasis2,
+                        emphasis1,
+                        pattern,
+                        background,
+                    } => {
+                        contrasts = [*background, *pattern, *emphasis1, *emphasis2];
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (colors, contrasts)
+    }
+}
+
+/// Paint one display row from a palette-index slice through the RGBA
+/// lookup built by [`SubPictureUnit::composite`].
+fn blit_row(rgba: &mut [u8], dst_row: usize, w: usize, src: &[u8], lut: &[[u8; 4]; 4]) {
+    let base = dst_row * w * 4;
+    for (x, &code) in src.iter().enumerate() {
+        let px = &lut[usize::from(code) & 0x03];
+        let o = base + x * 4;
+        rgba[o..o + 4].copy_from_slice(px);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -990,5 +1220,139 @@ mod tests {
             0x07
         );
         assert_eq!(SpuCommand::EndOfSequence.opcode(), 0xFF);
+    }
+
+    #[test]
+    fn ycbcr_to_rgb_known_points() {
+        // Studio-swing black: Y=16, neutral chroma 128/128 → RGB 0.
+        assert_eq!(ycbcr_to_rgb(16, 128, 128), (0, 0, 0));
+        // Studio-swing white: Y=235, neutral chroma → ~255 all channels.
+        let (r, g, b) = ycbcr_to_rgb(235, 128, 128);
+        assert!(r >= 254 && g >= 254 && b >= 254, "white -> {r},{g},{b}");
+        // Below-black luma clamps at 0 rather than going negative.
+        assert_eq!(ycbcr_to_rgb(0, 128, 128), (0, 0, 0));
+        // Strong Cr lifts red. Y mid, Cr max → red dominates.
+        let (r, g, b) = ycbcr_to_rgb(128, 128, 240);
+        assert!(r > g && r > b, "red-dominant -> {r},{g},{b}");
+        // Strong Cb lifts blue.
+        let (r, g, b) = ycbcr_to_rgb(128, 240, 128);
+        assert!(b > r && b > g, "blue-dominant -> {r},{g},{b}");
+    }
+
+    #[test]
+    fn contrast_nibble_expands_to_alpha() {
+        assert_eq!(contrast_to_alpha(0x0), 0x00);
+        assert_eq!(contrast_to_alpha(0xF), 0xFF);
+        assert_eq!(contrast_to_alpha(0x8), 0x88);
+    }
+
+    fn solid_palette() -> [crate::ifo::PaletteEntry; 16] {
+        let mut p = [crate::ifo::PaletteEntry::default(); 16];
+        // Index 5 = studio-swing white; index 9 = studio-swing black.
+        p[5] = crate::ifo::PaletteEntry {
+            y: 235,
+            cr: 128,
+            cb: 128,
+        };
+        p[9] = crate::ifo::PaletteEntry {
+            y: 16,
+            cr: 128,
+            cb: 128,
+        };
+        p
+    }
+
+    /// Build a 2-pixel-wide, 2-line SPU whose every pixel is code 0.
+    /// SET_COLOR maps code 0 → palette index 5 (white); SET_CONTR maps
+    /// code 0 → 0xF (opaque). Both fields encode a single "EOL code=0"
+    /// run so the whole rectangle is background.
+    fn build_solid_spu() -> Vec<u8> {
+        // Layout:
+        //   SPUH (4) | PXDtf (2) | PXDbf (2) | DCSQ
+        // PXD: 16-bit EOL form `0000_0000_0000_0000` = count 0, code 0
+        //   → fills the row with code 0; one byte-pair per field line.
+        //   Width 2, 1 line per field → one EOL run per field suffices
+        //   (2 bytes each, then row align is already byte-aligned).
+        let dcsqt = 0x10u16;
+        let mut buf = vec![0u8; 0x30];
+        buf[0..2].copy_from_slice(&0x0030u16.to_be_bytes());
+        buf[2..4].copy_from_slice(&dcsqt.to_be_bytes());
+        // PXDtf at 0x04: 16-bit EOL run (0x00 0x00).
+        buf[4] = 0x00;
+        buf[5] = 0x00;
+        // PXDbf at 0x06: 16-bit EOL run.
+        buf[6] = 0x00;
+        buf[7] = 0x00;
+        // DCSQ at 0x10.
+        let d = 0x10usize;
+        buf[d..d + 2].copy_from_slice(&0x0000u16.to_be_bytes());
+        buf[d + 2..d + 4].copy_from_slice(&(d as u16).to_be_bytes());
+        let mut o = d + 4;
+        // SET_COLOR: code0(bg)=5, code1=0, code2=0, code3=0.
+        // Packed (e2 e1 | p bg) = (0 0 | 0 5) = 0x00, 0x05.
+        buf[o] = 0x03;
+        buf[o + 1] = 0x00;
+        buf[o + 2] = 0x05;
+        o += 3;
+        // SET_CONTR: code0(bg)=0xF opaque, rest 0.
+        // (e2 e1 | p bg) = (0 0 | 0 F) = 0x00, 0x0F.
+        buf[o] = 0x04;
+        buf[o + 1] = 0x00;
+        buf[o + 2] = 0x0F;
+        o += 3;
+        // SET_DAREA: start_x=0,end_x=1 (w=2), start_y=0,end_y=1 (h=2).
+        // Each 24-bit field is (start << 12) | end; start=0 here.
+        buf[o] = 0x05;
+        let xp: u32 = 1;
+        let yp: u32 = 1;
+        buf[o + 1] = xp.to_be_bytes()[1];
+        buf[o + 2] = xp.to_be_bytes()[2];
+        buf[o + 3] = xp.to_be_bytes()[3];
+        buf[o + 4] = yp.to_be_bytes()[1];
+        buf[o + 5] = yp.to_be_bytes()[2];
+        buf[o + 6] = yp.to_be_bytes()[3];
+        o += 7;
+        // SET_DSPXA: top=0x0004, bot=0x0006.
+        buf[o] = 0x06;
+        buf[o + 1..o + 3].copy_from_slice(&0x0004u16.to_be_bytes());
+        buf[o + 3..o + 5].copy_from_slice(&0x0006u16.to_be_bytes());
+        o += 5;
+        // STA_DSP + CMD_END.
+        buf[o] = 0x01;
+        buf[o + 1] = 0xFF;
+        buf
+    }
+
+    #[test]
+    fn composite_produces_opaque_white_rect() {
+        let buf = build_solid_spu();
+        let spu = SubPictureUnit::parse(&buf).unwrap();
+        let pal = solid_palette();
+        let bmp = spu.composite(&buf, &pal).unwrap().unwrap();
+        assert_eq!((bmp.x, bmp.y, bmp.width, bmp.height), (0, 0, 2, 2));
+        assert_eq!(bmp.rgba.len(), 2 * 2 * 4);
+        // Every pixel is code 0 → palette index 5 (white), alpha 0xFF.
+        for px in bmp.rgba.chunks_exact(4) {
+            assert!(px[0] >= 254 && px[1] >= 254 && px[2] >= 254);
+            assert_eq!(px[3], 0xFF);
+        }
+    }
+
+    #[test]
+    fn composite_missing_darea_returns_none() {
+        // SPU with a DCSQ that only sets SET_DSPXA (no SET_DAREA).
+        let mut buf = vec![0u8; 0x14];
+        buf[0..2].copy_from_slice(&0x0014u16.to_be_bytes());
+        buf[2..4].copy_from_slice(&0x0008u16.to_be_bytes());
+        let d = 0x08usize;
+        buf[d..d + 2].copy_from_slice(&0x0000u16.to_be_bytes());
+        buf[d + 2..d + 4].copy_from_slice(&(d as u16).to_be_bytes());
+        buf[d + 4] = 0x06; // SET_DSPXA
+        buf[d + 5..d + 7].copy_from_slice(&0x0004u16.to_be_bytes());
+        buf[d + 7..d + 9].copy_from_slice(&0x0004u16.to_be_bytes());
+        buf[d + 9] = 0xFF; // CMD_END
+        let spu = SubPictureUnit::parse(&buf).unwrap();
+        let pal = solid_palette();
+        assert_eq!(spu.composite(&buf, &pal).unwrap(), None);
     }
 }

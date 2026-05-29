@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SPU RGBA compositor** — `SubPictureUnit::composite(buf, palette)`
+  turns a parsed sub-picture plus the PGC's 16-entry `PaletteEntry`
+  colour-LUT into a finished `SpuBitmap` overlay (row-major
+  `[R, G, B, A]` pixels + on-screen rectangle), completing the
+  "final framebuffer left to the caller" gap entirely inside the
+  crate. Clean-room per `docs/container/dvd/application/mpucoder-spu.html`
+  (SET_COLOR/SET_CONTR semantics, `0x0` transparent … `0xF` opaque,
+  top/bottom field interleave) + `stnsoft-color_pick.html` (BT.601
+  studio-swing luma scale `Y = 16` 0 % … `Y = 235` 100 %). No
+  libdvdread / libdvdnav / libdvdcss / FFmpeg / VLC / mpv / xine
+  source consulted; no web search.
+  - **`ycbcr_to_rgb`** — standalone BT.601 studio-swing
+    `(Y, Cb, Cr) -> (R, G, B)` inverse-matrix conversion in fixed
+    point (1.164 / 1.596 / 0.391 / 0.813 / 2.018 coefficients scaled
+    by `1<<16`, round-half-up, clamped to `0..=255`).
+  - **`SpuBitmap`** — `{ x, y, width, height, rgba }` overlay: the
+    `SET_DAREA` rectangle plus the composited pixels, ready to blend
+    onto the decoded MPEG-2 frame by the player.
+  - The four 2-bit pixel codes are resolved through the unit's own
+    `SET_COLOR` (→ `0..=15` palette index) and `SET_CONTR`
+    (→ `0..=15` alpha, expanded to 8-bit by nibble replication);
+    a unit lacking those uses well-defined fallbacks (background
+    index, fully-opaque). Returns `None` when `SET_DAREA` /
+    `SET_DSPXA` are absent (a malformed unit per the spec).
+  - +5 unit tests (BT.601 known-point conversion incl. clamp +
+    red/blue dominance, contrast-nibble expansion, full solid-rect
+    composite round-trip, missing-`SET_DAREA` → `None`).
+    **126 lib tests** (was 121 after the SPU decoder landed).
+
 - **`spu` module** — DVD Sub-Picture Unit decoder, the overlay
   graphics stream that carries subtitles, menu button highlights,
   and karaoke captions. Pure-bytes decoder clean-room per

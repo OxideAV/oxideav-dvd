@@ -64,6 +64,7 @@ RSM stack is the bulk of Phase 3c proper. **No CSS yet** — Phase
 | MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |
 | VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed (Phase 3c precursor) |
 | Sub-Picture Unit (SPU) decode (SPUH + SP_DCSQT command stream + PXDtf/PXDbf 2-bit RLE) | landed |
+| SPU → RGBA compositor (palette + contrast resolve + BT.601 YCbCr→RGB + field interleave) | landed |
 | VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | Phase 3c |
 | CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |
 
@@ -163,6 +164,33 @@ The decoder handles the four PXD run-length forms (`n n c c` /
 until end of line" terminator, and the per-row byte alignment
 required by `mpucoder-spu.html` §PXDtf.
 
+To go all the way to a finished overlay, pass the parsed unit and
+the PGC's 16-entry palette to `SubPictureUnit::composite`:
+
+```rust,no_run
+use oxideav_dvd::SubPictureUnit;
+use oxideav_dvd::ifo::PaletteEntry;
+
+let spu_bytes: &[u8] = &[];
+let palette: [PaletteEntry; 16] = [PaletteEntry::default(); 16];
+
+let unit = SubPictureUnit::parse(spu_bytes).unwrap();
+if let Some(bmp) = unit.composite(spu_bytes, &palette).unwrap() {
+    // bmp.rgba is width*height*4 bytes of [R, G, B, A], to be blended
+    // onto the decoded MPEG-2 frame at (bmp.x, bmp.y).
+    println!("overlay {}x{} at ({},{})", bmp.width, bmp.height, bmp.x, bmp.y);
+}
+```
+
+`composite` resolves the four 2-bit pixel codes through the unit's
+own `SET_COLOR` (→ `0..=15` palette index) and `SET_CONTR`
+(→ `0..=15` alpha), converts the palette's BT.601 studio-swing
+YCbCr to RGB (`ycbcr_to_rgb`, luma scale `Y = 16` 0 % … `Y = 235`
+100 % per `stnsoft-color_pick.html`), and interleaves the
+top-field (lines 1, 3, 5, …) and bottom-field pixel data into one
+row-major `SpuBitmap`. Positioning/scaling the overlay onto the
+video frame stays with the player.
+
 ## Disassembling a NavCommand (Phase 3c precursor)
 
 The `nav` module decodes each 8-byte PGC command word into a typed
@@ -232,6 +260,10 @@ This crate was written entirely against:
   parameter hierarchy of `CHG_COLCON`, and the 90 kHz/1024 delay
   conversion table) feeding the `spu` module's `SubPictureUnit`
   decoder.
+- `docs/container/dvd/application/stnsoft-color_pick.html` — fixes the
+  subpicture palette's BT.601 studio-swing luma scale (`Y = 16` 0 % …
+  `Y = 235` 100 %) used by the `spu` module's `ycbcr_to_rgb` / RGBA
+  compositor.
 - `docs/container/dvd/application/mpucoder-packhdr.html`,
   `mpucoder-pes-hdr.html`, `mpucoder-mpeghdrs.html`,
   `mpucoder-pci_pkt.html`, `mpucoder-dsi_pkt.html`,
