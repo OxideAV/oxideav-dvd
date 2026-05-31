@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`vm` module — DVD-Video VM interpreter (Phase 3c).** Wraps the
+  `nav` module's typed `NavInstruction` disassembler with a stateful
+  executor. Clean-room per `docs/container/dvd/application/mpucoder-{vmi,vmi-sum,vmi-jmp,sprm,uops}.html`;
+  no external implementation source consulted.
+  - **`RegisterFile`** — 16 GPRMs (writable, persists across PGCs)
+    + 24 SPRMs initialised to the spec-defined defaults (`ASTN = 15`,
+    `SPSTN = 62`, `AGLN/TTN/VTS_TTN/PTTN = 1`, `HL_BTNN = 1 << 10`,
+    preferred-language slots = `0xFFFF`) + a per-GPRM counter-mode
+    bit-mask the `SetGPRMMD mf` flag toggles. `tick_counters(delta)`
+    advances every counter-mode GPRM by `delta` seconds (saturating)
+    so a playback engine that owns a wall clock can drive the
+    1 Hz semantic without owning the register file. Out-of-range
+    index reads return `0` and writes are silently dropped — matches
+    the spec's "invalid register reads as 0" fallback observed in
+    malformed PGC command tables.
+  - **`Vm`** — owns a `RegisterFile`, the call/return stack
+    (`ResumePoint` frames bounded by `MAX_RSM_DEPTH = 8` to detect
+    runaway nesting without restricting commercial-disc 1–2-deep
+    Menu Call → sub-menu use cases), and the per-list program
+    counter. `Vm::step(NavInstruction) -> VmAction` advances one
+    decoded instruction. `Vm::run_list(&[NavCommand])` walks a
+    pre/post/cell command list end-to-end, honours intra-list
+    `Goto` (1-based line numbers per the spec page; out-of-range
+    target falls through to the end of the list) + `Break` + `Exit`
+    control flow, and terminates a pathological `Goto` self-loop
+    via a `len * 16` step budget so a malformed disc can never hang
+    the interpreter.
+  - **`VmAction`** — the playback-engine-visible effect of one step:
+    `Continue` / `Break` / `Exit` / `Link(LinkAction)` / `JumpTitle`
+    / `JumpVtsTitle` / `JumpVtsPtt` / `JumpSs(JumpSSTarget)` /
+    `CallSs(CallSSTarget)` / `Resume(ResumePoint)` / `SetNavTimer
+    { seconds, pgcn }` / `NoOpRaw(NavCommand)`. The interpreter
+    applies any register / counter / SPRM mutations the instruction
+    implied before returning, so the engine sees the post-state.
+  - **`LinkAction`** + **`ResumePoint`** — typed Link-family
+    descriptors. `LinkAction::Subset { subset, hl_bn }` covers the
+    13 enum-style forms (`LinkTopCell` … `LinkTailPGC`); the four
+    numbered forms (`Pgcn`, `Pttn`, `Pgn`, `Cn`) each get a dedicated
+    variant. `ResumePoint { resume_cell, hl_btn }` carries the
+    CallSS `rsm_cell` byte through to a matching `RSM` so a player
+    can resume to a different cell than the one active at call time.
+  - **`Vm::evaluate`** + **`Vm::apply_set`** — pure helpers exposing
+    the CMP and SET sub-op tables. `evaluate` covers all 7 named
+    comparison predicates plus the `None` "unconditional" sentinel;
+    `apply_set` covers all 12 named SET ops (`mov`, `swp`, `add`,
+    `sub`, `mul`, `div`, `mod`, `rnd`, `and`, `or`, `xor`) using
+    wrapping arithmetic for overflow, `checked_div` / `checked_rem`
+    for the zero-divisor case (returns the destination unchanged
+    rather than panic), and a deterministic `0` placeholder for
+    `rnd` until a caller wraps the VM with an entropy source.
+  - **`Vm::push_resume`** / **`Vm::pop_resume`** / **`Vm::resume_depth`**
+    — public RSM stack manipulators for tests + tooling. Push is
+    capacity-bounded at `MAX_RSM_DEPTH` (drops the new frame and
+    returns `false` rather than overflow).
+  - 12 SPRM index constants re-exported at crate root
+    (`SPRM_AUDIO_STREAM`, `SPRM_SUBPICTURE_STREAM`, `SPRM_ANGLE`,
+    `SPRM_TITLE`, `SPRM_VTS_TITLE`, `SPRM_PGCN`, `SPRM_PTT`,
+    `SPRM_HL_BTNN`, `SPRM_NV_TIMER`, `SPRM_NV_PGCN`, `SPRM_AMXMD`,
+    `SPRM_PARENTAL_LEVEL`) so callers don't carry magic numbers.
+  - 37 new unit tests covering register-file defaults + out-of-range
+    indexing + counter-mode toggle + tick saturation, the full CMP
+    sub-op truth table, every named SET op including overflow-wrap
+    + zero-divisor + `Invalid` no-op, `step()` dispatch for every
+    `NavInstruction` family (Set arithmetic / Swap exchange /
+    SetStn per-flag application / SetNvtmr action + SPRM 9-10 load /
+    SetGprmMd counter-mode toggle / SetHlBtnn / SetTmpPml / every
+    Link/Jump/Call surface / CallSs push + RSM pop with hl_btn
+    propagation / RSM-with-empty-stack falls through to Continue /
+    push bounded to MAX_RSM_DEPTH / Unknown + Invalid → NoOpRaw
+    without mutation), and `run_list()` PC handling (clean
+    Nop chain / Break-mid-list / Exit-mid-list / Goto 1-based
+    addressing / out-of-range Goto falls off the end / runaway
+    Goto-self-loop terminates under budget / PC resets between
+    invocations / default `NavCommand` runs as single NOP).
+    **163 lib tests** (was 126 after the SPU compositor landed).
+
+### Changed
+
+- Phase 3c precursor → Phase 3c proper: the `nav` module's
+  `NavInstruction` disassembler is now consumed by the new `vm`
+  module's interpreter. Existing `NavInstruction` decode + the
+  disc / IFO / VOB / SPU / MKV surfaces are unchanged.
+- Scrubbed an attributive external-implementation mention in
+  `disc.rs`'s `DvdFileKind` doc comment and an enumerated-denial
+  paragraph at the bottom of `README.md`; both are now spec-only
+  wording per the project's clean-room provenance discipline.
+
+
 ## [0.0.2](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.1...v0.0.2) - 2026-05-29
 
 ### Other

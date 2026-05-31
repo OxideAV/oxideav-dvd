@@ -91,6 +91,7 @@ pub mod nav;
 pub mod source;
 pub mod spu;
 pub mod udf;
+pub mod vm;
 pub mod vob;
 
 #[cfg(feature = "mkv-output")]
@@ -122,6 +123,11 @@ pub use udf::{
     AdType, AnchorVolumeDescriptorPointer, DescriptorTag, ExtAd, Extent, FileEntry,
     FileIdentifierDescriptor, FileSetDescriptor, IcbTag, LbAddr, LogicalVolumeDescriptor, LongAd,
     PartitionDescriptor, ShortAd, TagId, UdfFile, UdfVolume,
+};
+pub use vm::{
+    LinkAction, RegisterFile, ResumePoint, Vm, VmAction, GPRM_COUNT, MAX_RSM_DEPTH, SPRM_AMXMD,
+    SPRM_ANGLE, SPRM_AUDIO_STREAM, SPRM_COUNT, SPRM_HL_BTNN, SPRM_NV_PGCN, SPRM_NV_TIMER,
+    SPRM_PARENTAL_LEVEL, SPRM_PGCN, SPRM_PTT, SPRM_SUBPICTURE_STREAM, SPRM_TITLE, SPRM_VTS_TITLE,
 };
 pub use vob::{
     demux_vobs, demux_vobs_path, looks_like_nav_pack, ButtonInfo, CellId, DsiGi, DsiPacket,

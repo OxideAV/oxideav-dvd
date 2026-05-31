@@ -41,10 +41,16 @@ the 13-entry link-subset table), `Exit` / `JumpTT` /
 (`SetSTN` / `SetNVTMR` / `SetGPRMMD` with counter-mode bit /
 `SetAMXMD` / `SetHL_BTNN`), the plain `Set` arithmetic family
 (12 SET sub-ops × GPRM-or-SPRM source), and classifier sub-ops
-for the compound Type 4..6 CMP/SET/LNK encodings. **No VM
-execution yet** — an interpreter that owns SPRMs / GPRMs / PC /
-RSM stack is the bulk of Phase 3c proper. **No CSS yet** — Phase
-3c via the external `oxideav-css` crate.
+for the compound Type 4..6 CMP/SET/LNK encodings. The Phase 3c
+**`vm` module** wraps the decoder with a register file
+(16 GPRMs + 24 SPRMs with spec-defined defaults + per-GPRM
+counter-mode bits), an RSM call/return stack, intra-list PC
+handling (`Goto` / `Break` / runaway-loop bound), and a
+`Vm::step(NavInstruction) -> VmAction` interpreter that surfaces
+`Link` / `JumpTitle` / `JumpVtsTitle` / `JumpVtsPtt` / `JumpSs` /
+`CallSs` / `Resume` / `SetNavTimer` / `Exit` actions to the
+playback engine. **No CSS yet** — Phase 3c via the external
+`oxideav-css` crate.
 
 | Layer | Status |
 |-------|--------|
@@ -65,7 +71,7 @@ RSM stack is the bulk of Phase 3c proper. **No CSS yet** — Phase
 | VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed (Phase 3c precursor) |
 | Sub-Picture Unit (SPU) decode (SPUH + SP_DCSQT command stream + PXDtf/PXDbf 2-bit RLE) | landed |
 | SPU → RGBA compositor (palette + contrast resolve + BT.601 YCbCr→RGB + field interleave) | landed |
-| VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | Phase 3c |
+| VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | landed (Phase 3c — Type 0..3 + Link/Jump/Call surfaces) |
 | CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |
 
 ## Quick start
@@ -217,6 +223,47 @@ leave full operand decoding to a future executor. The `Register`
 enum maps an operand byte to `Gprm(0..=15)` / `Sprm(0..=23)` /
 `Invalid(_)` per the asterisk note on `mpucoder-vmi.html`.
 
+## Executing PGC commands (Phase 3c VM)
+
+The `vm` module wraps the disassembler with an interpreter that
+owns the register file (16 GPRMs + 24 SPRMs with spec-defined
+defaults) and the navigation-resume stack:
+
+```rust,no_run
+use oxideav_dvd::{Vm, VmAction, SPRM_AUDIO_STREAM};
+use oxideav_dvd::ifo::NavCommand;
+
+let mut vm = Vm::new();
+// SPRM defaults loaded per mpucoder-sprm.html.
+assert_eq!(vm.regs.sprm(SPRM_AUDIO_STREAM), 15);
+
+// Run a PGC's pre-command list end-to-end.
+let pre: Vec<NavCommand> = vec![/* … from PgcCommandTable.pre … */];
+let (action, pc) = vm.run_list(&pre);
+
+match action {
+    VmAction::Continue => { /* list ran off the end cleanly */ }
+    VmAction::JumpTitle { ttn } => { /* player loads title `ttn` */ }
+    VmAction::Link(link) => { /* re-enter PGC per `link` */ }
+    VmAction::CallSs(target) => { /* push resume + load `target` */ }
+    VmAction::Resume(point) => { /* RSM popped — restore `point` */ }
+    VmAction::SetNavTimer { seconds, pgcn } => { /* arm wall-clock callback */ }
+    other => { /* Break / Exit / NoOpRaw / … */ }
+}
+let _ = pc;
+```
+
+`Vm::step` handles Type 0..3 instructions (Set / SetSystem /
+SetGprmMd / SetStn / SetNvtmr / SetHl_BTNN / SetTmpPml / NOP /
+Goto / Break) entirely in-process; the Link / Jump / Call family
+mutates persistent register state when relevant (CallSs pushes
+the resume frame, RSM pops it) then surfaces the destination as
+a typed `VmAction` for the playback engine. The compound Type
+4..6 forms surface as `VmAction::NoOpRaw` until the decoder
+carries their per-operand fields; runaway `Goto` loops are
+bounded by a step budget so a malformed disc can never hang the
+interpreter.
+
 ## Clean-room sources
 
 This crate was written entirely against:
@@ -274,11 +321,12 @@ This crate was written entirely against:
   semantics, and the Program Stream System Header used by the
   Phase 3a VOB demuxer.
 
-**Not consulted**: libdvdread, libdvdnav, libdvdcss, FFmpeg, xine,
-mpv, VLC, or any other open-source DVD player or library. The
-`libdvdread-README.md` / `libdvdnav-README.md` / `libdvdcss-README.md`
+The crate is built clean-room from the spec PDFs and the
+behavioural-trace HTML pages listed above; no external player or
+library source was consulted. The `*-COPYING` / `*-README.md`
 files in `docs/container/dvd/` are licence-trail transparency
-markers, not implementation references.
+markers carried by the docs collaborator, not implementation
+references.
 
 ## License
 

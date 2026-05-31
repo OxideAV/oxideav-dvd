@@ -38,9 +38,10 @@ use crate::ifo::{DvdTitleEntry, TtSrpt, VmgIfo, VtsIfo};
 use crate::iso9660::Iso9660Volume;
 use crate::udf::{UdfFile, UdfVolume};
 
-/// Top-level kind of a DVD-Video file. The encoding mirrors what
-/// libdvdread / mpucoder name these files, but the discriminator is
-/// purely lexical — we don't peek inside any of the bytes.
+/// Top-level kind of a DVD-Video file. The discriminator is purely
+/// lexical (filename pattern matching) per the spec naming
+/// convention in `docs/container/dvd/application/mpucoder-ifo.html`;
+/// we don't peek inside any of the bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DvdFileKind {
     /// `VIDEO_TS.IFO` — Video Manager Information. Mandatory.
