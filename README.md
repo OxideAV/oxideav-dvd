@@ -71,7 +71,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed (Phase 3c precursor) |
 | Sub-Picture Unit (SPU) decode (SPUH + SP_DCSQT command stream + PXDtf/PXDbf 2-bit RLE) | landed |
 | SPU → RGBA compositor (palette + contrast resolve + BT.601 YCbCr→RGB + field interleave) | landed |
-| VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | landed (Phase 3c — Type 0..3 + Link/Jump/Call surfaces) |
+| VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | landed (Phase 3c — Type 0..6, including compound SET+CMP+LINK) |
 | CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |
 
 ## Quick start
@@ -217,11 +217,18 @@ Goto, Break, SetTmpPML, the full Link family with the 13-entry
 link-subset table, Exit, JumpTT, JumpVTS_TT, JumpVTS_PTT, the
 four-way JumpSS / CallSS target selector, the SetSystem family,
 the plain Set arithmetic family with 12 SET sub-ops × GPRM-or-SPRM
-source). The compound Type 4..6 forms (`SetCLnk`, `CSetCLnk`,
-`CmpSetLnk`) surface their classifier `SetOp` / `CmpOp` sub-ops but
-leave full operand decoding to a future executor. The `Register`
-enum maps an operand byte to `Gprm(0..=15)` / `Sprm(0..=23)` /
-`Invalid(_)` per the asterisk note on `mpucoder-vmi.html`.
+source) AND the compound Type 4..6 forms (`SetCLnk`, `CSetCLnk`,
+`CmpSetLnk`) — each surfaces the full operand triple: SET source
+(register `srs` / `sr2` or 16-bit immediate per the SET-dir flag),
+CMP right-hand side (register `cr2` or 16-bit immediate per the
+CMP-dir flag), shared selector register (`scr` for Type 4, `sr1`
+for Types 5+6), CMP left-hand register (Type 5 only — `cr1`), the
+6-bit `hl_bn` highlight-button override, and the 5-bit Link
+subset code. The two "Illegal" red rows (SET-dir=1 AND CMP-dir=1
+for Types 5+6) surface as `NavInstruction::Invalid` per the spec
+page's rejection. The `Register` enum maps an operand byte to
+`Gprm(0..=15)` / `Sprm(0..=23)` / `Invalid(_)` per the asterisk
+note on `mpucoder-vmi.html`.
 
 ## Executing PGC commands (Phase 3c VM)
 
@@ -259,10 +266,25 @@ Goto / Break) entirely in-process; the Link / Jump / Call family
 mutates persistent register state when relevant (CallSs pushes
 the resume frame, RSM pops it) then surfaces the destination as
 a typed `VmAction` for the playback engine. The compound Type
-4..6 forms surface as `VmAction::NoOpRaw` until the decoder
-carries their per-operand fields; runaway `Goto` loops are
-bounded by a step budget so a malformed disc can never hang the
-interpreter.
+4..6 forms are executed in spec order per
+`mpucoder-vmi-sum.html`:
+
+- **Type 4 `SetCLnk`** runs the SET first, then compares the
+  post-SET value of `scr` against `cmp_rhs`; on a `true` compare
+  the inner Link subset surfaces as `VmAction::Link(Subset)`,
+  otherwise the action collapses to `VmAction::Continue` (the
+  outer command list keeps walking).
+- **Type 5 `CSetCLnk`** compares first; on `true` it runs SET
+  then fires Link; on `false` neither SET nor Link runs.
+- **Type 6 `CmpSetLnk`** compares first; on `true` it runs SET;
+  the Link **always** fires regardless of the compare outcome —
+  that's how Type 6 differs from Type 5.
+
+A compound whose inner Link subset is `Nop` collapses to
+`Continue` even when the SET / CMP ran; an `Rsm` subset pops the
+same RSM stack as a bare Type-1 `LinkSub::Rsm`. Runaway `Goto`
+loops are bounded by a step budget so a malformed disc can never
+hang the interpreter.
 
 ## Clean-room sources
 

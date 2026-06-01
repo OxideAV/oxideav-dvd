@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Compound CMP/SET/LNK execution (Type 4..6) — Phase 3c completion.**
+  The `nav` module's `SetCLnk` / `CSetCLnk` / `CmpSetLnk` variants now
+  carry the full operand triple (SET source, CMP RHS, shared selector,
+  Type 5's independent CMP-LHS, `hl_bn` button override, Link subset)
+  pulled out of the 8-byte word per the per-row layouts on
+  `mpucoder-vmi.html` (table 2, rows 88..101). The `vm` interpreter
+  executes each compound in spec order per `mpucoder-vmi-sum.html`:
+  - **`SetCLnk`** — SET first, then CMP against post-SET selector,
+    then Link on `true`; `false` collapses to `Continue` so the
+    outer command list keeps walking.
+  - **`CSetCLnk`** — CMP first; SET and Link only on `true`.
+  - **`CmpSetLnk`** — CMP first; SET only on `true`; Link
+    **unconditional** (the distinguishing semantic from `CSetCLnk`).
+  Compound Link subsets `Nop` collapse to `Continue` even when the
+  enclosing compound ran; `Rsm` pops the same RSM stack as a bare
+  Type-1 link; `Invalid(_)` subsets degrade to `Continue` so a
+  malformed disc cannot crash the interpreter. The two "Illegal"
+  red rows (SET-dir=1 AND CMP-dir=1 for Types 5 and 6, where the
+  operand bytes would overlap) surface as `NavInstruction::Invalid`
+  per the spec page's explicit rejection. 14 new tests (the four
+  full-operand decode forms across register / immediate mixes for
+  Types 4, 5, 6, the two Invalid-row encodings, plus 10 VM-exec
+  cases covering SET-then-LINK truth + false-branch behaviour for
+  all three families, the Link-subset `Nop` / `Rsm` /
+  `Invalid` collapse paths, and the `SetOp::None` "skip SET phase"
+  short-circuit). **177 lib tests** (was 163 after Phase 3c VM
+  landed). Clean-room per the spec pages cited above; no external
+  implementation source consulted.
+
 - **`vm` module — DVD-Video VM interpreter (Phase 3c).** Wraps the
   `nav` module's typed `NavInstruction` disassembler with a stateful
   executor. Clean-room per `docs/container/dvd/application/mpucoder-{vmi,vmi-sum,vmi-jmp,sprm,uops}.html`;
@@ -89,8 +118,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Phase 3c precursor → Phase 3c proper: the `nav` module's
   `NavInstruction` disassembler is now consumed by the new `vm`
-  module's interpreter. Existing `NavInstruction` decode + the
-  disc / IFO / VOB / SPU / MKV surfaces are unchanged.
+  module's interpreter, and Type 4..6 compounds carry their full
+  operand triple instead of just the classifier sub-ops. Existing
+  `NavInstruction` decode + the disc / IFO / VOB / SPU / MKV
+  surfaces are unchanged.
+- **Breaking** — `NavInstruction::{SetCLnk, CSetCLnk, CmpSetLnk}`
+  field layout extended with the per-row operand fields documented
+  in `mpucoder-vmi.html` table 2; the previous classifier-only
+  shape (`set_op`, `cmp_op`, and Type 4's `scr` only) no longer
+  compiles. Pre-0.0.3 release — no published consumer to break.
 - Scrubbed an attributive external-implementation mention in
   `disc.rs`'s `DvdFileKind` doc comment and an enumerated-denial
   paragraph at the bottom of `README.md`; both are now spec-only

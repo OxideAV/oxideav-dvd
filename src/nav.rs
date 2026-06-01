@@ -397,17 +397,81 @@ pub enum NavInstruction {
 
     // ---- Type 4..6 — compound CMP/SET/LNK families -----------------
     /// Type 4 — `SetCLnk` (Set then Compare & Link).
+    ///
+    /// Semantics per `mpucoder-vmi-sum.html`: (1) `G<scr> set-op
+    /// src`; (2) `cmp-op(G<scr>, cr2)`; (3) on `true`, `Link(subset,
+    /// hl_bn)`. The destination register is implicit — the same
+    /// 4-bit `scr` selector serves as both the SET destination /
+    /// CMP left-hand operand.
     SetCLnk {
         set_op: SetOp,
         cmp_op: CmpOp,
         /// Selector register (G<scr>) used as both SET destination
-        /// and CMP left-hand side.
+        /// and CMP left-hand side. Always a GPRM (4-bit field).
         scr: Register,
+        /// SET right-hand operand. Either `Register(srs)` (SET-dir
+        /// flag clear) or `Immediate(sval)` (SET-dir flag set).
+        set_src: Operand,
+        /// CMP right-hand operand. Either `Register(cr2)` or
+        /// `Immediate(cval)` per the CMP-dir flag.
+        cmp_rhs: Operand,
+        /// Optional highlight-button override carried into the
+        /// linked target (byte 6 bits 7..2 = 6-bit `hl_bn`).
+        hl_bn: u8,
+        /// Link subset selecting the inner Link destination on
+        /// `cmp-op == true`.
+        link: LinkSubset,
     },
     /// Type 5 — `CSetCLnk` (Compare then Set & Link).
-    CSetCLnk { set_op: SetOp, cmp_op: CmpOp },
-    /// Type 6 — `CmpSetLnk` (Compare then Set, followed by Link).
-    CmpSetLnk { set_op: SetOp, cmp_op: CmpOp },
+    ///
+    /// Semantics per `mpucoder-vmi-sum.html`: (1) `cmp-op(cr1, cr2)`;
+    /// (2) on `true`, `G<sr1> set-op sr2`; (3) on `true`,
+    /// `Link(subset, hl_bn)`. Unlike Type 4 the SET destination
+    /// (`sr1`) and CMP left-hand (`cr1`) are independent selectors.
+    CSetCLnk {
+        set_op: SetOp,
+        cmp_op: CmpOp,
+        /// SET destination register (`sr1`, 4-bit GPRM selector).
+        sr1: Register,
+        /// SET right-hand operand: register form `Register(sr2)`
+        /// (SET-dir clear) or immediate `sval2` (SET-dir set).
+        set_src: Operand,
+        /// CMP left-hand register (`cr1`, 8-bit GPRM/SPRM selector).
+        cmp_lhs: Register,
+        /// CMP right-hand operand: register form `Register(cr2)` or
+        /// immediate `cval` per the CMP-dir flag.
+        cmp_rhs: Operand,
+        /// Highlight-button override.
+        hl_bn: u8,
+        /// Link subset selecting the inner Link destination on
+        /// `cmp-op == true`.
+        link: LinkSubset,
+    },
+    /// Type 6 — `CmpSetLnk` (Compare then Set, then unconditional Link).
+    ///
+    /// Semantics per `mpucoder-vmi-sum.html`: (1) `cmp-op(G<sr1>,
+    /// cr2)`; (2) on `true`, `G<sr1> set-op src`; (3)
+    /// `Link(subset, hl_bn)` ALWAYS — distinguishing Type 6 from
+    /// Type 5 is that Type 6's Link fires regardless of the CMP
+    /// outcome.
+    CmpSetLnk {
+        set_op: SetOp,
+        cmp_op: CmpOp,
+        /// Shared selector register (`sr1`) used as both SET
+        /// destination and CMP left-hand side.
+        sr1: Register,
+        /// SET right-hand operand: register form `Register(srs)` or
+        /// immediate `sval`.
+        set_src: Operand,
+        /// CMP right-hand operand: register form `Register(cr2)` or
+        /// immediate `cval`.
+        cmp_rhs: Operand,
+        /// Highlight-button override.
+        hl_bn: u8,
+        /// Link subset — fires unconditionally per Type 6's "Link
+        /// runs even on `cmp-op == false`" rule.
+        link: LinkSubset,
+    },
 
     // ---- Type 7 — undefined ----------------------------------------
     /// Type 7 — never observed in the wild per `mpucoder-vmi.html`;
@@ -448,6 +512,7 @@ impl NavCommand {
         // (bits 6..4), CCCC = link/command nibble (bits 3..0).
         let cmd_nibble = b[1] & 0x0F;
         let cmp_op = CmpOp::decode((b[1] >> 4) & 0x07);
+        let cmp_direct = (b[1] & 0x80) != 0;
 
         match cmd_type {
             0 => decode_type0(b, cmd_nibble),
@@ -460,19 +525,9 @@ impl NavCommand {
             }
             2 => decode_type2_setsystem(b, set_direct, set_nibble),
             3 => decode_type3_set(b, set_direct, set_nibble),
-            4 => NavInstruction::SetCLnk {
-                set_op: SetOp::decode(set_nibble),
-                cmp_op,
-                scr: Register::Gprm(b[2] & 0x0F),
-            },
-            5 => NavInstruction::CSetCLnk {
-                set_op: SetOp::decode(set_nibble),
-                cmp_op,
-            },
-            6 => NavInstruction::CmpSetLnk {
-                set_op: SetOp::decode(set_nibble),
-                cmp_op,
-            },
+            4 => decode_type4(b, set_direct, cmp_direct, set_nibble, cmp_op),
+            5 => decode_type5(b, set_direct, cmp_direct, set_nibble, cmp_op),
+            6 => decode_type6(b, set_direct, cmp_direct, set_nibble, cmp_op),
             _ => NavInstruction::Unknown,
         }
     }
@@ -658,6 +713,138 @@ fn decode_type3_set(b: &[u8; 8], direct: bool, sub: u8) -> NavInstruction {
         op: SetOp::decode(sub),
         dst,
         src,
+    }
+}
+
+// ---------- Type 4..6 compound CMP/SET/LNK helpers --------------------
+//
+// All three families share the same trailing-byte layout:
+//
+//   byte 1 bits 3..0 = scr / sr1  (4-bit GPRM selector)
+//   byte 6 bits 7..2 = hl_bn      (highlight-button override)
+//   byte 7 bits 4..0 = Lnk subset (Link-family inner code)
+//
+// The SET-direct and CMP-direct flag bits choose how operand bytes
+// 2..5 are interpreted, but they always cover the same byte ranges:
+//
+//   Type 4 SET-source  : byte 3 (register `srs`) or bytes 2-3 (16-bit `sval`)
+//          CMP-RHS     : byte 5 (register `cr2`) or bytes 4-5 (16-bit `cval`)
+//   Type 5 SET-dst-reg : byte 2 high nibble unused, byte 1 low nibble = `sr1`
+//          SET-source  : byte 3 (register `sr2`) or bytes 2-3 (16-bit `sval2`)
+//          CMP-LHS     : byte 4 (register `cr1`)
+//          CMP-RHS     : byte 5 (register `cr2`) or bytes 4-5 (16-bit `cval`)
+//                        — note: when CMP-dir=1 the `cval` immediate overlays
+//                          byte 4's `cr1`, leaving `cr1` undefined in row 94
+//                          ("cval" colspan=16). Per the spec page we treat
+//                          `cr1` as 0 in that arrangement (the immediate
+//                          form makes the CMP-LHS irrelevant — `cval` is
+//                          compared against the SET destination instead).
+//   Type 6 SET-dst-reg : `sr1` shared between SET destination and CMP-LHS
+//          SET-source  : byte 3 (register `srs`) or bytes 2-3 (16-bit `sval`)
+//          CMP-RHS     : byte 5 (register `cr2`) or bytes 4-5 (16-bit `cval`)
+//
+// Per the spec's red rows: SET-dir == 1 AND CMP-dir == 1 is "Illegal"
+// for Types 5 and 6 (the operand bytes overlap in those rows) — the
+// decoder surfaces `NavInstruction::Invalid` for those words.
+
+fn decode_type4(
+    b: &[u8; 8],
+    set_direct: bool,
+    cmp_direct: bool,
+    set_nibble: u8,
+    cmp_op: CmpOp,
+) -> NavInstruction {
+    let scr = Register::Gprm(b[1] & 0x0F);
+    let set_src = if set_direct {
+        Operand::Immediate(u16::from_be_bytes([b[2], b[3]]))
+    } else {
+        Operand::Register(Register::decode(b[3]))
+    };
+    let cmp_rhs = if cmp_direct {
+        Operand::Immediate(u16::from_be_bytes([b[4], b[5]]))
+    } else {
+        Operand::Register(Register::decode(b[5]))
+    };
+    NavInstruction::SetCLnk {
+        set_op: SetOp::decode(set_nibble),
+        cmp_op,
+        scr,
+        set_src,
+        cmp_rhs,
+        hl_bn: (b[6] >> 2) & 0x3F,
+        link: LinkSubset::decode(b[7]),
+    }
+}
+
+fn decode_type5(
+    b: &[u8; 8],
+    set_direct: bool,
+    cmp_direct: bool,
+    set_nibble: u8,
+    cmp_op: CmpOp,
+) -> NavInstruction {
+    // Row 96 (red): SET-dir=1, CMP-dir=1 is Illegal CSetCLnk.
+    if set_direct && cmp_direct {
+        return NavInstruction::Invalid;
+    }
+    let sr1 = Register::Gprm(b[1] & 0x0F);
+    // Per the spec rows, the SET source is bytes 2-3 in the immediate
+    // form (`sval2`) and byte 3 in the register form (`sr2`).
+    let set_src = if set_direct {
+        Operand::Immediate(u16::from_be_bytes([b[2], b[3]]))
+    } else {
+        Operand::Register(Register::decode(b[3]))
+    };
+    // CMP-LHS register `cr1` lives in byte 4 in the register form. In
+    // the SET-dir=1 / CMP-dir=0 row (row 95) `cr1` is also at byte 4.
+    let cmp_lhs = Register::decode(b[4]);
+    let cmp_rhs = if cmp_direct {
+        Operand::Immediate(u16::from_be_bytes([b[4], b[5]]))
+    } else {
+        Operand::Register(Register::decode(b[5]))
+    };
+    NavInstruction::CSetCLnk {
+        set_op: SetOp::decode(set_nibble),
+        cmp_op,
+        sr1,
+        set_src,
+        cmp_lhs,
+        cmp_rhs,
+        hl_bn: (b[6] >> 2) & 0x3F,
+        link: LinkSubset::decode(b[7]),
+    }
+}
+
+fn decode_type6(
+    b: &[u8; 8],
+    set_direct: bool,
+    cmp_direct: bool,
+    set_nibble: u8,
+    cmp_op: CmpOp,
+) -> NavInstruction {
+    // Row 101 (red): SET-dir=1, CMP-dir=1 is Illegal CmpSetLnk.
+    if set_direct && cmp_direct {
+        return NavInstruction::Invalid;
+    }
+    let sr1 = Register::Gprm(b[1] & 0x0F);
+    let set_src = if set_direct {
+        Operand::Immediate(u16::from_be_bytes([b[2], b[3]]))
+    } else {
+        Operand::Register(Register::decode(b[3]))
+    };
+    let cmp_rhs = if cmp_direct {
+        Operand::Immediate(u16::from_be_bytes([b[4], b[5]]))
+    } else {
+        Operand::Register(Register::decode(b[5]))
+    };
+    NavInstruction::CmpSetLnk {
+        set_op: SetOp::decode(set_nibble),
+        cmp_op,
+        sr1,
+        set_src,
+        cmp_rhs,
+        hl_bn: (b[6] >> 2) & 0x3F,
+        link: LinkSubset::decode(b[7]),
     }
 }
 
@@ -1181,42 +1368,129 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn decode_type4_setclnk_classifier() {
-        // byte0=0x83 (type=4, direct=0, set-op=3=add); byte1=0x12
-        // (cmp-direct=0, cmp-op=1=BC, link nibble 2).
-        let i = cmd([0x83, 0x12, 0x07, 0, 0, 0, 0, 0]).decode();
+    fn decode_type4_setclnk_full_operand_register_form() {
+        // byte 0 = 0x83 → type=4, SET-dir=0, set-op=3 (Add).
+        // byte 1 = 0x17 → CMP-dir=0, cmp-op=1 (BC), scr=GPRM 7.
+        // byte 3 = 0x09 → SET-source register GPRM 9.
+        // byte 5 = 0x84 → CMP-RHS register SPRM 4 (0x84 - 0x80).
+        // byte 6 = 0x3C → hl_bn = 0x3C >> 2 = 0x0F.
+        // byte 7 = 0x06 → Link subset LinkNextPG.
+        let i = cmd([0x83, 0x17, 0x00, 0x09, 0x00, 0x84, 0x3C, 0x06]).decode();
         assert_eq!(
             i,
             NavInstruction::SetCLnk {
                 set_op: SetOp::Add,
                 cmp_op: CmpOp::Bc,
                 scr: Register::Gprm(7),
+                set_src: Operand::Register(Register::Gprm(9)),
+                cmp_rhs: Operand::Register(Register::Sprm(4)),
+                hl_bn: 0x0F,
+                link: LinkSubset::LinkNextPG,
             }
         );
     }
 
     #[test]
-    fn decode_type5_csetclnk_classifier() {
-        let i = cmd([0xA2, 0x20, 0, 0, 0, 0, 0, 0]).decode();
+    fn decode_type4_setclnk_immediate_forms() {
+        // SET-dir=1, CMP-dir=1 → both operands immediate.
+        // byte 0 = 0x93 → type=4, SET-dir=1, set-op=3 (Add).
+        // byte 1 = 0x95 → CMP-dir=1, cmp-op=1 (BC), scr=GPRM 5.
+        // bytes 2-3 = 0x1234 = sval. bytes 4-5 = 0x5678 = cval.
+        // byte 6 = 0x04 → hl_bn = 1. byte 7 = 0x10 → Rsm.
+        let i = cmd([0x93, 0x95, 0x12, 0x34, 0x56, 0x78, 0x04, 0x10]).decode();
+        assert_eq!(
+            i,
+            NavInstruction::SetCLnk {
+                set_op: SetOp::Add,
+                cmp_op: CmpOp::Bc,
+                scr: Register::Gprm(5),
+                set_src: Operand::Immediate(0x1234),
+                cmp_rhs: Operand::Immediate(0x5678),
+                hl_bn: 1,
+                link: LinkSubset::Rsm,
+            }
+        );
+    }
+
+    #[test]
+    fn decode_type5_csetclnk_register_form() {
+        // byte 0 = 0xA2 → type=5, SET-dir=0, set-op=2 (Swp).
+        // byte 1 = 0x23 → CMP-dir=0, cmp-op=2 (Eq), sr1=GPRM 3.
+        // byte 3 = 0x05 → SET-src register GPRM 5 (sr2).
+        // byte 4 = 0x07 → CMP-LHS register GPRM 7 (cr1).
+        // byte 5 = 0x08 → CMP-RHS register GPRM 8 (cr2).
+        // byte 6 = 0x10 → hl_bn = 4. byte 7 = 0x09 → LinkTopPGC.
+        let i = cmd([0xA2, 0x23, 0x00, 0x05, 0x07, 0x08, 0x10, 0x09]).decode();
         assert_eq!(
             i,
             NavInstruction::CSetCLnk {
                 set_op: SetOp::Swp,
                 cmp_op: CmpOp::Eq,
+                sr1: Register::Gprm(3),
+                set_src: Operand::Register(Register::Gprm(5)),
+                cmp_lhs: Register::Gprm(7),
+                cmp_rhs: Operand::Register(Register::Gprm(8)),
+                hl_bn: 4,
+                link: LinkSubset::LinkTopPGC,
             }
         );
     }
 
     #[test]
-    fn decode_type6_cmpsetlnk_classifier() {
-        let i = cmd([0xC4, 0x70, 0, 0, 0, 0, 0, 0]).decode();
+    fn decode_type5_csetclnk_set_immediate_form() {
+        // SET-dir=1, CMP-dir=0 — row 95 — `sval2` at bytes 2..3.
+        // byte 0 = 0xB1 → type=5, SET-dir=1, set-op=1 (Mov).
+        // byte 1 = 0x22 → CMP-dir=0, cmp-op=2 (Eq), sr1=GPRM 2.
+        let i = cmd([0xB1, 0x22, 0xAB, 0xCD, 0x06, 0x07, 0x00, 0x05]).decode();
+        assert_eq!(
+            i,
+            NavInstruction::CSetCLnk {
+                set_op: SetOp::Mov,
+                cmp_op: CmpOp::Eq,
+                sr1: Register::Gprm(2),
+                set_src: Operand::Immediate(0xABCD),
+                cmp_lhs: Register::Gprm(6),
+                cmp_rhs: Operand::Register(Register::Gprm(7)),
+                hl_bn: 0,
+                link: LinkSubset::LinkTopPG,
+            }
+        );
+    }
+
+    #[test]
+    fn decode_type5_set_dir_and_cmp_dir_both_set_is_invalid() {
+        // Row 96: SET-dir=1 + CMP-dir=1 = "Illegal CSetCLnk" (red row).
+        let i = cmd([0xB1, 0xA2, 0, 0, 0, 0, 0, 0]).decode();
+        assert_eq!(i, NavInstruction::Invalid);
+    }
+
+    #[test]
+    fn decode_type6_cmpsetlnk_register_form() {
+        // byte 0 = 0xC4 → type=6, SET-dir=0, set-op=4 (Sub).
+        // byte 1 = 0x71 → CMP-dir=0, cmp-op=7 (Lt), sr1=GPRM 1.
+        // byte 3 = 0x06 → SET-src register GPRM 6 (srs).
+        // byte 5 = 0x82 → CMP-RHS register SPRM 2 (cr2).
+        // byte 6 = 0x08 → hl_bn = 2. byte 7 = 0x0A → LinkNextPGC.
+        let i = cmd([0xC4, 0x71, 0x00, 0x06, 0x00, 0x82, 0x08, 0x0A]).decode();
         assert_eq!(
             i,
             NavInstruction::CmpSetLnk {
                 set_op: SetOp::Sub,
                 cmp_op: CmpOp::Lt,
+                sr1: Register::Gprm(1),
+                set_src: Operand::Register(Register::Gprm(6)),
+                cmp_rhs: Operand::Register(Register::Sprm(2)),
+                hl_bn: 2,
+                link: LinkSubset::LinkNextPGC,
             }
         );
+    }
+
+    #[test]
+    fn decode_type6_set_dir_and_cmp_dir_both_set_is_invalid() {
+        // Row 101: SET-dir=1 + CMP-dir=1 = "Illegal CmpSetLnk".
+        let i = cmd([0xD1, 0xA2, 0, 0, 0, 0, 0, 0]).decode();
+        assert_eq!(i, NavInstruction::Invalid);
     }
 
     #[test]

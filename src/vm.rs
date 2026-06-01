@@ -626,26 +626,195 @@ impl Vm {
                 VmAction::Continue
             }
 
-            // -------- Type 4..6 — compound classifiers --------------
+            // -------- Type 4..6 — compound CMP/SET/LNK families -----
             //
-            // The decoder surfaces only the classifier sub-ops for
-            // the Type 4..6 compound instructions; their per-operand
-            // detail isn't carried in the current `NavInstruction`
-            // enum, so the executor treats them as a no-op + a
-            // `NoOpRaw` action that round-trips an all-zero word
-            // (the spec page documents the classifier-only forms as
-            // "Set/Compare/Link composition" — once the decoder is
-            // extended to carry the inner operands the executor will
-            // perform the implied SET + CMP + Link steps in order).
-            NavInstruction::SetCLnk { .. }
-            | NavInstruction::CSetCLnk { .. }
-            | NavInstruction::CmpSetLnk { .. } => VmAction::NoOpRaw(NavCommand::default()),
+            // The decoder now carries the full operand fields for
+            // the compound forms, so the executor performs the
+            // implied SET + CMP + LINK sequence in spec order per
+            // `mpucoder-vmi-sum.html`:
+            //
+            //   Type 4 SetCLnk  : (1) SET; (2) CMP; (3) Link on true.
+            //   Type 5 CSetCLnk : (1) CMP; on true → (2) SET, (3) Link.
+            //   Type 6 CmpSetLnk: (1) CMP; on true → (2) SET; (3) Link
+            //                     unconditionally.
+            //
+            // A failing compare in Type 4 / 5 returns `Continue` so
+            // the outer command list keeps walking; Type 6 always
+            // surfaces the Link target (because its Link runs
+            // regardless of the CMP outcome — that's what
+            // distinguishes it from Type 5).
+            NavInstruction::SetCLnk {
+                set_op,
+                cmp_op,
+                scr,
+                set_src,
+                cmp_rhs,
+                hl_bn,
+                link,
+            } => self.exec_set_clnk(set_op, cmp_op, scr, set_src, cmp_rhs, hl_bn, link),
+
+            NavInstruction::CSetCLnk {
+                set_op,
+                cmp_op,
+                sr1,
+                set_src,
+                cmp_lhs,
+                cmp_rhs,
+                hl_bn,
+                link,
+            } => self.exec_cset_clnk(set_op, cmp_op, sr1, set_src, cmp_lhs, cmp_rhs, hl_bn, link),
+
+            NavInstruction::CmpSetLnk {
+                set_op,
+                cmp_op,
+                sr1,
+                set_src,
+                cmp_rhs,
+                hl_bn,
+                link,
+            } => self.exec_cmp_set_lnk(set_op, cmp_op, sr1, set_src, cmp_rhs, hl_bn, link),
 
             // -------- Type 7 / red rows -----------------------------
             NavInstruction::Unknown | NavInstruction::Invalid => {
                 VmAction::NoOpRaw(NavCommand::default())
             }
         }
+    }
+
+    // ---- Type 4..6 compound execution helpers --------------------------
+    //
+    // All three helpers funnel into [`Vm::fire_link`] for the final
+    // step: turn the Link subset into the corresponding `VmAction`
+    // (Link / Continue / Resume), honouring the spec's RSM-pops-stack
+    // semantics inside compound bodies as well.
+
+    /// Resolve a Link-subset code into the appropriate VM action.
+    ///
+    /// `LinkSubset::Nop` collapses to `Continue` (the compound body
+    /// ran but its tail Link was a no-op); `LinkSubset::Rsm` pops the
+    /// RSM stack just as a bare Type-1 `LinkSub` would; the 11
+    /// remaining named subsets become `VmAction::Link(Subset { … })`.
+    /// `LinkSubset::Invalid(_)` falls through to `Continue` so a
+    /// malformed disc cannot crash the player.
+    fn fire_link(&mut self, link: LinkSubset, hl_bn: u8) -> VmAction {
+        match link {
+            LinkSubset::Nop => VmAction::Continue,
+            LinkSubset::Rsm => match self.pop_resume() {
+                Some(mut rp) => {
+                    rp.hl_btn = hl_bn;
+                    VmAction::Resume(rp)
+                }
+                None => VmAction::Continue,
+            },
+            LinkSubset::Invalid(_) => VmAction::Continue,
+            _ => VmAction::Link(LinkAction::Subset {
+                subset: link,
+                hl_bn,
+            }),
+        }
+    }
+
+    /// Apply a SET sub-op against `dst`, writing the result back and
+    /// handling the `Swp` cooperative write-back. `dst` must be a
+    /// GPRM — non-GPRM destinations (SPRM / Invalid) silently no-op
+    /// per the spec page's "compound SET writes a GPRM" wording.
+    fn apply_set_to_register(&mut self, op: SetOp, dst: Register, src: Operand) {
+        let Register::Gprm(i) = dst else {
+            return;
+        };
+        let cur = self.regs.gprm(i);
+        let rhs = self.regs.read_operand(src);
+        let new = Self::apply_set(op, cur, rhs);
+        self.regs.set_gprm(i, new);
+        if matches!(op, SetOp::Swp) {
+            if let Operand::Register(Register::Gprm(j)) = src {
+                self.regs.set_gprm(j, cur);
+            }
+        }
+    }
+
+    /// Type 4 — `SetCLnk`: SET first, then CMP, then Link if the
+    /// compare succeeded. The CMP uses the post-SET value of `scr`.
+    #[allow(clippy::too_many_arguments)]
+    fn exec_set_clnk(
+        &mut self,
+        set_op: SetOp,
+        cmp_op: CmpOp,
+        scr: Register,
+        set_src: Operand,
+        cmp_rhs: Operand,
+        hl_bn: u8,
+        link: LinkSubset,
+    ) -> VmAction {
+        // (1) SET — only fires if `set_op` is a real op; `None` makes
+        // the family collapse into a plain compare-link.
+        if !matches!(set_op, SetOp::None | SetOp::Invalid(_)) {
+            self.apply_set_to_register(set_op, scr, set_src);
+        }
+        // (2) CMP against the post-SET value of `scr`.
+        let lhs = self.regs.read(scr);
+        let rhs = self.regs.read_operand(cmp_rhs);
+        if Self::evaluate(cmp_op, lhs, rhs) {
+            // (3) Link on true.
+            self.fire_link(link, hl_bn)
+        } else {
+            VmAction::Continue
+        }
+    }
+
+    /// Type 5 — `CSetCLnk`: CMP first; on true, SET then Link.
+    #[allow(clippy::too_many_arguments)]
+    fn exec_cset_clnk(
+        &mut self,
+        set_op: SetOp,
+        cmp_op: CmpOp,
+        sr1: Register,
+        set_src: Operand,
+        cmp_lhs: Register,
+        cmp_rhs: Operand,
+        hl_bn: u8,
+        link: LinkSubset,
+    ) -> VmAction {
+        // (1) CMP.
+        let lhs = self.regs.read(cmp_lhs);
+        let rhs = self.regs.read_operand(cmp_rhs);
+        if !Self::evaluate(cmp_op, lhs, rhs) {
+            return VmAction::Continue;
+        }
+        // (2) SET on the true branch.
+        if !matches!(set_op, SetOp::None | SetOp::Invalid(_)) {
+            self.apply_set_to_register(set_op, sr1, set_src);
+        }
+        // (3) Link on the true branch.
+        self.fire_link(link, hl_bn)
+    }
+
+    /// Type 6 — `CmpSetLnk`: CMP first; on true, SET; then Link
+    /// **unconditionally**. The CMP outcome only gates the SET, not
+    /// the Link — that's how Type 6 differs from Type 5 per
+    /// `mpucoder-vmi-sum.html`.
+    #[allow(clippy::too_many_arguments)]
+    fn exec_cmp_set_lnk(
+        &mut self,
+        set_op: SetOp,
+        cmp_op: CmpOp,
+        sr1: Register,
+        set_src: Operand,
+        cmp_rhs: Operand,
+        hl_bn: u8,
+        link: LinkSubset,
+    ) -> VmAction {
+        // (1) CMP — uses the pre-SET value of `sr1`.
+        let lhs = self.regs.read(sr1);
+        let rhs = self.regs.read_operand(cmp_rhs);
+        if Self::evaluate(cmp_op, lhs, rhs) {
+            // (2) SET on the true branch.
+            if !matches!(set_op, SetOp::None | SetOp::Invalid(_)) {
+                self.apply_set_to_register(set_op, sr1, set_src);
+            }
+        }
+        // (3) Link — always.
+        self.fire_link(link, hl_bn)
     }
 
     /// Walk a pre / post / cell command list end-to-end.
@@ -1110,6 +1279,245 @@ mod tests {
         // No mutation on either path.
         assert_eq!(vm.regs.gprm(0), pre.gprm(0));
         assert_eq!(vm.regs.sprm(0), pre.sprm(0));
+    }
+
+    // -----------------------------------------------------------------
+    // Type 4..6 compound execution — SET / CMP / LINK sequencing.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn step_set_clnk_runs_set_then_compare_links_on_true() {
+        // SetCLnk: G3 += 5; if (G3 == 10) Link LinkNextPG.
+        // Set G3 = 5 first so post-SET G3 == 10.
+        let mut vm = Vm::new();
+        vm.regs.set_gprm(3, 5);
+        let action = vm.step(NavInstruction::SetCLnk {
+            set_op: SetOp::Add,
+            cmp_op: CmpOp::Eq,
+            scr: Register::Gprm(3),
+            set_src: Operand::Immediate(5),
+            cmp_rhs: Operand::Immediate(10),
+            hl_bn: 2,
+            link: LinkSubset::LinkNextPG,
+        });
+        assert_eq!(vm.regs.gprm(3), 10);
+        assert_eq!(
+            action,
+            VmAction::Link(LinkAction::Subset {
+                subset: LinkSubset::LinkNextPG,
+                hl_bn: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn step_set_clnk_runs_set_but_skips_link_on_false() {
+        // SetCLnk: G3 += 1 (1 -> 2); if (G3 == 10) Link. Compare
+        // fails; SET still ran, but no Link surfaces.
+        let mut vm = Vm::new();
+        vm.regs.set_gprm(3, 1);
+        let action = vm.step(NavInstruction::SetCLnk {
+            set_op: SetOp::Add,
+            cmp_op: CmpOp::Eq,
+            scr: Register::Gprm(3),
+            set_src: Operand::Immediate(1),
+            cmp_rhs: Operand::Immediate(10),
+            hl_bn: 0,
+            link: LinkSubset::LinkNextPG,
+        });
+        assert_eq!(vm.regs.gprm(3), 2);
+        assert_eq!(action, VmAction::Continue);
+    }
+
+    #[test]
+    fn step_cset_clnk_runs_set_only_on_true() {
+        // CSetCLnk: if (G7 == 9) { G3 = 99; Link LinkTopPGC }.
+        // CMP true → SET runs + Link surfaces.
+        let mut vm = Vm::new();
+        vm.regs.set_gprm(7, 9);
+        let action = vm.step(NavInstruction::CSetCLnk {
+            set_op: SetOp::Mov,
+            cmp_op: CmpOp::Eq,
+            sr1: Register::Gprm(3),
+            set_src: Operand::Immediate(99),
+            cmp_lhs: Register::Gprm(7),
+            cmp_rhs: Operand::Immediate(9),
+            hl_bn: 0,
+            link: LinkSubset::LinkTopPGC,
+        });
+        assert_eq!(vm.regs.gprm(3), 99);
+        assert_eq!(
+            action,
+            VmAction::Link(LinkAction::Subset {
+                subset: LinkSubset::LinkTopPGC,
+                hl_bn: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn step_cset_clnk_skips_set_and_link_on_false() {
+        // CSetCLnk on false: neither SET nor LINK runs.
+        let mut vm = Vm::new();
+        vm.regs.set_gprm(7, 1);
+        vm.regs.set_gprm(3, 42);
+        let action = vm.step(NavInstruction::CSetCLnk {
+            set_op: SetOp::Mov,
+            cmp_op: CmpOp::Eq,
+            sr1: Register::Gprm(3),
+            set_src: Operand::Immediate(99),
+            cmp_lhs: Register::Gprm(7),
+            cmp_rhs: Operand::Immediate(9),
+            hl_bn: 0,
+            link: LinkSubset::LinkTopPGC,
+        });
+        // SET did not run — G3 still 42.
+        assert_eq!(vm.regs.gprm(3), 42);
+        assert_eq!(action, VmAction::Continue);
+    }
+
+    #[test]
+    fn step_cmp_set_lnk_links_unconditionally_even_on_false_cmp() {
+        // CmpSetLnk on false: SET skipped, but LINK still fires (the
+        // distinguishing semantic from Type 5).
+        let mut vm = Vm::new();
+        vm.regs.set_gprm(1, 1);
+        let action = vm.step(NavInstruction::CmpSetLnk {
+            set_op: SetOp::Mov,
+            cmp_op: CmpOp::Eq,
+            sr1: Register::Gprm(1),
+            set_src: Operand::Immediate(99),
+            cmp_rhs: Operand::Immediate(9),
+            hl_bn: 5,
+            link: LinkSubset::LinkNextPGC,
+        });
+        // SET skipped.
+        assert_eq!(vm.regs.gprm(1), 1);
+        // Link still fires.
+        assert_eq!(
+            action,
+            VmAction::Link(LinkAction::Subset {
+                subset: LinkSubset::LinkNextPGC,
+                hl_bn: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn step_cmp_set_lnk_runs_set_on_true_then_links() {
+        // CmpSetLnk on true: SET runs then LINK fires.
+        let mut vm = Vm::new();
+        vm.regs.set_gprm(2, 7);
+        let action = vm.step(NavInstruction::CmpSetLnk {
+            set_op: SetOp::Add,
+            cmp_op: CmpOp::Eq,
+            sr1: Register::Gprm(2),
+            set_src: Operand::Immediate(3),
+            cmp_rhs: Operand::Immediate(7),
+            hl_bn: 0,
+            link: LinkSubset::LinkPrevPG,
+        });
+        assert_eq!(vm.regs.gprm(2), 10);
+        assert_eq!(
+            action,
+            VmAction::Link(LinkAction::Subset {
+                subset: LinkSubset::LinkPrevPG,
+                hl_bn: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn step_compound_with_link_nop_returns_continue() {
+        // A compound whose Link subset is NOP collapses to Continue
+        // even when the CMP succeeds (the compound body ran but its
+        // tail Link is a literal NOP per the link-subset table).
+        let mut vm = Vm::new();
+        let action = vm.step(NavInstruction::CmpSetLnk {
+            set_op: SetOp::None,
+            cmp_op: CmpOp::None,
+            sr1: Register::Gprm(0),
+            set_src: Operand::Immediate(0),
+            cmp_rhs: Operand::Immediate(0),
+            hl_bn: 0,
+            link: LinkSubset::Nop,
+        });
+        assert_eq!(action, VmAction::Continue);
+    }
+
+    #[test]
+    fn step_compound_with_link_rsm_pops_resume_stack() {
+        // A compound's RSM Link variant pops the same RSM stack as a
+        // bare Type-1 LinkSub Rsm. Push a frame, fire a Type-6
+        // compound whose Link is Rsm, observe the Resume action.
+        let mut vm = Vm::new();
+        assert!(vm.push_resume(ResumePoint {
+            resume_cell: 4,
+            hl_btn: 0,
+        }));
+        let action = vm.step(NavInstruction::CmpSetLnk {
+            set_op: SetOp::None,
+            cmp_op: CmpOp::None,
+            sr1: Register::Gprm(0),
+            set_src: Operand::Immediate(0),
+            cmp_rhs: Operand::Immediate(0),
+            hl_bn: 9,
+            link: LinkSubset::Rsm,
+        });
+        assert_eq!(
+            action,
+            VmAction::Resume(ResumePoint {
+                resume_cell: 4,
+                hl_btn: 9,
+            })
+        );
+        assert_eq!(vm.resume_depth(), 0);
+    }
+
+    #[test]
+    fn step_compound_with_invalid_link_subset_is_continue() {
+        // An `Invalid` link-subset bag (e.g. 0x04, 0x08) collapses to
+        // Continue rather than panicking — malformed discs survive.
+        let mut vm = Vm::new();
+        let action = vm.step(NavInstruction::SetCLnk {
+            set_op: SetOp::None,
+            cmp_op: CmpOp::None,
+            scr: Register::Gprm(0),
+            set_src: Operand::Immediate(0),
+            cmp_rhs: Operand::Immediate(0),
+            hl_bn: 0,
+            link: LinkSubset::Invalid(0x04),
+        });
+        assert_eq!(action, VmAction::Continue);
+    }
+
+    #[test]
+    fn step_compound_setop_none_skips_set_phase() {
+        // SET-op = None means the compound's SET phase is a no-op
+        // even on the true branch — the destination keeps its
+        // pre-existing value while CMP + LINK still fire normally.
+        let mut vm = Vm::new();
+        vm.regs.set_gprm(5, 42);
+        let action = vm.step(NavInstruction::CSetCLnk {
+            set_op: SetOp::None,
+            cmp_op: CmpOp::Eq,
+            sr1: Register::Gprm(5),
+            set_src: Operand::Immediate(99), // would clobber 42 if SET ran
+            cmp_lhs: Register::Gprm(5),
+            cmp_rhs: Operand::Immediate(42),
+            hl_bn: 1,
+            link: LinkSubset::LinkTopCell,
+        });
+        // SET phase skipped.
+        assert_eq!(vm.regs.gprm(5), 42);
+        // CMP true; Link surfaces.
+        assert_eq!(
+            action,
+            VmAction::Link(LinkAction::Subset {
+                subset: LinkSubset::LinkTopCell,
+                hl_bn: 1,
+            })
+        );
     }
 
     // -----------------------------------------------------------------
