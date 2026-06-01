@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.2...v0.0.3) - 2026-06-01
+
+### Other
+
+- execute Type 4..6 compound CMP/SET/LNK families (Phase 3c completion)
+- Phase 3c interpreter — SPRM/GPRM register file + Link/Jump/Call execution
+
 ### Added
 
 - **Compound CMP/SET/LNK execution (Type 4..6) — Phase 3c completion.**
