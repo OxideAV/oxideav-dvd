@@ -286,6 +286,42 @@ same RSM stack as a bare Type-1 `LinkSub::Rsm`. Runaway `Goto`
 loops are bounded by a step budget so a malformed disc can never
 hang the interpreter.
 
+### SPRM bitfield-aware accessors
+
+Six SPRMs hold bit-packed payloads (SPRM 2 sub-picture state,
+SPRM 8 highlighted button, SPRM 11 karaoke mixing, SPRM 14 video
+preference, SPRM 15 audio capabilities, SPRM 20 region mask).
+The `RegisterFile` exposes typed accessors so a playback engine
+doesn't re-implement the bit layouts on each callsite — refer to
+`docs/container/dvd/application/mpucoder-sprm.html` for the
+canonical field allocations.
+
+```rust,no_run
+use oxideav_dvd::{Vm, AspectRatio, DisplayMode};
+
+let vm = Vm::new();
+// SPRM 2 default = "stream 62 / do-not-display"
+let spu = vm.regs.subpicture_stream();
+assert!(spu.is_none_sentinel());
+assert!(!spu.display);
+
+// SPRM 8 default = button 1
+assert_eq!(vm.regs.highlight_button(), 1);
+
+// SPRM 14 video preference (4:3 / Normal mode by default)
+let vp = vm.regs.video_preference();
+assert_eq!(vp.aspect, AspectRatio::Ar4x3);
+assert_eq!(vp.mode, DisplayMode::Normal);
+
+// SPRM 20 region mask — default = no regions enabled
+assert!(!vm.regs.region_allowed(1));
+```
+
+Each accessor decomposes the raw `u16` according to the spec
+page's bit allocation and preserves the original word on the
+returned view's `raw` field, so a caller that wants to forward
+the SPRM verbatim can round-trip it bit-for-bit.
+
 ## Clean-room sources
 
 This crate was written entirely against:

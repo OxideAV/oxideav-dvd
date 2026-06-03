@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SPRM bitfield-aware accessors + named indices for SPRMs 0/12/14..20.**
+  The `vm` module now exposes typed views for the six packed SPRMs
+  whose contents are documented as bit-packed payloads on
+  `mpucoder-sprm.html`:
+  - `RegisterFile::subpicture_stream()` → `SubpictureStreamView` —
+    decodes SPRM 2 into the 6-bit stream index, the bit-6
+    `display` flag, plus `is_none_sentinel` / `is_forced_sentinel`
+    helpers for the spec's `62` / `63` special values.
+  - `RegisterFile::highlight_button()` → `u8` — decodes SPRM 8's
+    `1..=36` button number from bits 10..=15; out-of-range fields
+    surface as `0` so a malformed disc cannot crash a player.
+  - `RegisterFile::audio_mix_mode()` → `AudioMixMode` — decodes
+    SPRM 11's six per-channel mix bits (bits 2/3/4 → front,
+    bits 10/11/12 → rear).
+  - `RegisterFile::video_preference()` → `VideoPreference` with
+    `AspectRatio` (4:3 / NotSpecified / Reserved / 16:9) and
+    `DisplayMode` (Normal / PanScan / Letterbox / Reserved) decoded
+    from SPRM 14 bits 10..=11 and 8..=9 respectively.
+  - `RegisterFile::audio_capabilities()` → `AudioCapabilities` —
+    decodes SPRM 15's nine documented capability bits (SDDS / DTS /
+    MPEG / Dolby / PCM, each with optional karaoke variant);
+    `cannot_play()` returns `true` when the register is zero per the
+    spec page's "0 = cannot play" semantic.
+  - `RegisterFile::region_allowed(region)` / `region_mask()` —
+    decode SPRM 20's 8-bit region mask (bit `i` ⇒ region `i + 1`).
+  Named index constants added for the missing SPRMs: `SPRM_MENU_LANG`
+  (0), `SPRM_CC_PLT` (12), `SPRM_VIDEO_PREF` (14), `SPRM_AUDIO_CAPS`
+  (15), `SPRM_PREF_AUDIO_LANG` (16), `SPRM_PREF_AUDIO_LANG_EXT` (17),
+  `SPRM_PREF_SUBP_LANG` (18), `SPRM_PREF_SUBP_LANG_EXT` (19),
+  `SPRM_REGION_MASK` (20). Default-vector documentation table
+  re-rendered with one row per SPRM index, the spec value, and the
+  spec-page source. SPRMs 17 and 19 now hold an explicit `0` ("not
+  specified") rather than an implicit zero-fill, matching the spec's
+  language-extension enumeration. Clean-room per
+  `docs/container/dvd/application/mpucoder-sprm.html`. 14 new tests
+  cover each accessor's default value and bit-by-bit decode.
+
 - **Compound CMP/SET/LNK execution (Type 4..6) — Phase 3c completion.**
   The `nav` module's `SetCLnk` / `CSetCLnk` / `CmpSetLnk` variants now
   carry the full operand triple (SET source, CMP RHS, shared selector,

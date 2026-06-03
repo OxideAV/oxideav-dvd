@@ -55,6 +55,8 @@ pub const GPRM_COUNT: usize = 16;
 /// don't allocate them.
 pub const SPRM_COUNT: usize = 24;
 
+/// SPRM 0 — Preferred Menu Language (ISO 639 code, "player specific").
+pub const SPRM_MENU_LANG: u8 = 0;
 /// SPRM 1 — Audio Stream Number (`ASTN`).
 pub const SPRM_AUDIO_STREAM: u8 = 1;
 /// SPRM 2 — Sub-picture Stream Number (`SPSTN`).
@@ -77,16 +79,56 @@ pub const SPRM_NV_TIMER: u8 = 9;
 pub const SPRM_NV_PGCN: u8 = 10;
 /// SPRM 11 — Karaoke Audio Mixing Mode (`AMXMD`).
 pub const SPRM_AMXMD: u8 = 11;
+/// SPRM 12 — Parental-management Country Code (`CC_PLT`, ISO 3166).
+pub const SPRM_CC_PLT: u8 = 12;
 /// SPRM 13 — Parental Level (`PLT`).
 pub const SPRM_PARENTAL_LEVEL: u8 = 13;
+/// SPRM 14 — Video Preference + current display mode bitfield.
+pub const SPRM_VIDEO_PREF: u8 = 14;
+/// SPRM 15 — Player audio capability bitmap.
+pub const SPRM_AUDIO_CAPS: u8 = 15;
+/// SPRM 16 — Preferred audio language (ISO 639 code, default `0xFFFF`).
+pub const SPRM_PREF_AUDIO_LANG: u8 = 16;
+/// SPRM 17 — Preferred audio language extension code.
+pub const SPRM_PREF_AUDIO_LANG_EXT: u8 = 17;
+/// SPRM 18 — Preferred sub-picture language (ISO 639 code, default `0xFFFF`).
+pub const SPRM_PREF_SUBP_LANG: u8 = 18;
+/// SPRM 19 — Preferred sub-picture language extension code.
+pub const SPRM_PREF_SUBP_LANG_EXT: u8 = 19;
+/// SPRM 20 — Player Region-code mask (bit `i` ⇒ region `i + 1`).
+pub const SPRM_REGION_MASK: u8 = 20;
 
 /// The full SPRM-indexed default vector per `mpucoder-sprm.html`.
 ///
-/// "Player specific" cells per the spec page are left as `0`. The
-/// numeric defaults follow the spec page's `default` column:
-/// `ASTN=15`, `SPSTN=62`, `AGLN=1`, `TTN=1`, `VTS_TTN=1`, `PTTN=1`,
-/// `HL_BTNN=1024` (`1<<10`, the "button 1" code), `NVTMR=0`, the
-/// preferred-language slots default to `0xFFFF` ("none").
+/// "Player specific" cells (SPRM 0 menu-language, SPRM 6 TT_PGCN, SPRM 10
+/// NV_PGCN, SPRM 12 country code, SPRM 13 parental level, SPRM 14 video
+/// preference, SPRM 15 audio caps, SPRM 20 region mask) are left at `0`
+/// — the spec page assigns those to the host player's environment, not to
+/// a fixed numeric default. The numeric defaults follow the spec page's
+/// `default` column:
+///
+/// | SPRM | default            | source             |
+/// | ---- | ------------------ | ------------------ |
+/// |    1 | `15` (none)        | ASTN row           |
+/// |    2 | `62` (none)        | SPSTN row          |
+/// |    3 | `1`                | AGLN row           |
+/// |    4 | `1`                | TTN row            |
+/// |    5 | `1`                | VTS_TTN row        |
+/// |    7 | `1`                | PTTN row           |
+/// |    8 | `1024` (`1<<10`)   | HL_BTNN row, "button 1" in bits 10..15 |
+/// |    9 | `0`                | NVTMR row          |
+/// |   11 | `0`                | AMXMD row          |
+/// |   16 | `0xFFFF` (none)    | preferred audio language row |
+/// |   17 | `0` (not spec'd)   | language extension row |
+/// |   18 | `0xFFFF` (none)    | preferred sub-picture language row |
+/// |   19 | `0` (not spec'd)   | language extension row |
+///
+/// SPRMs 17 and 19 share the same documented enumeration: `0 = "not
+/// specified"`, then a small fixed code set per the spec's `language
+/// extension` row. The default `0` therefore matches "no preference
+/// expressed", consistent with the umbrella `0xFFFF` on the corresponding
+/// language slot. SPRMs 21..=23 are "reserved" on the spec page and we
+/// leave them at `0`.
 const SPRM_DEFAULTS: [u16; SPRM_COUNT] = {
     let mut v = [0u16; SPRM_COUNT];
     v[1] = 15; // ASTN
@@ -97,7 +139,9 @@ const SPRM_DEFAULTS: [u16; SPRM_COUNT] = {
     v[7] = 1; // PTTN
     v[8] = 1 << 10; // HL_BTNN — button 1 in bits 10..15
     v[16] = 0xFFFF; // preferred audio language
+    v[17] = 0; // preferred audio language extension — "not specified"
     v[18] = 0xFFFF; // preferred sub-picture language
+    v[19] = 0; // preferred sub-picture language extension — "not specified"
     v
 };
 
@@ -227,6 +271,259 @@ impl RegisterFile {
             self.gprm[bit] = self.gprm[bit].saturating_add(delta);
             mask &= !(1u16 << bit);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Bitfield-aware accessors for the 6 SPRMs whose contents are not a
+    // single integer but a documented bit-packed payload. Each accessor
+    // decomposes the register against the layout published on
+    // `docs/container/dvd/application/mpucoder-sprm.html`.
+    //
+    // The accessors **read** from the raw `u16` slot — they don't
+    // shadow the storage. A `SetSystem` opcode that writes the packed
+    // register still goes through `set_sprm`; these helpers exist so a
+    // player engine can ask "which subpicture stream is active and is
+    // it currently being displayed?" without re-implementing the
+    // bit-packing on every callsite.
+    // -----------------------------------------------------------------
+
+    /// SPRM 2 sub-picture stream — bits 0..=5 carry the stream
+    /// number (`0..=31`, `62` = none, `63` = forced); bit 6 = `0`
+    /// means "do not display". Returns the pair as a typed view.
+    pub fn subpicture_stream(&self) -> SubpictureStreamView {
+        let raw = self.sprm(SPRM_SUBPICTURE_STREAM);
+        SubpictureStreamView {
+            stream: (raw & 0x3F) as u8,
+            display: (raw >> 6) & 1 == 1,
+            raw,
+        }
+    }
+
+    /// SPRM 8 highlighted button — bits 10..=15 carry the button
+    /// number (`1..=36`); bits 0..=9 are documented as `0`.
+    /// Returns the decoded button number, or `0` when the field is
+    /// outside `1..=36` (which a malformed disc could encode).
+    pub fn highlight_button(&self) -> u8 {
+        let raw = self.sprm(SPRM_HL_BTNN);
+        let n = (raw >> 10) as u8;
+        if (1..=36).contains(&n) {
+            n
+        } else {
+            0
+        }
+    }
+
+    /// SPRM 11 karaoke audio mixing mode — returns the channel-routing
+    /// matrix. Bits 2/3/4 enable mixing channel 2/3/4 into the front
+    /// (front-left) channel; bits 10/11/12 enable mixing the same
+    /// channels into the rear (back) channel. Other bits are reserved.
+    pub fn audio_mix_mode(&self) -> AudioMixMode {
+        let raw = self.sprm(SPRM_AMXMD);
+        AudioMixMode {
+            mix_2_to_front: (raw >> 2) & 1 == 1,
+            mix_3_to_front: (raw >> 3) & 1 == 1,
+            mix_4_to_front: (raw >> 4) & 1 == 1,
+            mix_2_to_rear: (raw >> 10) & 1 == 1,
+            mix_3_to_rear: (raw >> 11) & 1 == 1,
+            mix_4_to_rear: (raw >> 12) & 1 == 1,
+            raw,
+        }
+    }
+
+    /// SPRM 14 video preference and current mode — bits 10..=11 carry
+    /// the preferred display aspect ratio; bits 8..=9 carry the
+    /// current display mode.
+    pub fn video_preference(&self) -> VideoPreference {
+        let raw = self.sprm(SPRM_VIDEO_PREF);
+        VideoPreference {
+            aspect: AspectRatio::from_bits(((raw >> 10) & 0b11) as u8),
+            mode: DisplayMode::from_bits(((raw >> 8) & 0b11) as u8),
+            raw,
+        }
+    }
+
+    /// SPRM 15 player audio capabilities — decodes the per-codec
+    /// capability bitmap into a typed view. `0` (no bits set) means
+    /// "cannot play anything" per the spec page.
+    pub fn audio_capabilities(&self) -> AudioCapabilities {
+        let raw = self.sprm(SPRM_AUDIO_CAPS);
+        AudioCapabilities {
+            sdds_karaoke: (raw >> 2) & 1 == 1,
+            dts_karaoke: (raw >> 3) & 1 == 1,
+            mpeg_karaoke: (raw >> 4) & 1 == 1,
+            dolby_karaoke: (raw >> 6) & 1 == 1,
+            pcm_karaoke: (raw >> 7) & 1 == 1,
+            sdds: (raw >> 10) & 1 == 1,
+            dts: (raw >> 11) & 1 == 1,
+            mpeg: (raw >> 12) & 1 == 1,
+            dolby: (raw >> 14) & 1 == 1,
+            raw,
+        }
+    }
+
+    /// SPRM 20 player region-code mask — bit `i` set ⇒ this player is
+    /// authorised to play region `i + 1` discs. Returns the bool
+    /// for the supplied region number (`1..=8`). Region `0` and
+    /// regions `9..` always return `false`.
+    pub fn region_allowed(&self, region: u8) -> bool {
+        if !(1..=8).contains(&region) {
+            return false;
+        }
+        let raw = self.sprm(SPRM_REGION_MASK);
+        (raw >> (region - 1)) & 1 == 1
+    }
+
+    /// SPRM 20 — full region-mask byte for callers that want to push
+    /// the bitmap downstream verbatim.
+    pub fn region_mask(&self) -> u8 {
+        self.sprm(SPRM_REGION_MASK) as u8
+    }
+}
+
+/// Decoded view of SPRM 2 (`SPSTN`).
+///
+/// `stream` is the raw 6-bit field (0..=31 = stream index, 62 = none,
+/// 63 = forced); `display` is bit 6 — when `false`, the sub-picture
+/// must not be displayed even if a stream is selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubpictureStreamView {
+    /// Bits 0..=5 of SPRM 2 — the raw stream identifier.
+    pub stream: u8,
+    /// Bit 6 of SPRM 2 — `true` ⇒ display the chosen sub-picture
+    /// stream; `false` ⇒ suppress display regardless of `stream`.
+    pub display: bool,
+    /// The original SPRM 2 word for callers that want to round-trip it.
+    pub raw: u16,
+}
+
+impl SubpictureStreamView {
+    /// `true` when the stream field encodes the "none" sentinel (`62`).
+    pub fn is_none_sentinel(self) -> bool {
+        self.stream == 62
+    }
+    /// `true` when the stream field encodes the "forced" sentinel (`63`).
+    pub fn is_forced_sentinel(self) -> bool {
+        self.stream == 63
+    }
+}
+
+/// Decoded view of SPRM 11 (`AMXMD`).
+///
+/// Each `mix_<N>_to_<front|rear>` flag follows the spec page's bit
+/// allocation: bit 2 = "mix ch 2 into front", bit 3 = "mix ch 3 into
+/// front", bit 4 = "mix ch 4 into front", bits 10/11/12 do the same
+/// for the rear destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioMixMode {
+    /// Mix channel 2 into the front-left channel.
+    pub mix_2_to_front: bool,
+    /// Mix channel 3 into the front-left channel.
+    pub mix_3_to_front: bool,
+    /// Mix channel 4 into the front-left channel.
+    pub mix_4_to_front: bool,
+    /// Mix channel 2 into the rear (back) channel.
+    pub mix_2_to_rear: bool,
+    /// Mix channel 3 into the rear (back) channel.
+    pub mix_3_to_rear: bool,
+    /// Mix channel 4 into the rear (back) channel.
+    pub mix_4_to_rear: bool,
+    /// Raw SPRM 11 word.
+    pub raw: u16,
+}
+
+/// Decoded view of SPRM 14 (video preference + current mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoPreference {
+    /// Bits 10..=11 — preferred display aspect ratio.
+    pub aspect: AspectRatio,
+    /// Bits 8..=9 — current display mode.
+    pub mode: DisplayMode,
+    /// Raw SPRM 14 word.
+    pub raw: u16,
+}
+
+/// Preferred display aspect-ratio code per SPRM 14 bits 10..=11.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AspectRatio {
+    /// `0` — 4:3.
+    Ar4x3,
+    /// `1` — not specified.
+    NotSpecified,
+    /// `2` — reserved.
+    Reserved,
+    /// `3` — 16:9.
+    Ar16x9,
+}
+
+impl AspectRatio {
+    /// Decode from the 2-bit field.
+    pub fn from_bits(bits: u8) -> Self {
+        match bits & 0b11 {
+            0 => Self::Ar4x3,
+            1 => Self::NotSpecified,
+            2 => Self::Reserved,
+            _ => Self::Ar16x9,
+        }
+    }
+}
+
+/// Current display mode per SPRM 14 bits 8..=9.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayMode {
+    /// `0` — normal.
+    Normal,
+    /// `1` — pan/scan.
+    PanScan,
+    /// `2` — letterbox.
+    Letterbox,
+    /// `3` — reserved.
+    Reserved,
+}
+
+impl DisplayMode {
+    /// Decode from the 2-bit field.
+    pub fn from_bits(bits: u8) -> Self {
+        match bits & 0b11 {
+            0 => Self::Normal,
+            1 => Self::PanScan,
+            2 => Self::Letterbox,
+            _ => Self::Reserved,
+        }
+    }
+}
+
+/// Decoded view of SPRM 15 (player audio capability bitmap).
+///
+/// `false` in every slot ⇒ the spec page's "cannot play" interpretation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioCapabilities {
+    /// Bit 2 — SDDS karaoke.
+    pub sdds_karaoke: bool,
+    /// Bit 3 — DTS karaoke.
+    pub dts_karaoke: bool,
+    /// Bit 4 — MPEG karaoke.
+    pub mpeg_karaoke: bool,
+    /// Bit 6 — Dolby karaoke.
+    pub dolby_karaoke: bool,
+    /// Bit 7 — PCM karaoke.
+    pub pcm_karaoke: bool,
+    /// Bit 10 — SDDS.
+    pub sdds: bool,
+    /// Bit 11 — DTS.
+    pub dts: bool,
+    /// Bit 12 — MPEG.
+    pub mpeg: bool,
+    /// Bit 14 — Dolby.
+    pub dolby: bool,
+    /// Raw SPRM 15 word.
+    pub raw: u16,
+}
+
+impl AudioCapabilities {
+    /// `true` ⇒ no capability bits are set; the player cannot play
+    /// any of the documented audio types per the spec page.
+    pub fn cannot_play(self) -> bool {
+        self.raw == 0
     }
 }
 
@@ -1629,5 +1926,201 @@ mod tests {
         let (action, pc) = vm.run_list(&[NavCommand::default()]);
         assert_eq!(action, VmAction::Continue);
         assert_eq!(pc, 1);
+    }
+
+    // -----------------------------------------------------------------
+    // SPRM bitfield accessors — cross-check decode against the spec
+    // page's documented bit layout for the 6 packed registers.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn sprm_defaults_cover_language_extension_slots() {
+        // SPRMs 17 + 19 are language-extension codes whose "not
+        // specified" default is `0`; the test fixes that we honour
+        // the spec's explicit default rather than leaving a vague
+        // zero-fill.
+        let r = RegisterFile::new();
+        assert_eq!(r.sprm(SPRM_PREF_AUDIO_LANG_EXT), 0);
+        assert_eq!(r.sprm(SPRM_PREF_SUBP_LANG_EXT), 0);
+    }
+
+    #[test]
+    fn sprm_named_constants_match_spec_indices() {
+        // Pin the spec's SPRM numbering against the named constants
+        // so a renumbering accident is caught at compile-time-equivalent.
+        assert_eq!(SPRM_MENU_LANG, 0);
+        assert_eq!(SPRM_CC_PLT, 12);
+        assert_eq!(SPRM_VIDEO_PREF, 14);
+        assert_eq!(SPRM_AUDIO_CAPS, 15);
+        assert_eq!(SPRM_PREF_AUDIO_LANG, 16);
+        assert_eq!(SPRM_PREF_AUDIO_LANG_EXT, 17);
+        assert_eq!(SPRM_PREF_SUBP_LANG, 18);
+        assert_eq!(SPRM_PREF_SUBP_LANG_EXT, 19);
+        assert_eq!(SPRM_REGION_MASK, 20);
+    }
+
+    #[test]
+    fn subpicture_stream_default_is_none_with_display_off() {
+        let r = RegisterFile::new();
+        let view = r.subpicture_stream();
+        // SPRM 2 default = 62 — bits 0..=5 = 62 ("none"), bit 6 = 0
+        // ("do not display"). Cross-check both decoded fields.
+        assert_eq!(view.stream, 62);
+        assert!(!view.display);
+        assert!(view.is_none_sentinel());
+        assert!(!view.is_forced_sentinel());
+    }
+
+    #[test]
+    fn subpicture_stream_forced_sentinel_with_display_on() {
+        let mut r = RegisterFile::new();
+        // stream = 63 (forced) with display bit set.
+        r.set_sprm(SPRM_SUBPICTURE_STREAM, 63 | (1 << 6));
+        let view = r.subpicture_stream();
+        assert_eq!(view.stream, 63);
+        assert!(view.display);
+        assert!(view.is_forced_sentinel());
+        assert!(!view.is_none_sentinel());
+    }
+
+    #[test]
+    fn highlight_button_decodes_default_as_one() {
+        let r = RegisterFile::new();
+        assert_eq!(r.highlight_button(), 1);
+    }
+
+    #[test]
+    fn highlight_button_decodes_arbitrary_value() {
+        let mut r = RegisterFile::new();
+        // Button 17 → bits 10..=15 = 17 → value = 17 << 10 = 17408.
+        r.set_sprm(SPRM_HL_BTNN, 17 << 10);
+        assert_eq!(r.highlight_button(), 17);
+    }
+
+    #[test]
+    fn highlight_button_rejects_out_of_range_field() {
+        let mut r = RegisterFile::new();
+        // Button 0 (below the 1..=36 spec range) → decode returns 0.
+        r.set_sprm(SPRM_HL_BTNN, 0);
+        assert_eq!(r.highlight_button(), 0);
+        // Button 37 (above the 1..=36 spec range) → decode returns 0.
+        r.set_sprm(SPRM_HL_BTNN, 37 << 10);
+        assert_eq!(r.highlight_button(), 0);
+    }
+
+    #[test]
+    fn audio_mix_mode_decodes_all_six_documented_bits() {
+        let mut r = RegisterFile::new();
+        // Set all six documented bits.
+        let bits = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 10) | (1 << 11) | (1 << 12);
+        r.set_sprm(SPRM_AMXMD, bits);
+        let m = r.audio_mix_mode();
+        assert!(m.mix_2_to_front);
+        assert!(m.mix_3_to_front);
+        assert!(m.mix_4_to_front);
+        assert!(m.mix_2_to_rear);
+        assert!(m.mix_3_to_rear);
+        assert!(m.mix_4_to_rear);
+        assert_eq!(m.raw, bits);
+    }
+
+    #[test]
+    fn audio_mix_mode_default_is_no_routing() {
+        let r = RegisterFile::new();
+        let m = r.audio_mix_mode();
+        assert!(!m.mix_2_to_front);
+        assert!(!m.mix_3_to_front);
+        assert!(!m.mix_4_to_front);
+        assert!(!m.mix_2_to_rear);
+        assert!(!m.mix_3_to_rear);
+        assert!(!m.mix_4_to_rear);
+    }
+
+    #[test]
+    fn video_preference_decodes_aspect_and_mode() {
+        let mut r = RegisterFile::new();
+        // aspect = 3 (16:9) in bits 10..=11, mode = 2 (letterbox) in bits 8..=9.
+        r.set_sprm(SPRM_VIDEO_PREF, (0b11 << 10) | (0b10 << 8));
+        let p = r.video_preference();
+        assert_eq!(p.aspect, AspectRatio::Ar16x9);
+        assert_eq!(p.mode, DisplayMode::Letterbox);
+    }
+
+    #[test]
+    fn video_preference_covers_every_named_code() {
+        // Round-trip each aspect/mode pair so a bit-position regression
+        // surfaces here rather than as a misdecoded run-time field.
+        assert_eq!(AspectRatio::from_bits(0), AspectRatio::Ar4x3);
+        assert_eq!(AspectRatio::from_bits(1), AspectRatio::NotSpecified);
+        assert_eq!(AspectRatio::from_bits(2), AspectRatio::Reserved);
+        assert_eq!(AspectRatio::from_bits(3), AspectRatio::Ar16x9);
+        assert_eq!(DisplayMode::from_bits(0), DisplayMode::Normal);
+        assert_eq!(DisplayMode::from_bits(1), DisplayMode::PanScan);
+        assert_eq!(DisplayMode::from_bits(2), DisplayMode::Letterbox);
+        assert_eq!(DisplayMode::from_bits(3), DisplayMode::Reserved);
+    }
+
+    #[test]
+    fn audio_capabilities_cannot_play_when_zero() {
+        let r = RegisterFile::new();
+        let c = r.audio_capabilities();
+        assert!(c.cannot_play());
+        assert!(!c.dolby);
+        assert!(!c.dts);
+        assert!(!c.mpeg);
+    }
+
+    #[test]
+    fn audio_capabilities_decodes_each_documented_bit() {
+        let mut r = RegisterFile::new();
+        let bits = (1 << 2)   // sdds_karaoke
+            | (1 << 3)        // dts_karaoke
+            | (1 << 4)        // mpeg_karaoke
+            | (1 << 6)        // dolby_karaoke
+            | (1 << 7)        // pcm_karaoke
+            | (1 << 10)       // sdds
+            | (1 << 11)       // dts
+            | (1 << 12)       // mpeg
+            | (1 << 14); // dolby
+        r.set_sprm(SPRM_AUDIO_CAPS, bits);
+        let c = r.audio_capabilities();
+        assert!(c.sdds_karaoke);
+        assert!(c.dts_karaoke);
+        assert!(c.mpeg_karaoke);
+        assert!(c.dolby_karaoke);
+        assert!(c.pcm_karaoke);
+        assert!(c.sdds);
+        assert!(c.dts);
+        assert!(c.mpeg);
+        assert!(c.dolby);
+        assert!(!c.cannot_play());
+    }
+
+    #[test]
+    fn region_mask_default_is_all_disallowed() {
+        let r = RegisterFile::new();
+        for region in 1..=8 {
+            assert!(!r.region_allowed(region));
+        }
+        // Out-of-range queries always return false.
+        assert!(!r.region_allowed(0));
+        assert!(!r.region_allowed(9));
+    }
+
+    #[test]
+    fn region_mask_per_region_decode() {
+        let mut r = RegisterFile::new();
+        // Allow regions 1, 2, 4, 8 (bit positions 0, 1, 3, 7).
+        let mask = (1u16 << 0) | (1 << 1) | (1 << 3) | (1 << 7);
+        r.set_sprm(SPRM_REGION_MASK, mask);
+        assert!(r.region_allowed(1));
+        assert!(r.region_allowed(2));
+        assert!(!r.region_allowed(3));
+        assert!(r.region_allowed(4));
+        assert!(!r.region_allowed(5));
+        assert!(!r.region_allowed(6));
+        assert!(!r.region_allowed(7));
+        assert!(r.region_allowed(8));
+        assert_eq!(r.region_mask(), mask as u8);
     }
 }
