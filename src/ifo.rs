@@ -292,6 +292,34 @@ pub struct DvdTitleEntry {
     pub vts_start_sector: u32,
 }
 
+impl DvdTitleEntry {
+    /// 2-bit UOP-prohibition subset packed into the low bits of
+    /// [`Self::title_type`].
+    ///
+    /// Per `docs/container/dvd/application/mpucoder-uops.html`,
+    /// TT_SRPT carries only UOP-0 (`TimePlayOrSearch`) and UOP-1
+    /// (`PttPlayOrSearch`); they live in the two low bits of
+    /// `title_type`. The remaining `title_type` bits encode the
+    /// title's jump/link/call permission flags per
+    /// `mpucoder-ifo_vmg.html` and stay outside the UOP surface.
+    #[inline]
+    pub fn uop_mask(&self) -> crate::uops::UopMask {
+        crate::uops::title_type_uop_mask(self.title_type)
+    }
+
+    /// `true` when `op` is **not** prohibited at the TT_SRPT level
+    /// for this title. Only the two TT_SRPT-applicable ops
+    /// (`TimePlayOrSearch`, `PttPlayOrSearch`) ever yield a `false`
+    /// here; every other op returns `true` because TT_SRPT has no
+    /// bit to encode them. The PGC-level and PCI-VOBU-level masks
+    /// still need to be consulted via
+    /// [`crate::uops::UopMask::merge_or`].
+    #[inline]
+    pub fn is_user_op_allowed(&self, op: crate::uops::UserOp) -> bool {
+        self.uop_mask().is_allowed(op)
+    }
+}
+
 /// Parsed TT_SRPT body — 8-byte header plus N × 12-byte entries.
 #[derive(Debug, Clone)]
 pub struct TtSrpt {
@@ -909,6 +937,28 @@ impl Pgc {
             cell_positions,
             commands,
         })
+    }
+
+    /// Typed view over [`Self::prohibited_user_ops`].
+    ///
+    /// The PGC-level UOP-prohibition mask follows the same 25-bit
+    /// layout as the PCI / TT_SRPT levels; this accessor wraps the
+    /// raw word so callers can use named [`UserOp`] variants
+    /// instead of magic bit numbers. Per
+    /// `docs/container/dvd/application/mpucoder-uops.html`, a set
+    /// bit inhibits the associated control.
+    #[inline]
+    pub fn uop_mask(&self) -> crate::uops::UopMask {
+        crate::uops::UopMask::from_bits(self.prohibited_user_ops)
+    }
+
+    /// `true` when `op` is **not** prohibited at the PGC level.
+    /// The full player-visible answer is still subject to the
+    /// TT_SRPT and PCI-VOBU masks per the spec's three-level OR
+    /// rule; use [`crate::uops::UopMask::merge_or`] to combine.
+    #[inline]
+    pub fn is_user_op_allowed(&self, op: crate::uops::UserOp) -> bool {
+        self.uop_mask().is_allowed(op)
     }
 }
 

@@ -606,6 +606,32 @@ impl PciPacket {
         })
     }
 
+    /// Typed view over [`Self::vobu_uop_ctl`].
+    ///
+    /// The per-VOBU UOP-prohibition mask follows the same 25-bit
+    /// layout as the PGC and TT_SRPT levels; this accessor wraps
+    /// the raw word so callers can use named
+    /// [`crate::uops::UserOp`] variants. Per
+    /// `docs/container/dvd/application/mpucoder-uops.html`, a set
+    /// bit inhibits the associated control. The spec table leaves
+    /// bits 0/1/2/17 (`TimePlayOrSearch` / `PttPlayOrSearch` /
+    /// `TitlePlay` / `ButtonSelectOrActivate`) blank for the VOBU
+    /// level — those bits are not expected to be set in a valid
+    /// PCI packet.
+    #[inline]
+    pub fn uop_mask(&self) -> crate::uops::UopMask {
+        crate::uops::UopMask::from_bits(self.vobu_uop_ctl)
+    }
+
+    /// `true` when `op` is **not** prohibited at the VOBU level.
+    /// The full player-visible answer is still subject to the
+    /// TT_SRPT and PGC masks per the spec's three-level OR rule;
+    /// use [`crate::uops::UopMask::merge_or`] to combine.
+    #[inline]
+    pub fn is_user_op_allowed(&self, op: crate::uops::UserOp) -> bool {
+        self.uop_mask().is_allowed(op)
+    }
+
     /// Decode the `HLI_GI` + `SL_COLI` + `BTN_IT` sub-structure.
     ///
     /// Returns `Ok(None)` when the VOBU declares no buttons

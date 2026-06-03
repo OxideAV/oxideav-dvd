@@ -92,6 +92,7 @@ pub mod nav;
 pub mod source;
 pub mod spu;
 pub mod udf;
+pub mod uops;
 pub mod vm;
 pub mod vob;
 
@@ -128,6 +129,16 @@ pub use udf::{
     AdType, AnchorVolumeDescriptorPointer, DescriptorTag, ExtAd, Extent, FileEntry,
     FileIdentifierDescriptor, FileSetDescriptor, IcbTag, LbAddr, LogicalVolumeDescriptor, LongAd,
     PartitionDescriptor, ShortAd, TagId, UdfFile, UdfVolume,
+};
+pub use uops::{
+    title_type_uop_mask, UopIter, UopLevel, UopMask, UserOp, UOP_ANGLE_CHANGE,
+    UOP_AUDIO_STREAM_CHANGE, UOP_BACKWARD_SCAN, UOP_BIT_COUNT, UOP_BUTTON_SELECT_OR_ACTIVATE,
+    UOP_DEFINED_BITS, UOP_FORWARD_SCAN, UOP_GO_UP, UOP_KARAOKE_AUDIO_MIX_CHANGE,
+    UOP_MENU_CALL_ANGLE, UOP_MENU_CALL_AUDIO, UOP_MENU_CALL_PTT, UOP_MENU_CALL_ROOT,
+    UOP_MENU_CALL_SUBPICTURE, UOP_MENU_CALL_TITLE, UOP_NEXT_PG_SEARCH, UOP_PAUSE_ON,
+    UOP_PTT_PLAY_OR_SEARCH, UOP_RESUME, UOP_STILL_OFF, UOP_STOP, UOP_SUBPICTURE_STREAM_CHANGE,
+    UOP_TIME_OR_PTT_SEARCH, UOP_TIME_PLAY_OR_SEARCH, UOP_TITLE_PLAY, UOP_TOP_PG_OR_PREV_PG_SEARCH,
+    UOP_VIDEO_PRESENTATION_MODE_CHANGE,
 };
 pub use vm::{
     AspectRatio, AudioCapabilities, AudioMixMode, DisplayMode, LinkAction, RegisterFile,

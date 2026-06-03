@@ -9,6 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`uops` module — DVD-Video User Operation flag decoder.**
+  Three on-disc fields carry a UOP-prohibition bitmask: the
+  TT_SRPT entry (bits 0+1 packed into `title_type`), the PGC
+  header (offset `0x0008`), and the PCI packet (`PCI_GI 08`). The
+  new `uops` module surfaces them as typed values, clean-room per
+  `docs/container/dvd/application/mpucoder-uops.html` (25-row bit
+  table + per-level applicability columns + the "set bit in *any*
+  mask inhibits the associated control" three-level OR-merge
+  rule).
+  - **`UserOp`** enum — 25 variants (`TimePlayOrSearch`,
+    `PttPlayOrSearch`, `TitlePlay`, `Stop`, `GoUp`,
+    `TimeOrPttSearch`, `TopPgOrPrevPgSearch`, `NextPgSearch`,
+    `ForwardScan`, `BackwardScan`, the six `MenuCall*` variants,
+    `Resume`, `ButtonSelectOrActivate`, `StillOff`, `PauseOn`,
+    `AudioStreamChange`, `SubpictureStreamChange`, `AngleChange`,
+    `KaraokeAudioMixChange`, `VideoPresentationModeChange`) with
+    `bit()`, `mask()`, `from_bit()`, and `ALL` accessors.
+  - **`UopMask`** — `u32` newtype with `contains` / `is_allowed`
+    / `with` / `without` / `set` / `clear` / `is_empty` / `count`
+    / `iter` accessors plus `merge_or(a, b, c)` for the three-
+    level OR. `defined_bits()` masks the raw word to bits 0..=24
+    so reserved bits don't pollute the comparison. `fits_level`
+    validates that a mask carries only bits the spec table marks
+    present at the given level — useful for an IFO sanity check.
+  - **`UopLevel`** enum (`TitleSearchPointer` / `ProgramChain`
+    / `Vobu`) with a `cover()` accessor reporting which bits the
+    spec table's PGC and VOBU columns mark check-marked. PGC
+    cover excludes bit 4 (`GoUp`) per the spec table's row 4
+    PGC-column blank; VOBU cover excludes bits 0/1/2/17 per the
+    same table.
+  - **`title_type_uop_mask(title_type) -> UopMask`** — extracts
+    the 2-bit TT_SRPT subset from a `DvdTitleEntry::title_type`
+    byte (low two bits only; remaining bits are jump/link/call
+    permission flags per `mpucoder-ifo_vmg.html` and stay out of
+    the UOP surface).
+  - **Typed accessors wired into existing parsers**:
+    - `Pgc::uop_mask()` / `Pgc::is_user_op_allowed(UserOp)`
+      around `Pgc::prohibited_user_ops`.
+    - `PciPacket::uop_mask()` / `PciPacket::is_user_op_allowed`
+      around `PciPacket::vobu_uop_ctl`.
+    - `DvdTitleEntry::uop_mask()` /
+      `DvdTitleEntry::is_user_op_allowed` around
+      `DvdTitleEntry::title_type` (low 2 bits).
+  - **Constants** — `UOP_TIME_PLAY_OR_SEARCH` through
+    `UOP_VIDEO_PRESENTATION_MODE_CHANGE` (25 named bit-number
+    constants), `UOP_BIT_COUNT = 25`, and `UOP_DEFINED_BITS =
+    0x01FF_FFFF`.
+  - 21 new in-module tests (bit-number / mask round-trip; spec-
+    table column reproduction including the GoUp/PGC-blank row;
+    title_type byte sweep; merge-or commutativity / associativity
+    / identity; iter ordering; reserved-bit skip; `fits_level`
+    cross-products) plus 7 cross-module integration tests in
+    `tests/uops_integration.rs` validating the typed accessors
+    against a hand-built `Pgc::parse` / `PciPacket::parse` / raw
+    `DvdTitleEntry` plus the three-level merge end-to-end.
+    **229 lib tests** (was 208) + 7 integration tests.
+
 - **`lpcm` module — DVD-Video LPCM 7-byte audio-pack header decoder.**
   The `private_stream_1` LPCM substream (`0xA0..=0xA7`) carries a
   fixed 7-byte audio-pack header ahead of the raw PCM sample bytes

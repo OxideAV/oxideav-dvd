@@ -65,6 +65,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed (Phase 3a) |
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed (Phase 3a) |
 | LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed (Phase 3a) |
+| User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed (Phase 3c support) |
 | VOBU_SRI search-table decode | landed (Phase 3a) |
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed (Phase 3a) |
 | NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI) | landed (Phase 3a) |
@@ -240,6 +241,50 @@ the result against the 6144 kbps DVD-Video ceiling per
 dynamic-range coefficient on `mpucoder-lpcm.html`
 (`2^(4 - (X + Y/30))` and `24.082 - 6.0206 X - 0.2007 Y`); applying
 the gain to the decoded samples stays with the audio decoder.
+
+## Querying User Operation prohibitions
+
+The `uops` module surfaces the 25-entry user-operation table per
+`mpucoder-uops.html` plus the spec's three-level OR-merge rule.
+Three on-disc fields carry a UOP-prohibition mask — the TT_SRPT
+entry (bits 0+1 packed in `title_type`), the PGC header (offset
+`0x0008`), and the PCI packet (`PCI_GI 08`) — and a set bit in
+*any* of them inhibits the associated control.
+
+```rust
+use oxideav_dvd::ifo::{DvdTitleEntry, Pgc};
+use oxideav_dvd::uops::{UopMask, UserOp};
+use oxideav_dvd::vob::PciPacket;
+
+fn user_op_allowed(
+    title: &DvdTitleEntry,
+    pgc: &Pgc,
+    pci: &PciPacket,
+    op: UserOp,
+) -> bool {
+    let merged = UopMask::merge_or(
+        title.uop_mask(),
+        pgc.uop_mask(),
+        pci.uop_mask(),
+    );
+    merged.is_allowed(op)
+}
+
+// `Pgc::uop_mask().iter()` walks the currently-prohibited ops in
+// ascending bit order; reserved bits above bit 24 are skipped.
+fn report(pgc: &Pgc) {
+    for op in pgc.uop_mask().iter() {
+        println!("PGC blocks {:?}", op);
+    }
+}
+```
+
+Each accessor wraps a `u32` newtype; `UopMask::from_bits` /
+`raw()` round-trip the on-disc value exactly. `fits_level(level)`
+validates that a mask carries only the bits the spec table marks
+present at that level — useful for an IFO sanity-checker.
+
+
 
 ## Disassembling a NavCommand (Phase 3c precursor)
 
@@ -431,6 +476,12 @@ This crate was written entirely against:
   per-`(sample_rate × quantisation × channels)` bitrate table and
   the 6144 kbps DVD-Video ceiling used by
   `LpcmHeader::is_within_dvd_video_limit`.
+- `docs/container/dvd/application/mpucoder-uops.html` — the 25-row
+  User Operation flag table (bit numbers + per-level applicability
+  matrix + three-level OR-merge rule) feeding the `uops` module's
+  `UserOp` / `UopMask` / `UopLevel` decoder and the typed
+  `uop_mask()` / `is_user_op_allowed()` accessors exposed on
+  `Pgc`, `PciPacket`, and `DvdTitleEntry`.
 
 The crate is built clean-room from the spec PDFs and the
 behavioural-trace HTML pages listed above; no external player or
