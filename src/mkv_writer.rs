@@ -121,8 +121,9 @@ impl DvdMkvStream {
             Self::Dts(_) => CodecId::new("dts"),
             // Map LPCM to a generic pcm tag — MKV's `A_PCM/INT/BIG`
             // is the wire form DVD LPCM matches once the 7-byte
-            // private-stream-1 framing header is stripped (which is
-            // a Phase 3c task, not this round).
+            // private-stream-1 audio-pack header (see
+            // `crate::lpcm::LpcmHeader`) is stripped by the Pass-2
+            // routing below.
             Self::Lpcm(_) => CodecId::new("pcm_s16be"),
             Self::Subpicture(_) => CodecId::new("dvd_subtitle"),
         }
@@ -336,9 +337,22 @@ pub fn write_title_to_mkv(
                     let mut data = pes.payload.to_vec();
                     // private_stream_1 payload's first byte is the
                     // substream ID — strip so the MKV consumer sees
-                    // clean AC-3 / DTS / LPCM / VobSub bytes.
+                    // clean AC-3 / DTS / LPCM / VobSub bytes. LPCM
+                    // additionally carries a 7-byte audio-pack header
+                    // (`mpucoder-lpcm.html`) ahead of the raw PCM
+                    // sample bytes; strip those too so the MKV
+                    // `pcm_s16be` track receives big-endian samples
+                    // verbatim per `A_PCM/INT/BIG`.
                     if pes.stream_id == SC_PRIVATE_STREAM_1 && !data.is_empty() {
+                        let is_lpcm = matches!(stream, DvdMkvStream::Lpcm(_));
                         data.remove(0);
+                        if is_lpcm && data.len() >= crate::LPCM_HEADER_LEN - 1 {
+                            // We already removed the substream-ID
+                            // byte; the LPCM header counts that byte
+                            // as offset 0, so strip the remaining 6
+                            // header bytes.
+                            data.drain(0..crate::LPCM_HEADER_LEN - 1);
+                        }
                     }
                     let mut flags = PacketFlags::default();
                     // DVD video is MPEG-2 with sparse I-frames; we

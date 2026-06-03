@@ -64,6 +64,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | VTS_C_ADT (cell-to-VOB-sector lookup) | landed |
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed (Phase 3a) |
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed (Phase 3a) |
+| LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed (Phase 3a) |
 | VOBU_SRI search-table decode | landed (Phase 3a) |
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed (Phase 3a) |
 | NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI) | landed (Phase 3a) |
@@ -196,6 +197,49 @@ YCbCr to RGB (`ycbcr_to_rgb`, luma scale `Y = 16` 0 % … `Y = 235`
 top-field (lines 1, 3, 5, …) and bottom-field pixel data into one
 row-major `SpuBitmap`. Positioning/scaling the overlay onto the
 video frame stays with the player.
+
+## Decoding an LPCM audio-pack header
+
+The `lpcm` module pulls the 7-byte audio-pack header off the start
+of a `private_stream_1` LPCM PES payload (substream `0xA0..=0xA7`)
+and surfaces the sample format the raw PCM bytes were encoded in:
+
+```rust,no_run
+use oxideav_dvd::{LpcmHeader, LpcmQuantisation, LpcmSampleFrequency, peel_lpcm_payload};
+
+// `lpcm_payload` starts at the substream-ID byte (`0xA0..=0xA7`) —
+// the same shape `VobStreams::lpcm` would carry if the demuxer
+// preserved the substream selector ahead of the body.
+let lpcm_payload: &[u8] = &[
+    0xA0, // sub_stream_id (track 0)
+    0x01, // number_of_frame_headers
+    0x00, 0x14, // first_access_unit_pointer = 20
+    0x00, // emphasis=0 mute=0 frame=0
+    0x01, // q=16-bit, sr=48 kHz, 2-channel
+    0x00, // dynamic_range X=0, Y=0
+    /* … raw big-endian PCM samples … */
+];
+
+let (h, samples) = peel_lpcm_payload(lpcm_payload).unwrap();
+assert_eq!(h.track(), 0);
+assert_eq!(h.quantisation, LpcmQuantisation::Bits16);
+assert_eq!(h.sample_frequency, LpcmSampleFrequency::Hz48000);
+assert_eq!(h.channel_count, 2);
+assert_eq!(h.bitrate_kbps(), Some(1_536));
+assert!(h.is_within_dvd_video_limit());
+// `samples` is the big-endian PCM tail, ready for sample unpacking.
+let _ = samples;
+```
+
+`LpcmHeader::bitrate_kbps()` returns the `channels × sample_rate ×
+bits_per_sample / 1000` rate; `is_within_dvd_video_limit()` checks
+the result against the 6144 kbps DVD-Video ceiling per
+`stnsoft-LimPcmAud.html` (the red-highlighted combinations like
+96 kHz × 24-bit × 8-channel return `false`). `linear_gain()` /
+`gain_db()` evaluate the two parameterisations of the X/Y
+dynamic-range coefficient on `mpucoder-lpcm.html`
+(`2^(4 - (X + Y/30))` and `24.082 - 6.0206 X - 0.2007 Y`); applying
+the gain to the decoded samples stays with the audio decoder.
 
 ## Disassembling a NavCommand (Phase 3c precursor)
 
@@ -378,6 +422,15 @@ This crate was written entirely against:
   packet layouts, DVD substream allocations, VOBU / cell / VOB
   semantics, and the Program Stream System Header used by the
   Phase 3a VOB demuxer.
+- `docs/container/dvd/application/mpucoder-lpcm.html` — the 7-byte
+  LPCM audio-pack header layout (quantisation / sample-rate /
+  channel-count fields, first-access-unit pointer, the X/Y
+  dynamic-range coefficients) feeding the `lpcm` module's
+  `LpcmHeader` decoder.
+- `docs/container/dvd/application/stnsoft-LimPcmAud.html` — the
+  per-`(sample_rate × quantisation × channels)` bitrate table and
+  the 6144 kbps DVD-Video ceiling used by
+  `LpcmHeader::is_within_dvd_video_limit`.
 
 The crate is built clean-room from the spec PDFs and the
 behavioural-trace HTML pages listed above; no external player or

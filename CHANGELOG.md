@@ -9,6 +9,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`lpcm` module — DVD-Video LPCM 7-byte audio-pack header decoder.**
+  The `private_stream_1` LPCM substream (`0xA0..=0xA7`) carries a
+  fixed 7-byte audio-pack header ahead of the raw PCM sample bytes
+  that pins the sample format, the seamless-playback frame counter,
+  and the X/Y dynamic-range coefficients. The new `lpcm` module
+  decodes that header into a typed `LpcmHeader`, clean-room per
+  `docs/container/dvd/application/mpucoder-lpcm.html`
+  (field layout + `linear_gain = 2^(4 - (X + Y/30))` /
+  `gain_db = 24.082 - 6.0206 X - 0.2007 Y` formulas) and
+  `docs/container/dvd/application/stnsoft-LimPcmAud.html` (the
+  per-`(sample_rate × quantisation × channels)` bitrate table and
+  the 6144 kbps DVD-Video LPCM ceiling). Clean-room from those two
+  spec pages only.
+  - **`LpcmHeader`** — `{ sub_stream_id, number_of_frame_headers,
+    first_access_unit_pointer, audio_emphasis_flag, audio_mute_flag,
+    audio_frame_number, quantisation, sample_frequency, channel_count,
+    dynamic_range_x, dynamic_range_y }` decoded view.
+  - **`LpcmQuantisation`** enum — `Bits16` / `Bits20` / `Bits24` /
+    `Reserved`, with `bits_per_sample()` accessor.
+  - **`LpcmSampleFrequency`** enum — `Hz48000` / `Hz96000` /
+    `Reserved`, with `hz()` accessor.
+  - **`LpcmHeader::bitrate_kbps()`** computes `channels × sample_rate
+    × bits_per_sample / 1000` and returns `None` when either of the
+    two reserved codes is present;
+    **`LpcmHeader::is_within_dvd_video_limit()`** checks the result
+    against the `stnsoft-LimPcmAud.html` 6144 kbps ceiling (the red-
+    highlighted combinations such as 96 kHz × 24-bit × 8-channel
+    return `false`).
+  - **`LpcmHeader::linear_gain()`** + **`gain_db()`** evaluate the
+    two parameterisations of the dynamic-range coefficient table.
+    `X = 0, Y = 0` gives the unity-gain reference `(2^4, +24.082 dB)`;
+    `X = 7, Y = 30` gives the `-24 dB` pole. Applying the gain to the
+    decoded samples stays with the audio decoder.
+  - **`peel_lpcm_payload(&[u8]) -> Result<(LpcmHeader, &[u8])>`** —
+    splits the substream-ID-prefixed PES payload into the typed
+    header and the raw PCM tail in one zero-copy call.
+  - **Constants** — `LPCM_HEADER_LEN = 7` and
+    `DVD_LPCM_MAX_BITRATE_KBPS = 6144`.
+  - 14 new unit tests including a full reproduction of the
+    `stnsoft-LimPcmAud.html` bitrate table (48 combinations across
+    `{48k, 96k} × {16, 20, 24} × {1..=8 ch}`, every cell pinning both
+    the decoded kbps and the green/red `is_within_dvd_video_limit`
+    verdict). Parse-reject cases for the truncated buffer and the
+    non-LPCM substream selector; isolated decode of every quantisation,
+    sample-rate, and channel-count code; bit-by-bit decoding of the
+    emphasis / mute / frame-number byte, the first-access-unit
+    pointer, and the X/Y dynamic-range split; the unity-gain identity
+    and the `-24 dB` attenuation pole; and `peel_lpcm_payload` round-
+    trip + short-buffer rejection. **208 lib tests** (was 192).
+- **`mkv_writer` strips the LPCM audio-pack header** before forwarding
+  PCM samples to the MKV muxer, so the `pcm_s16be` track now receives
+  the clean big-endian sample bytes `A_PCM/INT/BIG` expects (the
+  previous comment had punted the stripping to "Phase 3c"; this round
+  closes that gap by re-using the new `lpcm::LPCM_HEADER_LEN`
+  constant).
+
 - **SPRM bitfield-aware accessors + named indices for SPRMs 0/12/14..20.**
   The `vm` module now exposes typed views for the six packed SPRMs
   whose contents are documented as bit-packed payloads on
