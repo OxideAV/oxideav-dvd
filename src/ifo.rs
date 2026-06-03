@@ -1106,6 +1106,298 @@ impl VtsCAdt {
 }
 
 // ------------------------------------------------------------------
+// VOBU_ADMAP — VOBU Address Map (absolute sector list)
+// ------------------------------------------------------------------
+
+/// Parsed VOBU address map — covers `VMGM_VOBU_ADMAP`,
+/// `VTSM_VOBU_ADMAP`, and `VTS_VOBU_ADMAP` (the three tables share
+/// the same wire layout per `mpucoder-ifo.html`).
+///
+/// Layout (per the same source):
+///
+/// ```text
+///   0x00: u32 end_address (last byte of last entry, relative to map start)
+///   0x04: u32 starting sector within VOB of VOBU 1
+///   0x08: u32 starting sector within VOB of VOBU 2
+///   ...
+/// ```
+///
+/// Entry count is implicit in `end_address`: each entry is exactly
+/// four bytes, so `(end_address + 1 - 4) / 4` rounds down to the
+/// number of VOBUs.
+///
+/// The 4-byte sector values are VOB-relative (i.e. relative to the
+/// start of the first VOB the map covers — `VTS_xx_1.VOB` for
+/// `VTS_VOBU_ADMAP`, the menu VOB for the menu variants); a player
+/// adds the title-set VOB base LBA recorded in the corresponding
+/// `VTSI_MAT::title_vob_sector` to recover the absolute disc LBA.
+#[derive(Debug, Clone)]
+pub struct VobuAdmap {
+    /// `end_address` field — last byte of the last entry, relative
+    /// to the start of the address map.
+    pub end_address: u32,
+    /// VOB-relative starting sectors, one per VOBU, in playback
+    /// order. Index 0 = VOBU 1; index `entries.len() - 1` = the last
+    /// VOBU declared by the map.
+    pub entries: Vec<u32>,
+}
+
+impl VobuAdmap {
+    /// Parse a VOBU_ADMAP body. `buf` must start at the 4-byte
+    /// `end_address` field and span at least through the last entry.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 4 {
+            return Err(Error::InvalidUdf("VOBU_ADMAP: shorter than 4-byte header"));
+        }
+        let end_address = read_u32(buf, 0)?;
+        // end_address points at the last byte of the last entry,
+        // relative to the table start. Entries begin at byte 4; each
+        // entry is 4 bytes wide.
+        let body_bytes = (end_address as usize).saturating_add(1).saturating_sub(4);
+        if body_bytes % 4 != 0 {
+            return Err(Error::InvalidUdf(
+                "VOBU_ADMAP: end_address implies non-4-byte entry size",
+            ));
+        }
+        let n = body_bytes / 4;
+        let needed = 4 + n * 4;
+        if buf.len() < needed {
+            return Err(Error::InvalidUdf(
+                "VOBU_ADMAP: buffer shorter than entry table",
+            ));
+        }
+        let mut entries = Vec::with_capacity(n);
+        for i in 0..n {
+            entries.push(read_u32(buf, 4 + i * 4)?);
+        }
+        Ok(Self {
+            end_address,
+            entries,
+        })
+    }
+
+    /// Number of VOBUs covered by this map.
+    #[inline]
+    pub fn vobu_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// VOB-relative starting sector of the 1-based VOBU number.
+    /// Returns `None` for `vobu_number == 0` or any number past the
+    /// last entry.
+    pub fn vobu_start_sector(&self, vobu_number: u32) -> Option<u32> {
+        if vobu_number == 0 {
+            return None;
+        }
+        self.entries.get((vobu_number - 1) as usize).copied()
+    }
+
+    /// Translate a VOB-relative sector into the 1-based VOBU number
+    /// whose range covers it. Returns `None` when the sector falls
+    /// before the map's first VOBU or the map is empty.
+    ///
+    /// Because consecutive entries delimit each VOBU's range
+    /// (entry `i` starts VOBU `i + 1`; entry `i + 1` starts the next
+    /// one), the lookup is a partition search: the matching VOBU is
+    /// the highest-indexed entry whose value `<= sector`.
+    pub fn vobu_containing(&self, sector: u32) -> Option<u32> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        // Binary partition.
+        let idx = self.entries.partition_point(|&v| v <= sector);
+        if idx == 0 {
+            None
+        } else {
+            Some(idx as u32)
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// VTS_TMAPTI — Time Map Table (one map per PGC)
+// ------------------------------------------------------------------
+
+/// One time-map entry: VOB-relative sector of the VOBU at the
+/// associated time stamp.
+///
+/// Bit 31 of the on-disc value is a discontinuity flag; the remaining
+/// 31 bits carry the VOB-relative sector. Per `mpucoder-ifo_vts.html`
+/// "VTS_TMAP" the discontinuity bit signals that the previous entry's
+/// time stamp is **not** continuous with this one — typically because
+/// the underlying VOBU sits across a cell boundary or an `STC`
+/// reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TmapEntry {
+    /// VOB-relative sector of the VOBU at this time index.
+    pub sector: u32,
+    /// `true` when the source flagged a time discontinuity with the
+    /// previous entry (bit 31 of the raw word).
+    pub discontinuous: bool,
+}
+
+impl TmapEntry {
+    /// Bit 31 of the raw entry word: discontinuity-with-previous
+    /// flag per `mpucoder-ifo_vts.html`.
+    pub const DISCONTINUITY_BIT: u32 = 1 << 31;
+
+    /// Low-31-bit sector mask.
+    pub const SECTOR_MASK: u32 = 0x7FFF_FFFF;
+
+    /// Decode one 4-byte entry word.
+    fn from_raw(raw: u32) -> Self {
+        Self {
+            sector: raw & Self::SECTOR_MASK,
+            discontinuous: (raw & Self::DISCONTINUITY_BIT) != 0,
+        }
+    }
+}
+
+/// One per-PGC time map: time-unit length plus the per-step sector
+/// list.
+///
+/// Layout (per `mpucoder-ifo_vts.html` "VTS_TMAP"):
+///
+/// ```text
+///   0x00: u8  time_unit (seconds per step)
+///   0x01: u8  reserved
+///   0x02: u16 number_of_entries (`0` for empty map)
+///   0x04: u32 entry[0]   ← VOB-relative VOBU sector
+///   0x08: u32 entry[1]
+///   ...
+/// ```
+///
+/// An empty time map (number_of_entries = 0) is legal and is the
+/// authoring convention for a PGC the disc decided not to time-index
+/// (typically very short menus or warning still-frames).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VtsTmap {
+    /// Seconds covered by one entry step.
+    pub time_unit: u8,
+    /// Decoded entry list, one per step.
+    pub entries: Vec<TmapEntry>,
+}
+
+impl VtsTmap {
+    /// Parse one VTS_TMAP. `buf` must start at the `time_unit` byte
+    /// and span at least through the last entry.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 4 {
+            return Err(Error::InvalidUdf("VTS_TMAP: shorter than 4-byte header"));
+        }
+        let time_unit = read_u8(buf, 0)?;
+        // byte 1 reserved
+        let number_of_entries = read_u16(buf, 2)?;
+        let n = usize::from(number_of_entries);
+        let needed = 4usize.saturating_add(n * 4);
+        if buf.len() < needed {
+            return Err(Error::InvalidUdf(
+                "VTS_TMAP: buffer shorter than entry table",
+            ));
+        }
+        let mut entries = Vec::with_capacity(n);
+        for i in 0..n {
+            let raw = read_u32(buf, 4 + i * 4)?;
+            entries.push(TmapEntry::from_raw(raw));
+        }
+        Ok(Self { time_unit, entries })
+    }
+
+    /// Translate a playback time `seconds` (PGC-relative) into the
+    /// VOB-relative starting sector of the VOBU whose time bracket
+    /// contains it. Returns `None` for an empty map or when the
+    /// requested time falls before the first step.
+    ///
+    /// Bracket assignment per the spec: entry `i` (1-based) covers
+    /// `[(i - 1) * time_unit, i * time_unit)` seconds.
+    pub fn sector_at(&self, seconds: u32) -> Option<u32> {
+        if self.entries.is_empty() || self.time_unit == 0 {
+            return None;
+        }
+        let step = u32::from(self.time_unit);
+        let idx_zero_based = (seconds / step) as usize;
+        let idx = idx_zero_based.min(self.entries.len() - 1);
+        Some(self.entries[idx].sector)
+    }
+
+    /// Total time covered by the map, in seconds. `time_unit *
+    /// number_of_entries` — the upper edge of the last step's
+    /// bracket.
+    pub fn total_seconds(&self) -> u32 {
+        u32::from(self.time_unit) * self.entries.len() as u32
+    }
+}
+
+/// Parsed VTS_TMAPTI — one [`VtsTmap`] per program chain.
+///
+/// Layout (per `mpucoder-ifo_vts.html`):
+///
+/// ```text
+///   0x00: u16 number_of_program_chains (Npgc)
+///   0x02: u16 reserved
+///   0x04: u32 end_address (last byte of last VTS_TMAP)
+///   0x08: u32 offset_to_VTS_TMAP[1]
+///   0x0C: u32 offset_to_VTS_TMAP[2]
+///   ...
+/// ```
+///
+/// "Each PGC MUST have a time map, even if it is empty" — the spec
+/// guarantees `maps.len() == number_of_program_chains`.
+#[derive(Debug, Clone)]
+pub struct VtsTmapti {
+    /// Number of program chains covered (= maps.len()).
+    pub number_of_pgcs: u16,
+    /// `end_address` field.
+    pub end_address: u32,
+    /// Decoded time maps, one per program chain. Index `i` (0-based)
+    /// is the map for `PGCN = i + 1`.
+    pub maps: Vec<VtsTmap>,
+}
+
+impl VtsTmapti {
+    /// Parse a VTS_TMAPTI body. `buf` must start at byte 0 of the
+    /// time-map table and span at least through the last `VTS_TMAP`.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 8 {
+            return Err(Error::InvalidUdf("VTS_TMAPTI: shorter than 8-byte header"));
+        }
+        let number_of_pgcs = read_u16(buf, 0)?;
+        let end_address = read_u32(buf, 4)?;
+        let n = usize::from(number_of_pgcs);
+        let offsets_end = 8usize.saturating_add(n * 4);
+        if buf.len() < offsets_end {
+            return Err(Error::InvalidUdf(
+                "VTS_TMAPTI: offset list past end of buffer",
+            ));
+        }
+        let mut offsets = Vec::with_capacity(n);
+        for i in 0..n {
+            offsets.push(read_u32(buf, 8 + i * 4)? as usize);
+        }
+        let mut maps = Vec::with_capacity(n);
+        for off in &offsets {
+            let tmap_buf = buf.get(*off..).ok_or(Error::InvalidUdf(
+                "VTS_TMAPTI: VTS_TMAP offset past end of buffer",
+            ))?;
+            maps.push(VtsTmap::parse(tmap_buf)?);
+        }
+        Ok(Self {
+            number_of_pgcs,
+            end_address,
+            maps,
+        })
+    }
+
+    /// Look up the time map for the 1-based program-chain number.
+    pub fn get(&self, pgcn: u16) -> Option<&VtsTmap> {
+        if pgcn == 0 {
+            return None;
+        }
+        self.maps.get((pgcn - 1) as usize)
+    }
+}
+
+// ------------------------------------------------------------------
 // High-level chapter / title materialisation
 // ------------------------------------------------------------------
 
@@ -1146,9 +1438,10 @@ pub struct DvdTitle {
     pub chapters: Vec<DvdChapter>,
 }
 
-/// Parsed VTS — pulls VTSI_MAT, VTS_PTT_SRPT, VTS_PGCI, and VTS_C_ADT
-/// into a single materialised view that's convenient for chapter
-/// enumeration without re-walking the byte buffer.
+/// Parsed VTS — pulls VTSI_MAT, VTS_PTT_SRPT, VTS_PGCI, VTS_C_ADT,
+/// VTS_VOBU_ADMAP, and VTS_TMAPTI into a single materialised view
+/// that's convenient for chapter enumeration and time-based seek
+/// without re-walking the byte buffer.
 #[derive(Debug, Clone)]
 pub struct VtsIfo {
     /// VTS number (1..=99).
@@ -1161,8 +1454,20 @@ pub struct VtsIfo {
     pub pgcs: Vec<Pgc>,
     /// Cell address table.
     pub cell_adt: VtsCAdt,
-    /// Raw VTSI_MAT (kept around so callers can reach sector pointers
-    /// for the bits we don't materialise — VOBU_ADMAP, time map, etc.).
+    /// Per-VOBU sector list for the title-set VOBs
+    /// (`VTS_xx_1.VOB` … `VTS_xx_9.VOB`). `None` when the IFO's
+    /// `vts_vobu_admap_sector` field is zero (rare; the spec lists
+    /// `VTS_VOBU_ADMAP` as mandatory but some authoring tools
+    /// elide it on title sets that hold only menu VOBs).
+    pub vobu_admap: Option<VobuAdmap>,
+    /// Per-PGC time map. `None` when the IFO's `vts_tmapti_sector`
+    /// field is zero (the spec lists `VTS_TMAPTI` as optional —
+    /// without it the title set is not time-seekable).
+    pub time_map: Option<VtsTmapti>,
+    /// Raw VTSI_MAT (kept around so callers can reach sector
+    /// pointers for the bits we don't materialise — the
+    /// VMGM/VTSM menu tables, the VOBU address maps on the menu
+    /// side, etc.).
     pub mat: VtsiMat,
 }
 
@@ -1201,6 +1506,32 @@ impl VtsIfo {
             .get(cadt_off..)
             .ok_or(Error::InvalidUdf("VTSI: C_ADT sector past end"))?;
         let cell_adt = VtsCAdt::parse(cadt_buf)?;
+
+        // VTS_VOBU_ADMAP (optional — sector 0 means absent).
+        let vobu_admap = if mat.vts_vobu_admap_sector != 0 {
+            let off = (mat.vts_vobu_admap_sector as usize)
+                .checked_mul(DVD_SECTOR)
+                .ok_or(Error::InvalidUdf("VTSI: VOBU_ADMAP sector overflow"))?;
+            let body = buf
+                .get(off..)
+                .ok_or(Error::InvalidUdf("VTSI: VOBU_ADMAP sector past end"))?;
+            Some(VobuAdmap::parse(body)?)
+        } else {
+            None
+        };
+
+        // VTS_TMAPTI (optional — sector 0 means absent).
+        let time_map = if mat.vts_tmapti_sector != 0 {
+            let off = (mat.vts_tmapti_sector as usize)
+                .checked_mul(DVD_SECTOR)
+                .ok_or(Error::InvalidUdf("VTSI: TMAPTI sector overflow"))?;
+            let body = buf
+                .get(off..)
+                .ok_or(Error::InvalidUdf("VTSI: TMAPTI sector past end"))?;
+            Some(VtsTmapti::parse(body)?)
+        } else {
+            None
+        };
 
         // Materialise the chapter list. The PTT entry gives us
         // (PGCN, PGN). To recover (start_cell, end_cell) we look at
@@ -1264,8 +1595,29 @@ impl VtsIfo {
             titles,
             pgcs: pgci.pgcs,
             cell_adt,
+            vobu_admap,
+            time_map,
             mat,
         })
+    }
+
+    /// VOB-relative starting sector of the VOBU that covers playback
+    /// time `seconds` (PGC-relative) for the 1-based program-chain
+    /// number `pgcn`.
+    ///
+    /// Convenience wrapper around [`VtsTmapti::get`] + [`VtsTmap::sector_at`].
+    /// Returns `None` when this title set carries no time map, when
+    /// the requested PGCN is past the table, when the map for that
+    /// PGC is empty, or when its `time_unit` field is zero.
+    ///
+    /// To recover the disc-absolute LBA, add
+    /// [`VtsiMat::title_vob_sector`] to the returned VOB-relative
+    /// sector.
+    pub fn vobu_sector_at_pgc_time(&self, pgcn: u16, seconds: u32) -> Option<u32> {
+        self.time_map
+            .as_ref()
+            .and_then(|t| t.get(pgcn))
+            .and_then(|m| m.sector_at(seconds))
     }
 }
 
@@ -1988,5 +2340,410 @@ mod tests {
         // C_ADT must give us first cell's sector range.
         assert_eq!(vts.cell_adt.lookup(1, 1), Some((1000, 1999)));
         assert_eq!(vts.cell_adt.lookup(1, 5), Some((5000, 5999)));
+        // The composite IFO was built without VOBU_ADMAP / TMAPTI
+        // sector pointers — both materialised tables must be `None`.
+        assert!(vts.vobu_admap.is_none());
+        assert!(vts.time_map.is_none());
+    }
+
+    // -------------------------------------------------------------
+    // VOBU_ADMAP
+    // -------------------------------------------------------------
+
+    fn build_vobu_admap(entries: &[u32]) -> Vec<u8> {
+        // 4-byte end_address + N × 4-byte sector words.
+        let n = entries.len();
+        let len = 4 + n * 4;
+        let mut b = vec![0u8; len];
+        let end_addr = (len - 1) as u32;
+        b[0..4].copy_from_slice(&end_addr.to_be_bytes());
+        for (i, s) in entries.iter().enumerate() {
+            b[4 + i * 4..4 + (i + 1) * 4].copy_from_slice(&s.to_be_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn vobu_admap_parses_three_vobus() {
+        let entries = [0u32, 200u32, 450u32];
+        let buf = build_vobu_admap(&entries);
+        let map = VobuAdmap::parse(&buf).unwrap();
+        assert_eq!(map.vobu_count(), 3);
+        assert_eq!(map.entries, entries);
+        assert_eq!(map.end_address, (buf.len() - 1) as u32);
+        // 1-based VOBU lookup.
+        assert_eq!(map.vobu_start_sector(1), Some(0));
+        assert_eq!(map.vobu_start_sector(2), Some(200));
+        assert_eq!(map.vobu_start_sector(3), Some(450));
+        assert_eq!(map.vobu_start_sector(4), None);
+        assert_eq!(map.vobu_start_sector(0), None);
+    }
+
+    #[test]
+    fn vobu_admap_partition_locates_containing_vobu() {
+        // VOBUs start at sectors 0, 100, 300, 600.
+        let buf = build_vobu_admap(&[0, 100, 300, 600]);
+        let map = VobuAdmap::parse(&buf).unwrap();
+        // Boundary-inclusive: a sector that matches an entry exactly
+        // belongs to that VOBU.
+        assert_eq!(map.vobu_containing(0), Some(1));
+        assert_eq!(map.vobu_containing(99), Some(1));
+        assert_eq!(map.vobu_containing(100), Some(2));
+        assert_eq!(map.vobu_containing(299), Some(2));
+        assert_eq!(map.vobu_containing(300), Some(3));
+        assert_eq!(map.vobu_containing(599), Some(3));
+        assert_eq!(map.vobu_containing(600), Some(4));
+        // Far past — still maps to the last VOBU (its end is unknown
+        // until the next entry, so the partition returns the last one).
+        assert_eq!(map.vobu_containing(1_000_000), Some(4));
+    }
+
+    #[test]
+    fn vobu_admap_first_entry_above_zero_returns_none_for_pre_sector() {
+        // Map's first VOBU starts at sector 100; sector 50 falls
+        // before it, so the lookup must return `None`.
+        let buf = build_vobu_admap(&[100, 200, 300]);
+        let map = VobuAdmap::parse(&buf).unwrap();
+        assert_eq!(map.vobu_containing(0), None);
+        assert_eq!(map.vobu_containing(99), None);
+        assert_eq!(map.vobu_containing(100), Some(1));
+    }
+
+    #[test]
+    fn vobu_admap_empty_map_lookups_return_none() {
+        // end_address = 3 → body span = 0 bytes → zero entries.
+        let mut b = vec![0u8; 4];
+        b[0..4].copy_from_slice(&3u32.to_be_bytes());
+        let map = VobuAdmap::parse(&b).unwrap();
+        assert_eq!(map.vobu_count(), 0);
+        assert_eq!(map.vobu_start_sector(1), None);
+        assert_eq!(map.vobu_containing(0), None);
+    }
+
+    #[test]
+    fn vobu_admap_rejects_non_multiple_end_address() {
+        // end_address = 5 implies a 2-byte body span — not a
+        // multiple of the 4-byte entry size.
+        let mut b = vec![0u8; 8];
+        b[0..4].copy_from_slice(&5u32.to_be_bytes());
+        assert!(VobuAdmap::parse(&b).is_err());
+    }
+
+    #[test]
+    fn vobu_admap_rejects_truncated_buffer() {
+        // end_address = 11 implies 2 entries (8 body bytes), but
+        // the buffer is only 4 + 4 = 8 bytes long, missing the
+        // second entry.
+        let mut b = vec![0u8; 4 + 4];
+        b[0..4].copy_from_slice(&11u32.to_be_bytes());
+        assert!(VobuAdmap::parse(&b).is_err());
+    }
+
+    // -------------------------------------------------------------
+    // VTS_TMAP / VTS_TMAPTI
+    // -------------------------------------------------------------
+
+    fn build_tmap(time_unit: u8, entries: &[(u32, bool)]) -> Vec<u8> {
+        let n = entries.len();
+        let len = 4 + n * 4;
+        let mut b = vec![0u8; len];
+        b[0] = time_unit;
+        // byte 1 reserved
+        b[2..4].copy_from_slice(&(n as u16).to_be_bytes());
+        for (i, (sector, disc)) in entries.iter().enumerate() {
+            let mut raw = *sector & TmapEntry::SECTOR_MASK;
+            if *disc {
+                raw |= TmapEntry::DISCONTINUITY_BIT;
+            }
+            b[4 + i * 4..4 + (i + 1) * 4].copy_from_slice(&raw.to_be_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn tmap_decodes_entries_and_discontinuity() {
+        // Three 4-second steps, second entry flagged discontinuous.
+        let buf = build_tmap(4, &[(100, false), (250, true), (400, false)]);
+        let map = VtsTmap::parse(&buf).unwrap();
+        assert_eq!(map.time_unit, 4);
+        assert_eq!(map.entries.len(), 3);
+        assert_eq!(
+            map.entries[0],
+            TmapEntry {
+                sector: 100,
+                discontinuous: false
+            }
+        );
+        assert_eq!(
+            map.entries[1],
+            TmapEntry {
+                sector: 250,
+                discontinuous: true
+            }
+        );
+        assert_eq!(map.total_seconds(), 12);
+    }
+
+    #[test]
+    fn tmap_sector_at_brackets_seconds_per_time_unit() {
+        // 5-second steps; first entry covers [0,5), second [5,10),
+        // third [10,15).
+        let buf = build_tmap(5, &[(10, false), (20, false), (30, false)]);
+        let map = VtsTmap::parse(&buf).unwrap();
+        assert_eq!(map.sector_at(0), Some(10));
+        assert_eq!(map.sector_at(4), Some(10));
+        assert_eq!(map.sector_at(5), Some(20));
+        assert_eq!(map.sector_at(9), Some(20));
+        assert_eq!(map.sector_at(10), Some(30));
+        assert_eq!(map.sector_at(14), Some(30));
+        // Past the last bracket: clamp to the last entry rather than
+        // return `None` so playback engines that pass an inaccurate
+        // wall-clock get a reasonable "seek to end" answer.
+        assert_eq!(map.sector_at(15), Some(30));
+        assert_eq!(map.sector_at(1_000_000), Some(30));
+    }
+
+    #[test]
+    fn tmap_empty_map_yields_no_sector() {
+        // number_of_entries = 0 → empty entry table → all lookups
+        // return `None`.
+        let buf = build_tmap(2, &[]);
+        let map = VtsTmap::parse(&buf).unwrap();
+        assert_eq!(map.time_unit, 2);
+        assert!(map.entries.is_empty());
+        assert_eq!(map.sector_at(0), None);
+        assert_eq!(map.sector_at(60), None);
+        assert_eq!(map.total_seconds(), 0);
+    }
+
+    #[test]
+    fn tmap_zero_time_unit_yields_no_sector() {
+        // time_unit = 0 with a populated entry table is a malformed
+        // map — sector_at would divide by zero, so we explicitly
+        // surface `None` instead.
+        let buf = build_tmap(0, &[(1, false), (2, false)]);
+        let map = VtsTmap::parse(&buf).unwrap();
+        assert_eq!(map.sector_at(0), None);
+    }
+
+    #[test]
+    fn tmap_rejects_truncated_buffer() {
+        // number_of_entries = 2 (8 body bytes needed) but buffer
+        // only carries 4 + 4 = 8 bytes — one entry missing.
+        let mut b = vec![0u8; 4 + 4];
+        b[0] = 1;
+        b[2..4].copy_from_slice(&2u16.to_be_bytes());
+        assert!(VtsTmap::parse(&b).is_err());
+    }
+
+    fn build_tmapti(maps: &[Vec<u8>]) -> Vec<u8> {
+        // 8-byte header + N × 4-byte offsets + concatenated map bodies.
+        let n = maps.len();
+        let offsets_size = n * 4;
+        let header_size = 8 + offsets_size;
+        let body_size: usize = maps.iter().map(|m| m.len()).sum();
+        let total = header_size + body_size;
+        let mut b = vec![0u8; total];
+        b[0..2].copy_from_slice(&(n as u16).to_be_bytes());
+        // reserved at 2..4 = 0
+        b[4..8].copy_from_slice(&((total - 1) as u32).to_be_bytes());
+        let mut cursor = header_size;
+        for (i, m) in maps.iter().enumerate() {
+            let off = cursor as u32;
+            b[8 + i * 4..8 + (i + 1) * 4].copy_from_slice(&off.to_be_bytes());
+            b[cursor..cursor + m.len()].copy_from_slice(m);
+            cursor += m.len();
+        }
+        b
+    }
+
+    #[test]
+    fn tmapti_walks_two_pgc_maps() {
+        let map_a = build_tmap(2, &[(0, false), (50, false), (100, false)]);
+        let map_b = build_tmap(3, &[(200, false), (400, true)]);
+        let buf = build_tmapti(&[map_a, map_b]);
+        let table = VtsTmapti::parse(&buf).unwrap();
+        assert_eq!(table.number_of_pgcs, 2);
+        assert_eq!(table.maps.len(), 2);
+        // PGCN lookups are 1-based.
+        let m1 = table.get(1).unwrap();
+        assert_eq!(m1.time_unit, 2);
+        assert_eq!(m1.entries.len(), 3);
+        let m2 = table.get(2).unwrap();
+        assert_eq!(m2.time_unit, 3);
+        assert!(m2.entries[1].discontinuous);
+        assert_eq!(table.get(0), None);
+        assert_eq!(table.get(3), None);
+    }
+
+    #[test]
+    fn tmapti_carries_empty_map_per_spec_invariant() {
+        // The spec mandates "each PGC MUST have a time map, even if
+        // it is empty" — make sure an empty map decodes cleanly when
+        // the offset list points at it.
+        let empty = build_tmap(0, &[]);
+        let buf = build_tmapti(&[empty]);
+        let table = VtsTmapti::parse(&buf).unwrap();
+        assert_eq!(table.number_of_pgcs, 1);
+        let m = table.get(1).unwrap();
+        assert!(m.entries.is_empty());
+        assert_eq!(m.sector_at(0), None);
+    }
+
+    #[test]
+    fn tmapti_rejects_short_offset_list() {
+        // number_of_pgcs = 3 but only 8 bytes available — the offset
+        // list runs past the buffer end.
+        let mut b = vec![0u8; 8];
+        b[0..2].copy_from_slice(&3u16.to_be_bytes());
+        assert!(VtsTmapti::parse(&b).is_err());
+    }
+
+    // -------------------------------------------------------------
+    // Composite VTS round-trip with VOBU_ADMAP + TMAPTI populated
+    // -------------------------------------------------------------
+
+    fn make_composite_vts_with_admap_and_tmap() -> Vec<u8> {
+        // Sector layout:
+        //   sector 0: VTSI_MAT
+        //   sector 1: VTS_PTT_SRPT (1 title × 3 chapters)
+        //   sector 2: VTS_PGCI (1 PGC, 5 cells, 3 programs)
+        //   sector 3: VTS_C_ADT (5 cell entries)
+        //   sector 4: VTS_VOBU_ADMAP (4 VOBUs)
+        //   sector 5: VTS_TMAPTI (1 PGC × 3 steps)
+        let mut img = vec![0u8; DVD_SECTOR * 6];
+
+        // VTSI_MAT — populate the four sector pointers we exercise.
+        // build_vtsi_mat zeroes the TMAPTI + VOBU_ADMAP pointers,
+        // so patch them in manually after the base copy.
+        let mat = build_vtsi_mat(1, 2, 3, 100);
+        img[0..mat.len()].copy_from_slice(&mat);
+        img[0x00D4..0x00D8].copy_from_slice(&5u32.to_be_bytes()); // TMAPTI sector
+        img[0x00E4..0x00E8].copy_from_slice(&4u32.to_be_bytes()); // VOBU_ADMAP sector
+
+        // PGCI — re-use the helper that already builds 1 PGC with 5
+        // cells + 3 programs.
+        let cells: Vec<CellPlaybackInfo> = (0..5)
+            .map(|i| make_cell(1000 + i * 1000, 1999 + i * 1000))
+            .collect();
+        let positions: Vec<CellPositionInfo> = (0..5)
+            .map(|i| CellPositionInfo {
+                vob_id: 1,
+                cell_id: (i + 1) as u8,
+            })
+            .collect();
+        let header_size = 0xEC;
+        let prog_count = 3u8;
+        let prog_map_size = (usize::from(prog_count) + 1) & !1;
+        let cpbi_size = 5 * 24;
+        let cpos_size = 5 * 4;
+        let pgc_blob_len = header_size + prog_map_size + cpbi_size + cpos_size;
+        let mut pgc_blob = vec![0u8; pgc_blob_len];
+        pgc_blob[0x0002] = prog_count;
+        pgc_blob[0x0003] = 5;
+        pgc_blob[0x0004..0x0008].copy_from_slice(&[0x00, 0x15, 0x00, 0xE0]);
+        let off_pmap = header_size as u16;
+        let off_cpbi = (header_size + prog_map_size) as u16;
+        let off_cpos = (header_size + prog_map_size + cpbi_size) as u16;
+        pgc_blob[0x00E6..0x00E8].copy_from_slice(&off_pmap.to_be_bytes());
+        pgc_blob[0x00E8..0x00EA].copy_from_slice(&off_cpbi.to_be_bytes());
+        pgc_blob[0x00EA..0x00EC].copy_from_slice(&off_cpos.to_be_bytes());
+        pgc_blob[header_size] = 1;
+        pgc_blob[header_size + 1] = 3;
+        pgc_blob[header_size + 2] = 5;
+        for (i, c) in cells.iter().enumerate() {
+            let base = header_size + prog_map_size + i * 24;
+            pgc_blob[base + 4..base + 8].copy_from_slice(&[0, 1, 0, 0xE0]);
+            pgc_blob[base + 8..base + 12].copy_from_slice(&c.first_vobu_start_sector.to_be_bytes());
+            pgc_blob[base + 12..base + 16].copy_from_slice(&c.first_ilvu_end_sector.to_be_bytes());
+            pgc_blob[base + 16..base + 20].copy_from_slice(&c.last_vobu_start_sector.to_be_bytes());
+            pgc_blob[base + 20..base + 24].copy_from_slice(&c.last_vobu_end_sector.to_be_bytes());
+        }
+        for (i, p) in positions.iter().enumerate() {
+            let base = header_size + prog_map_size + cpbi_size + i * 4;
+            pgc_blob[base..base + 2].copy_from_slice(&p.vob_id.to_be_bytes());
+            pgc_blob[base + 3] = p.cell_id;
+        }
+        let srp_size = 8usize;
+        let body_off = 8 + srp_size;
+        let pgci_total = body_off + pgc_blob.len();
+        let mut pgci = vec![0u8; pgci_total];
+        pgci[0..2].copy_from_slice(&1u16.to_be_bytes());
+        pgci[4..8].copy_from_slice(&((pgci_total - 1) as u32).to_be_bytes());
+        pgci[12..16].copy_from_slice(&(body_off as u32).to_be_bytes());
+        pgci[body_off..body_off + pgc_blob.len()].copy_from_slice(&pgc_blob);
+        img[2 * DVD_SECTOR..2 * DVD_SECTOR + pgci.len()].copy_from_slice(&pgci);
+
+        // PTT_SRPT
+        let n_titles = 1usize;
+        let n_chaps = 3usize;
+        let header_sz = 8 + n_titles * 4;
+        let title_body = n_chaps * 4;
+        let total = header_sz + title_body;
+        let mut ptt = vec![0u8; total];
+        ptt[0..2].copy_from_slice(&(n_titles as u16).to_be_bytes());
+        ptt[4..8].copy_from_slice(&((total - 1) as u32).to_be_bytes());
+        ptt[8..12].copy_from_slice(&(header_sz as u32).to_be_bytes());
+        for ci in 0..n_chaps {
+            let base = header_sz + ci * 4;
+            ptt[base..base + 2].copy_from_slice(&1u16.to_be_bytes());
+            ptt[base + 2..base + 4].copy_from_slice(&((ci + 1) as u16).to_be_bytes());
+        }
+        img[DVD_SECTOR..DVD_SECTOR + ptt.len()].copy_from_slice(&ptt);
+
+        // C_ADT
+        let cadt_rows: Vec<(u16, u8, u32, u32)> = (0..5)
+            .map(|i| {
+                (
+                    1u16,
+                    (i + 1) as u8,
+                    1000 + i as u32 * 1000,
+                    1999 + i as u32 * 1000,
+                )
+            })
+            .collect();
+        let cadt = build_c_adt(&cadt_rows);
+        img[3 * DVD_SECTOR..3 * DVD_SECTOR + cadt.len()].copy_from_slice(&cadt);
+
+        // VTS_VOBU_ADMAP at sector 4 — 4 VOBUs at VOB-relative
+        // sectors 0, 250, 600, 1100.
+        let admap = build_vobu_admap(&[0, 250, 600, 1100]);
+        img[4 * DVD_SECTOR..4 * DVD_SECTOR + admap.len()].copy_from_slice(&admap);
+
+        // VTS_TMAPTI at sector 5 — one PGC, 4-second steps, three
+        // entries pointing into the VOBU sector list.
+        let tmap = build_tmap(4, &[(0, false), (250, false), (600, false)]);
+        let tmapti = build_tmapti(&[tmap]);
+        img[5 * DVD_SECTOR..5 * DVD_SECTOR + tmapti.len()].copy_from_slice(&tmapti);
+
+        img
+    }
+
+    #[test]
+    fn composite_vts_materialises_admap_and_tmap() {
+        let img = make_composite_vts_with_admap_and_tmap();
+        let vts = VtsIfo::parse(&img, 1).unwrap();
+        let admap = vts.vobu_admap.as_ref().expect("VOBU_ADMAP materialised");
+        assert_eq!(admap.vobu_count(), 4);
+        assert_eq!(admap.vobu_start_sector(1), Some(0));
+        assert_eq!(admap.vobu_start_sector(4), Some(1100));
+        // Sector 700 falls inside VOBU 3's range [600, 1100).
+        assert_eq!(admap.vobu_containing(700), Some(3));
+
+        let tmapti = vts.time_map.as_ref().expect("VTS_TMAPTI materialised");
+        assert_eq!(tmapti.number_of_pgcs, 1);
+        let pgc_map = tmapti.get(1).unwrap();
+        assert_eq!(pgc_map.time_unit, 4);
+        assert_eq!(pgc_map.entries.len(), 3);
+
+        // Time-based seek: 5 seconds in → step 2 (covers [4, 8)) →
+        // VOBU at VOB-relative sector 250.
+        assert_eq!(vts.vobu_sector_at_pgc_time(1, 5), Some(250));
+        // 0 seconds → step 1 → sector 0.
+        assert_eq!(vts.vobu_sector_at_pgc_time(1, 0), Some(0));
+        // 9 seconds → step 3 → sector 600.
+        assert_eq!(vts.vobu_sector_at_pgc_time(1, 9), Some(600));
+        // Out-of-range PGCN → `None`.
+        assert_eq!(vts.vobu_sector_at_pgc_time(2, 0), None);
     }
 }

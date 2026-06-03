@@ -19,9 +19,11 @@ Phases 1, 2, and 3a (this release) handle the **physical +
 filesystem + disc-identification + IFO structural + VOB demux**
 layers — enough to point a player at a DVD-Video disc image or
 block device, enumerate the title-set files, pull the title /
-chapter / program-chain / cell layout out of every IFO, and demux
+chapter / program-chain / cell layout out of every IFO, demux
 each cell's VOBUs into raw MPEG-2 video + AC-3 / DTS / LPCM audio
-+ subpicture elementary streams keyed by track ID. The Phase 3a
++ subpicture elementary streams keyed by track ID, and answer
+time-based seek queries through the per-PGC `VTS_TMAPTI` time
+map + the title-set `VTS_VOBU_ADMAP` absolute-sector list. The Phase 3a
 nav-pack decoder also surfaces the typed **DSI** sub-sections
 (`DSI_GI` general info; `SML_PBI` seamless-playback interleaved-unit
 flags + jump pointers + per-stream audio-gap table; `SML_AGLI` 9-cell
@@ -62,6 +64,8 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | TT_SRPT (title list) + VTS_PTT_SRPT (chapter list) | landed |
 | VTS_PGCI + PGC (program chains + cells + colour-LUT + command table) | landed |
 | VTS_C_ADT (cell-to-VOB-sector lookup) | landed |
+| VTS_VOBU_ADMAP (per-VOBU sector list + partition lookup) | landed |
+| VTS_TMAPTI (per-PGC time map + seconds → VOBU sector seek) | landed |
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed (Phase 3a) |
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed (Phase 3a) |
 | LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed (Phase 3a) |
@@ -286,6 +290,41 @@ present at that level — useful for an IFO sanity-checker.
 
 
 
+## Time-based seek (`VTS_TMAPTI` + `VTS_VOBU_ADMAP`)
+
+Once a `VtsIfo` is parsed, the `time_map` field carries one time map
+per PGC and `vobu_admap` carries the title-set VOBU sector list. Both
+fields are `Option`s; a `None` indicates the corresponding sector
+pointer in `VTSI_MAT` was zero (the table was elided by the
+authoring tool).
+
+```rust,no_run
+use oxideav_dvd::DvdDisc;
+
+let disc = DvdDisc::open("path/to/disc.iso").unwrap();
+let mut reader = std::fs::File::open("path/to/disc.iso").unwrap();
+let vts = disc.parse_vts(&mut reader, 0).unwrap();
+
+// Where does PGC 1's playback timeline sit at the 30-second mark?
+if let Some(sector_in_vob) = vts.vobu_sector_at_pgc_time(1, 30) {
+    // Translate the VOB-relative sector to an absolute disc LBA.
+    let abs_lba = vts.mat.title_vob_sector + sector_in_vob;
+    println!("seek to LBA {abs_lba}");
+}
+
+// Iterate every VOBU in the title-set VOBs.
+if let Some(admap) = &vts.vobu_admap {
+    for vobu in 1..=admap.vobu_count() as u32 {
+        let s = admap.vobu_start_sector(vobu).unwrap();
+        println!("VOBU {vobu} starts at VOB-relative sector {s}");
+    }
+}
+```
+
+`VobuAdmap::vobu_containing(sector)` performs the inverse lookup —
+given a VOB-relative sector, return the 1-based VOBU number whose
+range covers it (using a binary partition over the entry list).
+
 ## Disassembling a NavCommand (Phase 3c precursor)
 
 The `nav` module decodes each 8-byte PGC command word into a typed
@@ -432,13 +471,14 @@ This crate was written entirely against:
   [`docs/container/dvd/application/`](../../docs/container/dvd/application/)
   for the VIDEO_TS layout, the IFO field layouts (VMGI_MAT /
   VTSI_MAT / TT_SRPT / VTS_PTT_SRPT / VTS_PGCI / VTS_C_ADT /
-  VTSM_PGCI_UT / VMGM_PGCI_UT / VMG_VTS_ATRT / VMG_PTL_MAIT) and
-  the PGC body structure (PGC_GI header, audio/sub-picture stream
-  control, the 16-entry `(0, Y, Cr, Cb)` subpicture colour-LUT at
-  PGC offset `0x00A4`, the pre/post/cell command table, program
-  map, Cell Playback Information Table, Cell Position Information
-  Table). Decoding each `NavCommand` into a typed `NavInstruction`
-  tree lives in the `nav` module; executing the decoded form is the
+  VTSM_PGCI_UT / VMGM_PGCI_UT / VMG_VTS_ATRT / VMG_PTL_MAIT /
+  VTS_VOBU_ADMAP / VTS_TMAPTI / VTS_TMAP) and the PGC body
+  structure (PGC_GI header, audio/sub-picture stream control, the
+  16-entry `(0, Y, Cr, Cb)` subpicture colour-LUT at PGC offset
+  `0x00A4`, the pre/post/cell command table, program map, Cell
+  Playback Information Table, Cell Position Information Table).
+  Decoding each `NavCommand` into a typed `NavInstruction` tree
+  lives in the `nav` module; executing the decoded form is the
   remaining Phase 3c VM work.
 - `docs/container/dvd/application/mpucoder-vmi.html`,
   `mpucoder-vmi-sum.html`, `mpucoder-vmi-jmp.html`,

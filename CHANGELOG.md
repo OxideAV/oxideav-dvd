@@ -9,6 +9,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`VobuAdmap` + `VtsTmapti` / `VtsTmap` — time-based seek tables.**
+  The two title-set sector pointers `VTSI_MAT::vts_vobu_admap_sector`
+  and `VTSI_MAT::vts_tmapti_sector` previously surfaced only as raw
+  `u32` fields; this round materialises both tables into typed
+  parsers and wires them onto `VtsIfo` so a player can answer
+  "where is playback at second N?" without re-walking the IFO byte
+  buffer. Clean-room per
+  `docs/container/dvd/application/mpucoder-ifo.html` (VOBU_ADMAP
+  layout) and `docs/container/dvd/application/mpucoder-ifo_vts.html`
+  (VTS_TMAPTI / VTS_TMAP layout); no external implementation
+  source consulted.
+  - **`VobuAdmap`** — `{ end_address, entries: Vec<u32> }` decoder
+    for the per-VOBU sector list shared by `VMGM_VOBU_ADMAP`,
+    `VTSM_VOBU_ADMAP`, and `VTS_VOBU_ADMAP` (all three share the
+    same wire format per `mpucoder-ifo.html`). Entry count is
+    implicit in the `end_address` field; the parser carves
+    `(end_address + 1 - 4) / 4` four-byte VOB-relative sector
+    words. `vobu_count`, `vobu_start_sector(vobu_number)` (1-based
+    lookup), and `vobu_containing(sector)` (binary-partition
+    inverse lookup that returns the 1-based VOBU number whose
+    range covers the requested sector) round out the surface.
+  - **`VtsTmap` + `TmapEntry`** — per-PGC time map. The 4-byte
+    header is `{ time_unit: u8, reserved: u8, number_of_entries:
+    u16 }`; each entry is a 4-byte big-endian word with bit 31 set
+    when the previous entry was time-discontinuous (a VOBU
+    boundary that crosses an STC reset) and the low 31 bits
+    carrying the VOB-relative sector. `sector_at(seconds)`
+    translates a PGC-relative wall-clock time into the VOBU
+    sector whose `[(i - 1) * time_unit, i * time_unit)` bracket
+    contains it; the result clamps to the last entry once
+    `seconds` runs past the map. Empty maps and `time_unit == 0`
+    both yield `None` rather than panic, per spec language that
+    declares an empty map legal but unindexable.
+    `TmapEntry::DISCONTINUITY_BIT` + `SECTOR_MASK` constants make
+    the bit-31 split explicit.
+  - **`VtsTmapti`** — `{ number_of_pgcs, end_address, maps:
+    Vec<VtsTmap> }`. The spec mandates "each PGC MUST have a time
+    map, even if it is empty" so `maps.len() ==
+    number_of_program_chains` is invariant. `get(pgcn)` returns
+    the per-PGC map for a 1-based program-chain number.
+  - **Wired onto `VtsIfo::parse`** as the two new
+    `Option<VobuAdmap>` + `Option<VtsTmapti>` fields
+    (`vobu_admap`, `time_map`). Both stay `None` when the
+    corresponding `VTSI_MAT` sector pointer is zero — the spec
+    lists `VTS_VOBU_ADMAP` as mandatory but some authoring tools
+    elide it on title sets that hold only menu VOBs, and
+    `VTS_TMAPTI` is the explicitly-optional one. The new
+    **`VtsIfo::vobu_sector_at_pgc_time(pgcn, seconds)`** wrapper
+    composes `time_map.get(pgcn)` with `VtsTmap::sector_at`, the
+    expected entry point a playback engine uses when the user
+    requests a wall-clock seek; combine with
+    `VtsiMat::title_vob_sector` for the absolute disc LBA.
+  - 15 new in-module tests (round-trip + partition lookup +
+    pre-sector / past-end edges + non-multiple-of-4 / truncated /
+    empty-map rejections for `VobuAdmap`; entry decode +
+    discontinuity-bit isolation + time-bracket sweep + empty +
+    zero-`time_unit` / truncated rejections for `VtsTmap`;
+    two-PGC walk + empty-PGC invariant + short-offset rejection
+    for `VtsTmapti`; end-to-end VOBU-map + time-map composite
+    that walks a six-sector synthetic IFO through `VtsIfo::parse`
+    and asserts `vobu_sector_at_pgc_time` on three sample
+    timestamps). **244 lib tests** (was 229) under default
+    features; **254 lib tests** (was 239) under `--all-features`.
+
 - **`uops` module — DVD-Video User Operation flag decoder.**
   Three on-disc fields carry a UOP-prohibition bitmask: the
   TT_SRPT entry (bits 0+1 packed into `title_type`), the PGC

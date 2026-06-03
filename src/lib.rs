@@ -106,8 +106,8 @@ pub use error::{Error, Result};
 pub use ifo::{
     CellAddrEntry, CellPlaybackInfo, CellPositionInfo, DvdChapter, DvdTitle, DvdTitleEntry,
     FrameRate, NavCommand, PaletteEntry, Pgc, PgcCommandTable, PgcTime, Pgci, PgciSrp, Ptt,
-    PttTitle, TtSrpt, VmgIfo, VtsCAdt, VtsIfo, VtsPttSrpt, VtsiMat, DVD_SECTOR, VMG_MAGIC,
-    VTS_MAGIC,
+    PttTitle, TmapEntry, TtSrpt, VmgIfo, VobuAdmap, VtsCAdt, VtsIfo, VtsPttSrpt, VtsTmap,
+    VtsTmapti, VtsiMat, DVD_SECTOR, VMG_MAGIC, VTS_MAGIC,
 };
 pub use iso9660::{
     DirectoryRecord, Iso9660Entry, Iso9660Volume, PathTableEntry, PrimaryVolumeDescriptor,
