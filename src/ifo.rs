@@ -203,6 +203,10 @@ pub struct VmgIfo {
     pub vmgm_c_adt_sector: u32,
     /// Sector pointer to VMGM_VOBU_ADMAP (menu VOBU address map).
     pub vmgm_vobu_admap_sector: u32,
+    /// VMGM (First-Play / VMG menu) stream attributes at
+    /// 0x0100..0x015C. Empty when the buffer was too short to
+    /// cover that region.
+    pub menu_attributes: MenuAttributes,
 }
 
 impl VmgIfo {
@@ -235,6 +239,7 @@ impl VmgIfo {
         let txtdt_mg_sector = read_u32(buf, 0x00D4)?;
         let vmgm_c_adt_sector = read_u32(buf, 0x00D8)?;
         let vmgm_vobu_admap_sector = read_u32(buf, 0x00DC)?;
+        let menu_attributes = parse_menu_attribute_block(buf, 0x0100)?;
 
         Ok(Self {
             last_sector_vmg_set,
@@ -256,6 +261,7 @@ impl VmgIfo {
             txtdt_mg_sector,
             vmgm_c_adt_sector,
             vmgm_vobu_admap_sector,
+            menu_attributes,
         })
     }
 }
@@ -368,8 +374,566 @@ impl TtSrpt {
 }
 
 // ------------------------------------------------------------------
+// Stream attribute extension blocks
+//
+// mpucoder-ifo.html documents a shared attribute layout that lives
+// at fixed offsets inside both `VMGI_MAT` (one block at 0x0100..
+// 0x015C covering the VMGM menu VOBS) and `VTSI_MAT` (the menu
+// block at 0x0100..0x015C plus the title-content block at 0x0200..
+// 0x0318 plus the 8×24-byte multichannel-extension table at
+// 0x0318..0x03D8). Each block is a self-contained `(video, audio
+// list, sub-picture list)` triple; the multichannel-extension
+// table is karaoke-only and only present on the VTS title side.
+// ------------------------------------------------------------------
+
+/// MPEG coding mode field of `<a name="vidatt">video attributes</a>`.
+/// (mpucoder-ifo.html byte 0 bits 7..6 of the 2-byte video-attr field.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoCodingMode {
+    Mpeg1,
+    Mpeg2,
+}
+
+/// Display standard — bits 5..4 of byte 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoStandard {
+    Ntsc,
+    Pal,
+}
+
+/// Display aspect ratio — bits 3..2 of byte 0. The "1" and "2"
+/// values are reserved by the spec; we surface them as
+/// [`VideoAspectRatio::Reserved`] rather than rejecting outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoAspectRatio {
+    /// `00b` — 4:3 frame, no display-mode pulldown.
+    Ratio4x3,
+    /// `11b` — 16:9 frame, anamorphic or letterboxed delivery.
+    Ratio16x9,
+    /// `01b` / `10b` — reserved by the spec.
+    Reserved(u8),
+}
+
+/// Decoded NTSC / PAL pixel resolution — byte 1 bits 5..3 of the
+/// 2-byte video-attr field. The spec encodes resolution as a 3-bit
+/// index whose meaning depends on the standard byte; we resolve it
+/// to absolute pixel dimensions for the caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoResolution {
+    /// Full-D1 — `0` index. 720×480 (NTSC) / 720×576 (PAL).
+    FullD1,
+    /// Three-quarter D1 — `1` index. 704×480 (NTSC) / 704×576 (PAL).
+    ThreeQuarterD1,
+    /// Half-D1 — `2` index. 352×480 (NTSC) / 352×576 (PAL).
+    HalfD1,
+    /// SIF — `3` index. 352×240 (NTSC) / 352×288 (PAL).
+    Sif,
+    /// `4..=7` — reserved by the spec.
+    Reserved(u8),
+}
+
+impl VideoResolution {
+    /// Decoded `(width, height)` in pixels for this resolution code +
+    /// the parent's `VideoStandard`. Returns `None` for reserved
+    /// codes (caller can fall back to the raw resolution index from
+    /// [`VideoAttributes::resolution_code`]).
+    pub fn dimensions(self, standard: VideoStandard) -> Option<(u16, u16)> {
+        let h = match standard {
+            VideoStandard::Ntsc => 480,
+            VideoStandard::Pal => 576,
+        };
+        let w = match self {
+            VideoResolution::FullD1 => 720,
+            VideoResolution::ThreeQuarterD1 => 704,
+            VideoResolution::HalfD1 => 352,
+            VideoResolution::Sif => 352,
+            VideoResolution::Reserved(_) => return None,
+        };
+        let h = if matches!(self, VideoResolution::Sif) && matches!(standard, VideoStandard::Ntsc) {
+            240
+        } else if matches!(self, VideoResolution::Sif) && matches!(standard, VideoStandard::Pal) {
+            288
+        } else {
+            h
+        };
+        Some((w, h))
+    }
+}
+
+/// Decoded 2-byte VMGM / VTSM / VTS video-attribute field.
+///
+/// mpucoder-ifo.html "Video Attributes" lays the field out as:
+///
+/// ```text
+///   byte 0:
+///     bit 7..6  coding mode (00=MPEG-1, 01=MPEG-2)
+///     bit 5..4  standard (00=NTSC, 01=PAL)
+///     bit 3..2  aspect ratio (00=4:3, 11=16:9, 01/10 reserved)
+///     bit 1     1 = automatic pan/scan disallowed
+///     bit 0     1 = automatic letterbox disallowed
+///   byte 1:
+///     bit 7     CC for line 21 field 1 in GOP (NTSC only)
+///     bit 6     CC for line 21 field 2 in GOP (NTSC only)
+///     bit 5..3  resolution index (see VideoResolution)
+///     bit 2     1 = letterboxed source
+///     bit 1     reserved
+///     bit 0     PAL only: 0 = camera, 1 = film
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoAttributes {
+    /// Raw 2-byte field, kept for fidelity / round-trip diagnostics.
+    pub raw: [u8; 2],
+    pub coding_mode: VideoCodingMode,
+    pub standard: VideoStandard,
+    pub aspect_ratio: VideoAspectRatio,
+    /// `true` when `byte0 bit 1` is set — pan/scan delivery
+    /// disabled at the disc level even for 4:3 displays.
+    pub pan_scan_disallowed: bool,
+    /// `true` when `byte0 bit 0` is set — letterbox delivery
+    /// disabled at the disc level.
+    pub letterbox_disallowed: bool,
+    /// `true` when `byte1 bit 7` is set — line-21 closed captioning
+    /// is present on field 1 of every GOP (NTSC only; ignored on PAL).
+    pub line21_field1_cc: bool,
+    /// `true` when `byte1 bit 6` is set — closed captioning on field 2.
+    pub line21_field2_cc: bool,
+    /// Raw 3-bit resolution index — see [`VideoResolution`] for the
+    /// decoded form.
+    pub resolution_code: u8,
+    pub resolution: VideoResolution,
+    /// `true` when the source itself is letterboxed (separate from
+    /// the delivery-mode "letterbox disallowed" bit).
+    pub letterboxed_source: bool,
+    /// PAL-only: `false` = camera-captured, `true` = film-source
+    /// (progressive at 24 fps, telecined to 25 fps). Always `false`
+    /// on NTSC.
+    pub film_source_pal: bool,
+}
+
+impl VideoAttributes {
+    /// Parse a 2-byte video-attribute field.
+    pub fn parse(buf: &[u8; 2]) -> Self {
+        let b0 = buf[0];
+        let b1 = buf[1];
+        let coding_mode = match (b0 >> 6) & 0b11 {
+            0 => VideoCodingMode::Mpeg1,
+            _ => VideoCodingMode::Mpeg2,
+        };
+        let standard = match (b0 >> 4) & 0b11 {
+            0 => VideoStandard::Ntsc,
+            _ => VideoStandard::Pal,
+        };
+        let aspect_ratio = match (b0 >> 2) & 0b11 {
+            0 => VideoAspectRatio::Ratio4x3,
+            3 => VideoAspectRatio::Ratio16x9,
+            x => VideoAspectRatio::Reserved(x),
+        };
+        let resolution_code = (b1 >> 3) & 0b111;
+        let resolution = match resolution_code {
+            0 => VideoResolution::FullD1,
+            1 => VideoResolution::ThreeQuarterD1,
+            2 => VideoResolution::HalfD1,
+            3 => VideoResolution::Sif,
+            x => VideoResolution::Reserved(x),
+        };
+        Self {
+            raw: *buf,
+            coding_mode,
+            standard,
+            aspect_ratio,
+            pan_scan_disallowed: (b0 & 0b0000_0010) != 0,
+            letterbox_disallowed: (b0 & 0b0000_0001) != 0,
+            line21_field1_cc: (b1 & 0b1000_0000) != 0,
+            line21_field2_cc: (b1 & 0b0100_0000) != 0,
+            resolution_code,
+            resolution,
+            letterboxed_source: (b1 & 0b0000_0100) != 0,
+            film_source_pal: (b1 & 0b0000_0001) != 0,
+        }
+    }
+}
+
+/// Audio coding mode — byte 0 bits 7..5 of the 8-byte audio-attr
+/// field. `0` = AC-3, `2` = MPEG-1, `3` = MPEG-2 extended, `4` = LPCM,
+/// `6` = DTS. Codes `1`, `5`, `7` are reserved by the spec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioCodingMode {
+    Ac3,
+    Mpeg1,
+    Mpeg2Ext,
+    Lpcm,
+    Dts,
+    Reserved(u8),
+}
+
+/// Application mode — byte 0 bits 1..0. `0` = unspecified,
+/// `1` = karaoke (multichannel extension applies), `2` = surround
+/// (Dolby-Surround-suitable bit lives in byte 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioApplicationMode {
+    Unspecified,
+    Karaoke,
+    Surround,
+    Reserved(u8),
+}
+
+/// Audio quantization / dynamic-range-control field — byte 1 bits
+/// 7..6. The interpretation switches with the coding mode:
+/// LPCM uses the field as a sample-depth selector (16 / 20 / 24 bps),
+/// MPEG-1/2 uses it as a DRC flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioQuantizationDrc {
+    /// LPCM-only: 16 bps per sample.
+    Lpcm16,
+    /// LPCM-only: 20 bps per sample.
+    Lpcm20,
+    /// LPCM-only: 24 bps per sample.
+    Lpcm24,
+    /// MPEG-only: dynamic-range control absent.
+    NoDrc,
+    /// MPEG-only: dynamic-range control present.
+    Drc,
+    /// Field present but caller didn't supply the coding mode
+    /// hint — surface the raw 2-bit value.
+    Raw(u8),
+}
+
+/// Language type — byte 0 bits 3..2. `0` = unspecified (bytes 2..=4
+/// reserved), `1` = ISO-639 language code present in bytes 2..=4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioLanguageType {
+    Unspecified,
+    Iso639,
+    Reserved(u8),
+}
+
+/// Decoded 8-byte audio-attribute field.
+///
+/// Layout per mpucoder-ifo.html "Audio Attributes":
+///
+/// ```text
+///   byte 0:
+///     bit 7..5  coding mode (0=AC3, 2=MPEG-1, 3=MPEG-2ext, 4=LPCM, 6=DTS)
+///     bit 4     multichannel-extension present (karaoke)
+///     bit 3..2  language type (0=unspecified, 1=ISO-639 in bytes 2..=4)
+///     bit 1..0  application mode (0=unspec, 1=karaoke, 2=surround)
+///   byte 1:
+///     bit 7..6  quantization / DRC (interpretation switches on coding mode)
+///     bit 5..4  sample-rate selector (only `0` = 48 kHz defined)
+///     bit 3     reserved
+///     bit 2..0  channels - 1   (so `1` = stereo, `5` = 5.1)
+///   bytes 2..=3:  ISO-639 two-letter language code (if `language_type == Iso639`)
+///   byte 4:       reserved for language-code extension
+///   byte 5:       code-extension byte — `0..=4` per `SPRM #17`
+///   byte 6:       reserved
+///   byte 7:       Application-information byte (karaoke channel
+///                 assignment or surround Dolby-suitable bit, per
+///                 the application mode)
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioAttributes {
+    pub raw: [u8; 8],
+    pub coding_mode: AudioCodingMode,
+    /// `true` when the karaoke multichannel-extension entry for this
+    /// stream is populated. Always `false` outside karaoke titles.
+    pub multichannel_extension_present: bool,
+    pub language_type: AudioLanguageType,
+    pub application_mode: AudioApplicationMode,
+    pub quantization: AudioQuantizationDrc,
+    /// Sample-rate index (only `0` = 48 kHz is defined; any other
+    /// value is reserved).
+    pub sample_rate_code: u8,
+    /// Channel count, post-decoding the `channels - 1` field.
+    pub channel_count: u8,
+    /// Two-character ISO-639 language code, or empty when
+    /// `language_type` is `Unspecified`.
+    pub language_code: [u8; 2],
+    pub code_extension: u8,
+    /// Raw application-information byte at offset 7. Karaoke and
+    /// surround application modes both pack secondary flags in here;
+    /// callers can decode them with the helpers below.
+    pub application_info: u8,
+}
+
+impl AudioAttributes {
+    /// Parse an 8-byte audio-attribute field.
+    pub fn parse(buf: &[u8; 8]) -> Self {
+        let b0 = buf[0];
+        let b1 = buf[1];
+        let coding_mode_raw = (b0 >> 5) & 0b111;
+        let coding_mode = match coding_mode_raw {
+            0 => AudioCodingMode::Ac3,
+            2 => AudioCodingMode::Mpeg1,
+            3 => AudioCodingMode::Mpeg2Ext,
+            4 => AudioCodingMode::Lpcm,
+            6 => AudioCodingMode::Dts,
+            x => AudioCodingMode::Reserved(x),
+        };
+        let language_type = match (b0 >> 2) & 0b11 {
+            0 => AudioLanguageType::Unspecified,
+            1 => AudioLanguageType::Iso639,
+            x => AudioLanguageType::Reserved(x),
+        };
+        let application_mode = match b0 & 0b11 {
+            0 => AudioApplicationMode::Unspecified,
+            1 => AudioApplicationMode::Karaoke,
+            2 => AudioApplicationMode::Surround,
+            x => AudioApplicationMode::Reserved(x),
+        };
+        let quant_raw = (b1 >> 6) & 0b11;
+        let quantization = match coding_mode {
+            AudioCodingMode::Lpcm => match quant_raw {
+                0 => AudioQuantizationDrc::Lpcm16,
+                1 => AudioQuantizationDrc::Lpcm20,
+                2 => AudioQuantizationDrc::Lpcm24,
+                _ => AudioQuantizationDrc::Raw(quant_raw),
+            },
+            AudioCodingMode::Mpeg1 | AudioCodingMode::Mpeg2Ext => match quant_raw {
+                0 => AudioQuantizationDrc::NoDrc,
+                1 => AudioQuantizationDrc::Drc,
+                _ => AudioQuantizationDrc::Raw(quant_raw),
+            },
+            _ => AudioQuantizationDrc::Raw(quant_raw),
+        };
+        Self {
+            raw: *buf,
+            coding_mode,
+            multichannel_extension_present: (b0 & 0b0001_0000) != 0,
+            language_type,
+            application_mode,
+            quantization,
+            sample_rate_code: (b1 >> 4) & 0b11,
+            channel_count: (b1 & 0b0000_0111).saturating_add(1),
+            language_code: [buf[2], buf[3]],
+            code_extension: buf[5],
+            application_info: buf[7],
+        }
+    }
+
+    /// Decoded sample rate in hertz. Returns `Some(48_000)` for
+    /// `sample_rate_code == 0` (the only defined value) and `None`
+    /// for the reserved codes.
+    pub fn sample_rate_hz(self) -> Option<u32> {
+        match self.sample_rate_code {
+            0 => Some(48_000),
+            _ => None,
+        }
+    }
+
+    /// Surround application mode only: `true` when byte 7 bit 3 is
+    /// set (Dolby-Surround-decodable downmix). Always `false`
+    /// outside `AudioApplicationMode::Surround`.
+    pub fn dolby_surround_suitable(self) -> bool {
+        matches!(self.application_mode, AudioApplicationMode::Surround)
+            && (self.application_info & 0b0000_1000) != 0
+    }
+
+    /// Karaoke application mode only — channel-assignment index
+    /// from byte 7 bits 6..4. The spec maps:
+    /// `2` = 2/0 L,R / `3` = 3/0 L,M,R / `4` = 2/1 L,R,V1 /
+    /// `5` = 3/1 L,M,R,V1 / `6` = 2/2 L,R,V1,V2 / `7` = 3/2 L,M,R,V1,V2.
+    /// `0` and `1` are flagged "not valid" by the spec.
+    pub fn karaoke_channel_assignment(self) -> Option<u8> {
+        if matches!(self.application_mode, AudioApplicationMode::Karaoke) {
+            Some((self.application_info >> 4) & 0b0000_0111)
+        } else {
+            None
+        }
+    }
+
+    /// Karaoke version index — byte 7 bits 3..2.
+    pub fn karaoke_version(self) -> Option<u8> {
+        if matches!(self.application_mode, AudioApplicationMode::Karaoke) {
+            Some((self.application_info >> 2) & 0b11)
+        } else {
+            None
+        }
+    }
+
+    /// Karaoke MC-intro flag — byte 7 bit 1.
+    pub fn karaoke_mc_intro_present(self) -> Option<bool> {
+        if matches!(self.application_mode, AudioApplicationMode::Karaoke) {
+            Some((self.application_info & 0b10) != 0)
+        } else {
+            None
+        }
+    }
+
+    /// Karaoke solo / duet flag — byte 7 bit 0 (`0` = solo, `1` = duet).
+    pub fn karaoke_duet(self) -> Option<bool> {
+        if matches!(self.application_mode, AudioApplicationMode::Karaoke) {
+            Some((self.application_info & 0b01) != 0)
+        } else {
+            None
+        }
+    }
+}
+
+/// Sub-picture coding mode — byte 0 bits 7..5 of the 6-byte sub-
+/// picture-attribute field. Only `0` (2-bit RLE) is defined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubpictureCodingMode {
+    Rle2Bit,
+    Reserved(u8),
+}
+
+/// Language type — same as the audio variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubpictureLanguageType {
+    Unspecified,
+    Iso639,
+    Reserved(u8),
+}
+
+/// Decoded 6-byte sub-picture attribute field.
+///
+/// Layout per mpucoder-ifo.html "Subpicture Attributes":
+///
+/// ```text
+///   byte 0:
+///     bit 7..5  coding mode (0 = 2-bit RLE)
+///     bit 4..2  reserved
+///     bit 1..0  language type
+///   byte 1:     reserved
+///   bytes 2..=3: ISO-639 two-letter language code
+///   byte 4:     reserved for language-code extension
+///   byte 5:     code extension — see SPRM #19
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubpictureAttributes {
+    pub raw: [u8; 6],
+    pub coding_mode: SubpictureCodingMode,
+    pub language_type: SubpictureLanguageType,
+    pub language_code: [u8; 2],
+    pub code_extension: u8,
+}
+
+impl SubpictureAttributes {
+    /// Parse a 6-byte sub-picture-attribute field.
+    pub fn parse(buf: &[u8; 6]) -> Self {
+        let b0 = buf[0];
+        let coding_mode = match (b0 >> 5) & 0b111 {
+            0 => SubpictureCodingMode::Rle2Bit,
+            x => SubpictureCodingMode::Reserved(x),
+        };
+        let language_type = match b0 & 0b11 {
+            0 => SubpictureLanguageType::Unspecified,
+            1 => SubpictureLanguageType::Iso639,
+            x => SubpictureLanguageType::Reserved(x),
+        };
+        Self {
+            raw: *buf,
+            coding_mode,
+            language_type,
+            language_code: [buf[2], buf[3]],
+            code_extension: buf[5],
+        }
+    }
+}
+
+/// One 8-byte karaoke multichannel-extension entry, decoded per
+/// mpucoder-ifo.html "MultiChannel Extension - Karaoke mode".
+///
+/// Bytes 0x05..=0x17 are reserved-zero and absorbed silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct McExtensionEntry {
+    pub raw: [u8; 8],
+    /// Byte 0 bit 0 — guide melody on audio channel 0 of the
+    /// downmix is present.
+    pub ach0_guide_melody: bool,
+    /// Byte 1 bit 0 — guide melody on audio channel 1.
+    pub ach1_guide_melody: bool,
+    /// Byte 2 bit 3 — guide vocal 1 on audio channel 2.
+    pub ach2_guide_vocal_1: bool,
+    /// Byte 2 bit 2 — guide vocal 2 on audio channel 2.
+    pub ach2_guide_vocal_2: bool,
+    /// Byte 2 bit 1 — guide melody 1 on audio channel 2.
+    pub ach2_guide_melody_1: bool,
+    /// Byte 2 bit 0 — guide melody 2 on audio channel 2.
+    pub ach2_guide_melody_2: bool,
+    /// Byte 3 bit 3 — guide vocal 1 on audio channel 3.
+    pub ach3_guide_vocal_1: bool,
+    /// Byte 3 bit 2 — guide vocal 2 on audio channel 3.
+    pub ach3_guide_vocal_2: bool,
+    /// Byte 3 bit 1 — guide melody A on audio channel 3.
+    pub ach3_guide_melody_a: bool,
+    /// Byte 3 bit 0 — sound effect A on audio channel 3.
+    pub ach3_sound_effect_a: bool,
+    /// Byte 4 bit 3 — guide vocal 1 on audio channel 4.
+    pub ach4_guide_vocal_1: bool,
+    /// Byte 4 bit 2 — guide vocal 2 on audio channel 4.
+    pub ach4_guide_vocal_2: bool,
+    /// Byte 4 bit 1 — guide melody B on audio channel 4.
+    pub ach4_guide_melody_b: bool,
+    /// Byte 4 bit 0 — sound effect B on audio channel 4.
+    pub ach4_sound_effect_b: bool,
+}
+
+impl McExtensionEntry {
+    /// Parse one 8-byte multichannel-extension entry. (The spec
+    /// labels the entry's footprint as `8*24` bytes — actually 24
+    /// entries × 8 bytes each — but each individual entry is 8
+    /// bytes wide.)
+    pub fn parse(buf: &[u8; 8]) -> Self {
+        let b0 = buf[0];
+        let b1 = buf[1];
+        let b2 = buf[2];
+        let b3 = buf[3];
+        let b4 = buf[4];
+        Self {
+            raw: *buf,
+            ach0_guide_melody: (b0 & 0b0000_0001) != 0,
+            ach1_guide_melody: (b1 & 0b0000_0001) != 0,
+            ach2_guide_vocal_1: (b2 & 0b0000_1000) != 0,
+            ach2_guide_vocal_2: (b2 & 0b0000_0100) != 0,
+            ach2_guide_melody_1: (b2 & 0b0000_0010) != 0,
+            ach2_guide_melody_2: (b2 & 0b0000_0001) != 0,
+            ach3_guide_vocal_1: (b3 & 0b0000_1000) != 0,
+            ach3_guide_vocal_2: (b3 & 0b0000_0100) != 0,
+            ach3_guide_melody_a: (b3 & 0b0000_0010) != 0,
+            ach3_sound_effect_a: (b3 & 0b0000_0001) != 0,
+            ach4_guide_vocal_1: (b4 & 0b0000_1000) != 0,
+            ach4_guide_vocal_2: (b4 & 0b0000_0100) != 0,
+            ach4_guide_melody_b: (b4 & 0b0000_0010) != 0,
+            ach4_sound_effect_b: (b4 & 0b0000_0001) != 0,
+        }
+    }
+}
+
+// ------------------------------------------------------------------
 // VTSI_MAT — Video Title Set Information Management Table
 // ------------------------------------------------------------------
+
+/// VMGM / VTSM-side menu-attribute block — video format plus the
+/// audio + sub-picture stream lists for the menu VOBS.
+///
+/// `audio_streams` and `subpicture_streams` are populated to the
+/// declared `number_of_*_streams` count (≤ 8 for audio per the
+/// 8×8-byte attribute slot, ≤ 1 for sub-picture per the single
+/// 6-byte slot). Any tail attribute slots beyond the declared
+/// counts are ignored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MenuAttributes {
+    pub video: Option<VideoAttributes>,
+    pub audio_streams: Vec<AudioAttributes>,
+    pub subpicture_streams: Vec<SubpictureAttributes>,
+}
+
+/// VTS_VOBS-side title-attribute block — video format plus the
+/// title audio (≤ 8) and sub-picture (≤ 32) stream lists, plus the
+/// karaoke multichannel-extension table (24 × 8-byte entries; one
+/// per audio stream slot, even for slots not populated).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TitleAttributes {
+    pub video: Option<VideoAttributes>,
+    pub audio_streams: Vec<AudioAttributes>,
+    pub subpicture_streams: Vec<SubpictureAttributes>,
+    /// Karaoke multichannel extension entries — populated when the
+    /// buffer is long enough to cover offset 0x0318..0x03D8 of
+    /// VTSI_MAT. Empty for non-karaoke titles and for buffers
+    /// shorter than 0x03D8.
+    pub multichannel_extension: Vec<McExtensionEntry>,
+}
 
 /// Parsed VTSI_MAT (the first 0x300 + audio/sub-picture extension
 /// bytes of a `VTS_xx_0.IFO` file).
@@ -408,11 +972,24 @@ pub struct VtsiMat {
     pub vts_c_adt_sector: u32,
     /// Sector pointer to VTS_VOBU_ADMAP (title-set VOBU address map).
     pub vts_vobu_admap_sector: u32,
+    /// VTSM (menu) stream attributes at 0x0100..0x015C. Empty
+    /// when the buffer was too short to cover that region — the
+    /// minimal buffer-length check is still `0x200` for backwards
+    /// compatibility with the original sector-only parse.
+    pub menu_attributes: MenuAttributes,
+    /// VTS_VOBS (title-content) stream attributes at 0x0200..
+    /// 0x03D8. Empty when the buffer was too short to cover that
+    /// region.
+    pub title_attributes: TitleAttributes,
 }
 
 impl VtsiMat {
     /// Parse a `VTS_xx_0.IFO` byte buffer. Buffer must cover at least
     /// the VTSI_MAT region (the first 0x200 bytes).
+    ///
+    /// Audio / sub-picture / multichannel attribute extension blocks
+    /// are decoded opportunistically — fields populated up to the
+    /// last full block the buffer covers, the rest stays empty.
     pub fn parse(buf: &[u8]) -> Result<Self> {
         if buf.len() < 0x200 {
             return Err(Error::InvalidUdf("VTSI_MAT: buffer shorter than 0x200"));
@@ -420,6 +997,8 @@ impl VtsiMat {
         if &buf[0..12] != VTS_MAGIC {
             return Err(Error::InvalidUdf("VTSI_MAT: bad magic"));
         }
+        let menu_attributes = parse_menu_attribute_block(buf, 0x0100)?;
+        let title_attributes = parse_title_attribute_block(buf)?;
         Ok(Self {
             last_sector_title_set: read_u32(buf, 0x000C)?,
             last_sector_ifo: read_u32(buf, 0x001C)?,
@@ -436,8 +1015,136 @@ impl VtsiMat {
             vtsm_vobu_admap_sector: read_u32(buf, 0x00DC)?,
             vts_c_adt_sector: read_u32(buf, 0x00E0)?,
             vts_vobu_admap_sector: read_u32(buf, 0x00E4)?,
+            menu_attributes,
+            title_attributes,
         })
     }
+}
+
+/// Decode a menu-attribute block (VMGM- or VTSM-side) that starts at
+/// `block_off`. The block's footprint per mpucoder-ifo.html
+/// 0x0100..0x015C is:
+///
+/// ```text
+///   +0x00  u16  video attributes (2 bytes)
+///   +0x02  u16  number of audio streams (≤ 8)
+///   +0x04  8 × 8 bytes  audio attributes
+///   +0x44  16 bytes     reserved
+///   +0x54  u16  number of subpicture streams (0 or 1)
+///   +0x56  6 bytes      subpicture attribute slot (slot 0)
+///   +0x5C  ...           reserved tail
+/// ```
+fn parse_menu_attribute_block(buf: &[u8], block_off: usize) -> Result<MenuAttributes> {
+    // Need at least the 2-byte video field + 2-byte audio count.
+    if buf.len() < block_off + 0x04 {
+        return Ok(MenuAttributes::default());
+    }
+    let video = read_video_attr(buf, block_off)?;
+    let audio_count = read_u16(buf, block_off + 0x02)? as usize;
+    let mut audio_streams = Vec::new();
+    if buf.len() >= block_off + 0x04 + 8 * 8 {
+        for i in 0..audio_count.min(8) {
+            audio_streams.push(read_audio_attr(buf, block_off + 0x04 + i * 8)?);
+        }
+    }
+    let subp_count_off = block_off + 0x54;
+    let mut subpicture_streams = Vec::new();
+    if buf.len() >= subp_count_off + 2 + 6 {
+        let subp_count = read_u16(buf, subp_count_off)? as usize;
+        if subp_count >= 1 {
+            subpicture_streams.push(read_subp_attr(buf, subp_count_off + 2)?);
+        }
+    }
+    Ok(MenuAttributes {
+        video: Some(video),
+        audio_streams,
+        subpicture_streams,
+    })
+}
+
+/// Decode the VTS-VOBS title attribute block at fixed offset 0x0200.
+/// The block's footprint is:
+///
+/// ```text
+///   0x0200  u16  video attributes
+///   0x0202  u16  number of audio streams (≤ 8)
+///   0x0204  8 × 8 bytes  audio attributes
+///   0x0244  16 bytes     reserved
+///   0x0254  u16  number of subpicture streams (≤ 32)
+///   0x0256  32 × 6 bytes  subpicture attributes
+///   0x0316  2 bytes      reserved
+///   0x0318  24 × 8 bytes  multichannel-extension entries (karaoke only)
+///   0x03D8  end
+/// ```
+fn parse_title_attribute_block(buf: &[u8]) -> Result<TitleAttributes> {
+    if buf.len() < 0x0204 {
+        return Ok(TitleAttributes::default());
+    }
+    let video = read_video_attr(buf, 0x0200)?;
+    let audio_count = read_u16(buf, 0x0202)? as usize;
+    let mut audio_streams = Vec::new();
+    if buf.len() >= 0x0204 + 8 * 8 {
+        for i in 0..audio_count.min(8) {
+            audio_streams.push(read_audio_attr(buf, 0x0204 + i * 8)?);
+        }
+    }
+    let mut subpicture_streams = Vec::new();
+    if buf.len() >= 0x0256 + 32 * 6 {
+        let subp_count = read_u16(buf, 0x0254)? as usize;
+        for i in 0..subp_count.min(32) {
+            subpicture_streams.push(read_subp_attr(buf, 0x0256 + i * 6)?);
+        }
+    }
+    // Multichannel extension — the spec slot is 24 × 8 = 192 bytes
+    // starting at 0x0318 and ending at 0x03D8. Only decode the
+    // entries that fit; non-karaoke titles leave the slot all-zero
+    // (which Default-decodes cleanly, hence we still populate the
+    // table — callers can inspect `vts_category` or the audio
+    // `multichannel_extension_present` flag to know whether to
+    // consume them).
+    let mut multichannel_extension = Vec::new();
+    if buf.len() >= 0x03D8 {
+        for i in 0..24 {
+            let off = 0x0318 + i * 8;
+            let slice: [u8; 8] = buf[off..off + 8]
+                .try_into()
+                .map_err(|_| Error::InvalidUdf("VTSI_MAT: MC ext slice"))?;
+            multichannel_extension.push(McExtensionEntry::parse(&slice));
+        }
+    }
+    Ok(TitleAttributes {
+        video: Some(video),
+        audio_streams,
+        subpicture_streams,
+        multichannel_extension,
+    })
+}
+
+fn read_video_attr(buf: &[u8], off: usize) -> Result<VideoAttributes> {
+    let slice = buf
+        .get(off..off + 2)
+        .ok_or(Error::InvalidUdf("ifo: video attr read past end"))?;
+    Ok(VideoAttributes::parse(&[slice[0], slice[1]]))
+}
+
+fn read_audio_attr(buf: &[u8], off: usize) -> Result<AudioAttributes> {
+    let slice = buf
+        .get(off..off + 8)
+        .ok_or(Error::InvalidUdf("ifo: audio attr read past end"))?;
+    let arr: [u8; 8] = slice
+        .try_into()
+        .map_err(|_| Error::InvalidUdf("ifo: audio attr slice"))?;
+    Ok(AudioAttributes::parse(&arr))
+}
+
+fn read_subp_attr(buf: &[u8], off: usize) -> Result<SubpictureAttributes> {
+    let slice = buf
+        .get(off..off + 6)
+        .ok_or(Error::InvalidUdf("ifo: subp attr read past end"))?;
+    let arr: [u8; 6] = slice
+        .try_into()
+        .map_err(|_| Error::InvalidUdf("ifo: subp attr slice"))?;
+    Ok(SubpictureAttributes::parse(&arr))
 }
 
 // ------------------------------------------------------------------
@@ -2745,5 +3452,294 @@ mod tests {
         assert_eq!(vts.vobu_sector_at_pgc_time(1, 9), Some(600));
         // Out-of-range PGCN → `None`.
         assert_eq!(vts.vobu_sector_at_pgc_time(2, 0), None);
+    }
+
+    // -------------------------------------------------------------
+    // VTSI_MAT stream-attribute extension
+    // -------------------------------------------------------------
+
+    /// Build a single 8-byte audio-attribute slot covering the
+    /// fields we exercise in the typed parse.
+    #[allow(clippy::too_many_arguments)]
+    fn pack_audio_attr(
+        coding: u8,
+        mc_ext: bool,
+        lang_type: u8,
+        app_mode: u8,
+        quant: u8,
+        sample_rate: u8,
+        chans_minus_one: u8,
+        lang: [u8; 2],
+        code_ext: u8,
+        app_info: u8,
+    ) -> [u8; 8] {
+        let mut b = [0u8; 8];
+        b[0] = ((coding & 0b111) << 5)
+            | (if mc_ext { 0b1_0000 } else { 0 })
+            | ((lang_type & 0b11) << 2)
+            | (app_mode & 0b11);
+        b[1] = ((quant & 0b11) << 6) | ((sample_rate & 0b11) << 4) | (chans_minus_one & 0b111);
+        b[2] = lang[0];
+        b[3] = lang[1];
+        b[5] = code_ext;
+        b[7] = app_info;
+        b
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pack_video_attr(
+        coding: u8,
+        standard: u8,
+        aspect: u8,
+        pan_scan_disallowed: bool,
+        letterbox_disallowed: bool,
+        cc1: bool,
+        cc2: bool,
+        resolution: u8,
+        letterbox_src: bool,
+        film_pal: bool,
+    ) -> [u8; 2] {
+        let mut b = [0u8; 2];
+        b[0] = ((coding & 0b11) << 6)
+            | ((standard & 0b11) << 4)
+            | ((aspect & 0b11) << 2)
+            | (if pan_scan_disallowed { 0b10 } else { 0 })
+            | (if letterbox_disallowed { 0b01 } else { 0 });
+        b[1] = (if cc1 { 0b1000_0000 } else { 0 })
+            | (if cc2 { 0b0100_0000 } else { 0 })
+            | ((resolution & 0b111) << 3)
+            | (if letterbox_src { 0b0000_0100 } else { 0 })
+            | (if film_pal { 0b0000_0001 } else { 0 });
+        b
+    }
+
+    fn pack_subp_attr(coding: u8, lang_type: u8, lang: [u8; 2], code_ext: u8) -> [u8; 6] {
+        let mut b = [0u8; 6];
+        b[0] = ((coding & 0b111) << 5) | (lang_type & 0b11);
+        b[2] = lang[0];
+        b[3] = lang[1];
+        b[5] = code_ext;
+        b
+    }
+
+    #[test]
+    fn video_attributes_mpeg2_pal_16x9_full_d1() {
+        let raw = pack_video_attr(1, 1, 3, false, false, false, false, 0, false, true);
+        let v = VideoAttributes::parse(&raw);
+        assert_eq!(v.coding_mode, VideoCodingMode::Mpeg2);
+        assert_eq!(v.standard, VideoStandard::Pal);
+        assert_eq!(v.aspect_ratio, VideoAspectRatio::Ratio16x9);
+        assert_eq!(v.resolution, VideoResolution::FullD1);
+        assert_eq!(
+            v.resolution.dimensions(VideoStandard::Pal),
+            Some((720, 576))
+        );
+        assert!(v.film_source_pal);
+        assert!(!v.line21_field1_cc);
+    }
+
+    #[test]
+    fn video_attributes_mpeg2_ntsc_4x3_sif_with_cc() {
+        let raw = pack_video_attr(1, 0, 0, true, false, true, true, 3, true, false);
+        let v = VideoAttributes::parse(&raw);
+        assert_eq!(v.coding_mode, VideoCodingMode::Mpeg2);
+        assert_eq!(v.standard, VideoStandard::Ntsc);
+        assert_eq!(v.aspect_ratio, VideoAspectRatio::Ratio4x3);
+        assert_eq!(v.resolution, VideoResolution::Sif);
+        assert_eq!(
+            v.resolution.dimensions(VideoStandard::Ntsc),
+            Some((352, 240))
+        );
+        assert!(v.pan_scan_disallowed);
+        assert!(v.line21_field1_cc);
+        assert!(v.line21_field2_cc);
+        assert!(v.letterboxed_source);
+    }
+
+    #[test]
+    fn video_attributes_reserved_aspect_and_resolution() {
+        let raw = pack_video_attr(1, 0, 1, false, false, false, false, 5, false, false);
+        let v = VideoAttributes::parse(&raw);
+        assert_eq!(v.aspect_ratio, VideoAspectRatio::Reserved(1));
+        assert_eq!(v.resolution, VideoResolution::Reserved(5));
+        assert_eq!(v.resolution.dimensions(VideoStandard::Ntsc), None);
+    }
+
+    #[test]
+    fn audio_attributes_ac3_stereo_english() {
+        // coding=0 (AC3), mc_ext=false, lang_type=1 (ISO), app=0 (unspec),
+        // quant=0, sample=0 (48 kHz), chans-1=1 (stereo).
+        let raw = pack_audio_attr(0, false, 1, 0, 0, 0, 1, *b"en", 0, 0);
+        let a = AudioAttributes::parse(&raw);
+        assert_eq!(a.coding_mode, AudioCodingMode::Ac3);
+        assert!(!a.multichannel_extension_present);
+        assert_eq!(a.language_type, AudioLanguageType::Iso639);
+        assert_eq!(a.application_mode, AudioApplicationMode::Unspecified);
+        assert_eq!(a.channel_count, 2);
+        assert_eq!(a.sample_rate_hz(), Some(48_000));
+        assert_eq!(&a.language_code, b"en");
+        assert!(!a.dolby_surround_suitable());
+    }
+
+    #[test]
+    fn audio_attributes_lpcm_24bit_six_channel() {
+        // coding=4 (LPCM), quant=2 (24bps), chans-1=5 (6 channels).
+        let raw = pack_audio_attr(4, false, 0, 0, 2, 0, 5, [0, 0], 0, 0);
+        let a = AudioAttributes::parse(&raw);
+        assert_eq!(a.coding_mode, AudioCodingMode::Lpcm);
+        assert_eq!(a.quantization, AudioQuantizationDrc::Lpcm24);
+        assert_eq!(a.channel_count, 6);
+    }
+
+    #[test]
+    fn audio_attributes_mpeg2_drc_flag() {
+        let raw = pack_audio_attr(3, false, 0, 0, 1, 0, 1, [0, 0], 0, 0);
+        let a = AudioAttributes::parse(&raw);
+        assert_eq!(a.coding_mode, AudioCodingMode::Mpeg2Ext);
+        assert_eq!(a.quantization, AudioQuantizationDrc::Drc);
+    }
+
+    #[test]
+    fn audio_attributes_surround_dolby_suitable_bit() {
+        // surround app_mode + byte 7 bit 3 = Dolby-Surround-suitable.
+        let raw = pack_audio_attr(0, false, 0, 2, 0, 0, 1, [0, 0], 0, 0b0000_1000);
+        let a = AudioAttributes::parse(&raw);
+        assert_eq!(a.application_mode, AudioApplicationMode::Surround);
+        assert!(a.dolby_surround_suitable());
+    }
+
+    #[test]
+    fn audio_attributes_karaoke_channel_assignment_3_0() {
+        // karaoke app_mode + byte 7 bits 6..4 = 3 (= 3/0 L,M,R) + bit 1 set (MC intro).
+        let raw = pack_audio_attr(0, true, 0, 1, 0, 0, 2, [0, 0], 0, 0b0011_0010);
+        let a = AudioAttributes::parse(&raw);
+        assert_eq!(a.application_mode, AudioApplicationMode::Karaoke);
+        assert!(a.multichannel_extension_present);
+        assert_eq!(a.karaoke_channel_assignment(), Some(3));
+        assert_eq!(a.karaoke_mc_intro_present(), Some(true));
+        assert_eq!(a.karaoke_duet(), Some(false));
+    }
+
+    #[test]
+    fn subpicture_attributes_2bit_rle_japanese() {
+        let raw = pack_subp_attr(0, 1, *b"ja", 0);
+        let s = SubpictureAttributes::parse(&raw);
+        assert_eq!(s.coding_mode, SubpictureCodingMode::Rle2Bit);
+        assert_eq!(s.language_type, SubpictureLanguageType::Iso639);
+        assert_eq!(&s.language_code, b"ja");
+    }
+
+    #[test]
+    fn mc_extension_entry_decodes_per_channel_flags() {
+        let raw = [
+            0b0000_0001, // ACH0 guide melody
+            0b0000_0000,
+            0b0000_1010, // ACH2 GV1 + GM1
+            0b0000_0101, // ACH3 GV2 + SE_A
+            0b0000_1001, // ACH4 GV1 + SE_B
+            0,
+            0,
+            0,
+        ];
+        let m = McExtensionEntry::parse(&raw);
+        assert!(m.ach0_guide_melody);
+        assert!(!m.ach1_guide_melody);
+        assert!(m.ach2_guide_vocal_1);
+        assert!(m.ach2_guide_melody_1);
+        assert!(m.ach3_guide_vocal_2);
+        assert!(m.ach3_sound_effect_a);
+        assert!(m.ach4_guide_vocal_1);
+        assert!(m.ach4_sound_effect_b);
+        assert!(!m.ach4_guide_melody_b);
+    }
+
+    /// Build a full 0x03D8-byte VTSI_MAT carrying the menu + title
+    /// attribute extension blocks. We populate enough fields to
+    /// exercise the typed decoders end-to-end.
+    fn build_vtsi_mat_with_attrs() -> Vec<u8> {
+        let mut b = vec![0u8; 0x03D8];
+        b[0..12].copy_from_slice(VTS_MAGIC);
+        b[0x0080..0x0084].copy_from_slice(&(0x03D7u32).to_be_bytes());
+        // Sector pointers we don't exercise stay zero.
+
+        // Menu block at 0x0100..0x015C — MPEG-2 PAL 4:3 full-D1,
+        // one MPEG-1 stereo audio stream, one Japanese sub-picture.
+        let v_menu = pack_video_attr(1, 1, 0, false, false, false, false, 0, false, false);
+        b[0x0100..0x0102].copy_from_slice(&v_menu);
+        b[0x0102..0x0104].copy_from_slice(&1u16.to_be_bytes());
+        let a_menu = pack_audio_attr(2, false, 1, 0, 0, 0, 1, *b"en", 1, 0);
+        b[0x0104..0x010C].copy_from_slice(&a_menu);
+        b[0x0154..0x0156].copy_from_slice(&1u16.to_be_bytes());
+        let s_menu = pack_subp_attr(0, 1, *b"ja", 0);
+        b[0x0156..0x015C].copy_from_slice(&s_menu);
+
+        // Title block at 0x0200..0x03D8 — MPEG-2 NTSC 16:9 full-D1,
+        // two AC-3 streams (en 5.1, fr stereo) + two sub-picture
+        // streams (en + de).
+        let v_title = pack_video_attr(1, 0, 3, false, false, false, false, 0, false, false);
+        b[0x0200..0x0202].copy_from_slice(&v_title);
+        b[0x0202..0x0204].copy_from_slice(&2u16.to_be_bytes());
+        let a0 = pack_audio_attr(0, false, 1, 0, 0, 0, 5, *b"en", 1, 0);
+        let a1 = pack_audio_attr(0, false, 1, 0, 0, 0, 1, *b"fr", 1, 0);
+        b[0x0204..0x020C].copy_from_slice(&a0);
+        b[0x020C..0x0214].copy_from_slice(&a1);
+        b[0x0254..0x0256].copy_from_slice(&2u16.to_be_bytes());
+        let s0 = pack_subp_attr(0, 1, *b"en", 0);
+        let s1 = pack_subp_attr(0, 1, *b"de", 0);
+        b[0x0256..0x025C].copy_from_slice(&s0);
+        b[0x025C..0x0262].copy_from_slice(&s1);
+
+        // MC extension slot at 0x0318 — leave 24 zeroed entries.
+        b
+    }
+
+    #[test]
+    fn vtsi_mat_decodes_menu_and_title_attribute_blocks() {
+        let buf = build_vtsi_mat_with_attrs();
+        let mat = VtsiMat::parse(&buf).unwrap();
+
+        let menu_v = mat.menu_attributes.video.unwrap();
+        assert_eq!(menu_v.standard, VideoStandard::Pal);
+        assert_eq!(menu_v.aspect_ratio, VideoAspectRatio::Ratio4x3);
+        assert_eq!(mat.menu_attributes.audio_streams.len(), 1);
+        assert_eq!(
+            mat.menu_attributes.audio_streams[0].coding_mode,
+            AudioCodingMode::Mpeg1
+        );
+        assert_eq!(mat.menu_attributes.subpicture_streams.len(), 1);
+        assert_eq!(
+            &mat.menu_attributes.subpicture_streams[0].language_code,
+            b"ja"
+        );
+
+        let title_v = mat.title_attributes.video.unwrap();
+        assert_eq!(title_v.standard, VideoStandard::Ntsc);
+        assert_eq!(title_v.aspect_ratio, VideoAspectRatio::Ratio16x9);
+        assert_eq!(mat.title_attributes.audio_streams.len(), 2);
+        assert_eq!(mat.title_attributes.audio_streams[0].channel_count, 6);
+        assert_eq!(&mat.title_attributes.audio_streams[1].language_code, b"fr");
+        assert_eq!(mat.title_attributes.subpicture_streams.len(), 2);
+        assert_eq!(
+            &mat.title_attributes.subpicture_streams[1].language_code,
+            b"de"
+        );
+        assert_eq!(mat.title_attributes.multichannel_extension.len(), 24);
+        assert!(!mat.title_attributes.multichannel_extension[0].ach0_guide_melody);
+    }
+
+    #[test]
+    fn vtsi_mat_short_buffer_leaves_attributes_partial() {
+        // The 0x200-byte buffer used by the legacy roundtrip test
+        // covers the menu block but not the title block.
+        let buf = build_vtsi_mat(1, 2, 3, 42);
+        let mat = VtsiMat::parse(&buf).unwrap();
+        // Menu block fits entirely within 0x200, so its video field
+        // is parsed (all-zero → MPEG-1 NTSC 4:3).
+        let menu_v = mat.menu_attributes.video.unwrap();
+        assert_eq!(menu_v.coding_mode, VideoCodingMode::Mpeg1);
+        // Title block starts at 0x0200 — buffer ends before that.
+        assert!(mat.title_attributes.video.is_none());
+        assert!(mat.title_attributes.audio_streams.is_empty());
+        assert!(mat.title_attributes.multichannel_extension.is_empty());
     }
 }

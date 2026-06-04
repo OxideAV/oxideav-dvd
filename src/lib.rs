@@ -104,10 +104,14 @@ pub mod pipeline;
 pub use disc::{DvdDisc, DvdFile, DvdFileKind};
 pub use error::{Error, Result};
 pub use ifo::{
-    CellAddrEntry, CellPlaybackInfo, CellPositionInfo, DvdChapter, DvdTitle, DvdTitleEntry,
-    FrameRate, NavCommand, PaletteEntry, Pgc, PgcCommandTable, PgcTime, Pgci, PgciSrp, Ptt,
-    PttTitle, TmapEntry, TtSrpt, VmgIfo, VobuAdmap, VtsCAdt, VtsIfo, VtsPttSrpt, VtsTmap,
-    VtsTmapti, VtsiMat, DVD_SECTOR, VMG_MAGIC, VTS_MAGIC,
+    AudioApplicationMode, AudioAttributes, AudioCodingMode, AudioLanguageType,
+    AudioQuantizationDrc, CellAddrEntry, CellPlaybackInfo, CellPositionInfo, DvdChapter, DvdTitle,
+    DvdTitleEntry, FrameRate, McExtensionEntry, MenuAttributes, NavCommand, PaletteEntry, Pgc,
+    PgcCommandTable, PgcTime, Pgci, PgciSrp, Ptt, PttTitle, SubpictureAttributes,
+    SubpictureCodingMode, SubpictureLanguageType, TitleAttributes, TmapEntry, TtSrpt,
+    VideoAspectRatio, VideoAttributes, VideoCodingMode, VideoResolution, VideoStandard, VmgIfo,
+    VobuAdmap, VtsCAdt, VtsIfo, VtsPttSrpt, VtsTmap, VtsTmapti, VtsiMat, DVD_SECTOR, VMG_MAGIC,
+    VTS_MAGIC,
 };
 pub use iso9660::{
     DirectoryRecord, Iso9660Entry, Iso9660Volume, PathTableEntry, PrimaryVolumeDescriptor,

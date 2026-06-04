@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **VTSI_MAT / VMGI_MAT stream-attribute extension blocks.**
+  The two MAT structures previously stopped at sector-pointer
+  offset 0x00E4 — the audio / sub-picture / multichannel
+  attribute extension that occupies 0x0100..0x015C (menu) and
+  0x0200..0x03D8 (VTS title content + karaoke multichannel) was
+  ignored. This round adds typed decoders for every field in
+  those blocks and surfaces them on `VtsiMat::menu_attributes` /
+  `VtsiMat::title_attributes` / `VmgIfo::menu_attributes`.
+  Clean-room per `docs/container/dvd/application/mpucoder-ifo.html`
+  (the `vidatt`, `audatt`, `spatt`, and `mcext` field layouts);
+  no external implementation source consulted.
+  - **`VideoAttributes`** — coding mode (MPEG-1 / MPEG-2),
+    NTSC / PAL standard, 4:3 / 16:9 aspect, pan-scan and
+    letterbox display-mode disallow flags, line-21 CC-field
+    flags, and a `VideoResolution::dimensions(standard)` helper
+    that resolves the 3-bit resolution code to absolute pixel
+    dimensions (Full-D1 / ¾-D1 / Half-D1 / SIF).
+  - **`AudioAttributes`** — coding mode (AC-3 / MPEG-1 / MPEG-2-
+    ext / LPCM / DTS), language type + two-letter ISO-639 code +
+    code-extension byte (per the SPRM-17 alternate-
+    director-comment scheme), application mode (unspecified /
+    karaoke / surround), channel count, sample-rate selector
+    (only 48 kHz defined), and dual-interpretation
+    quantization / DRC field (16/20/24 bps for LPCM versus
+    DRC-on/off for MPEG). Helpers: `sample_rate_hz()`,
+    `dolby_surround_suitable()`, and the four karaoke decoders
+    (`karaoke_channel_assignment`, `karaoke_version`,
+    `karaoke_mc_intro_present`, `karaoke_duet`) for the
+    application-info byte at offset 7.
+  - **`SubpictureAttributes`** — 2-bit-RLE coding mode (the only
+    one defined), language type, ISO-639 code, and code-extension
+    byte (per the SPRM-19 scheme).
+  - **`McExtensionEntry`** — 24-entry karaoke multichannel
+    extension table; each 8-byte entry decodes the 14 ACH
+    guide-melody / guide-vocal / sound-effect flag bits across
+    channels 0..=4.
+  - **Backwards-compatible parse.** `VtsiMat::parse` still accepts
+    a 0x200-byte buffer; the menu block fits within that range
+    and is populated, the title block stays empty and the
+    multichannel-extension vec stays empty. Real `VTS_xx_0.IFO`
+    files run to 0x03D8 and now populate fully.
+
 - **`VobuAdmap` + `VtsTmapti` / `VtsTmap` — time-based seek tables.**
   The two title-set sector pointers `VTSI_MAT::vts_vobu_admap_sector`
   and `VTSI_MAT::vts_tmapti_sector` previously surfaced only as raw

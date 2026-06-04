@@ -61,6 +61,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | VIDEO_TS file enumeration (VIDEO_TS.IFO / .VOB / .BUP + VTS_xx) | landed |
 | `dvd://` source driver (registry feature) | landed |
 | VMGI / VTSI MAT parse (header + sector pointers) | landed |
+| VTSI_MAT / VMGI_MAT stream-attribute extension (video / audio × 8 / subpicture × 32 / karaoke MC extension) | landed |
 | TT_SRPT (title list) + VTS_PTT_SRPT (chapter list) | landed |
 | VTS_PGCI + PGC (program chains + cells + colour-LUT + command table) | landed |
 | VTS_C_ADT (cell-to-VOB-sector lookup) | landed |
