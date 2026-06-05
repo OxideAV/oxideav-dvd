@@ -73,7 +73,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed (Phase 3c support) |
 | VOBU_SRI search-table decode | landed (Phase 3a) |
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed (Phase 3a) |
-| NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI) | landed (Phase 3a) |
+| NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI; DSI_GI `c_eltm` → typed `PgcTime` + ns) | landed (Phase 3a) |
 | MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |
 | VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed (Phase 3c precursor) |
 | Sub-Picture Unit (SPU) decode (SPUH + SP_DCSQT command stream + PXDtf/PXDbf 2-bit RLE) | landed |
@@ -290,6 +290,31 @@ validates that a mask carries only the bits the spec table marks
 present at that level — useful for an IFO sanity-checker.
 
 
+
+## Reading the DSI cell-elapsed time
+
+Every Nav-Pack carries a DSI_GI block whose 4-byte `c_eltm` field
+is a BCD `hh:mm:ss:ff` cell-elapsed timestamp plus a 2-bit frame-
+rate code (`11` = 30 fps, `01` = 25 fps; `00` / `10` are spec-
+illegal). The typed accessor decodes the field through the same
+`PgcTime` shape used by the PGC playback-time fields:
+
+```rust,no_run
+use oxideav_dvd::{NavPack, ifo::FrameRate};
+
+let sector: &[u8] = &[]; // 2048 bytes covering one Nav-Pack
+let nav = NavPack::parse(sector).unwrap();
+
+let t = nav.dsi.cell_elapsed_time();
+assert!(matches!(t.frame_rate, FrameRate::Ntsc30 | FrameRate::Pal25));
+println!("cell elapsed = {:02}:{:02}:{:02}.{:02} ({} ns)",
+         t.hours, t.minutes, t.seconds, t.frames,
+         nav.dsi.cell_elapsed_ns());
+```
+
+`PgcTime::to_nanoseconds()` is also available directly on the
+type, returning the rational `(frames × 1e9) / fps` conversion
+without needing the `mkv-output` feature.
 
 ## Time-based seek (`VTS_TMAPTI` + `VTS_VOBU_ADMAP`)
 

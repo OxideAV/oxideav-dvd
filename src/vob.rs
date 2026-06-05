@@ -41,7 +41,7 @@ use std::path::Path;
 
 use crate::disc::{DvdDisc, DvdFileKind};
 use crate::error::{Error, Result};
-use crate::ifo::DVD_SECTOR;
+use crate::ifo::{PgcTime, DVD_SECTOR};
 
 // ------------------------------------------------------------------
 // MPEG-PS start codes (per mpucoder-mpeghdrs.html stream-ID table)
@@ -747,6 +747,30 @@ impl DsiGi {
     /// Size of the DSI_GI block — 32 bytes.
     pub const SIZE: usize = 0x20;
 
+    /// Decode the BCD `c_eltm` cell-elapsed-time field into the typed
+    /// [`PgcTime`] representation (the same `hh:mm:ss:ff` + 2-bit
+    /// frame-rate layout the `PGC_GI` playback-time field uses).
+    ///
+    /// Per `mpucoder-dsi_pkt.html`: `c_eltm` is a 4-byte BCD field
+    /// `hh:mm:ss:ff` with the top two bits of the frame byte encoding
+    /// the rate (`11` = 30 fps, `01` = 25 fps; `00` / `10` are
+    /// declared illegal). The raw `u32` is decoded big-endian — the
+    /// byte at packet offset `0x1C` is `hours`, `0x1D` is `minutes`,
+    /// `0x1E` is `seconds`, and `0x1F` is the combined frames /
+    /// frame-rate byte — so `to_be_bytes()` yields the exact input
+    /// [`PgcTime::from_bytes`] expects.
+    pub fn cell_elapsed_time(&self) -> PgcTime {
+        PgcTime::from_bytes(self.c_eltm.to_be_bytes())
+    }
+
+    /// Convenience: cell elapsed time converted to absolute
+    /// nanoseconds via [`PgcTime::to_nanoseconds`]. Lets a playback
+    /// engine forward a per-cell duration without going through the
+    /// typed intermediate every time.
+    pub fn cell_elapsed_ns(&self) -> u64 {
+        self.cell_elapsed_time().to_nanoseconds()
+    }
+
     /// Parse the DSI_GI block. `buf` starts at DSI_GI 0x00 (packet
     /// offset 0x00, sector offset 0x407).
     fn parse(buf: &[u8]) -> Result<Self> {
@@ -1145,6 +1169,18 @@ impl DsiPacket {
     /// Shortcut for `general_info.c_eltm`.
     pub fn c_eltm(&self) -> u32 {
         self.general_info.c_eltm
+    }
+
+    /// Shortcut for [`DsiGi::cell_elapsed_time`] — surfaces the typed
+    /// BCD `hh:mm:ss:ff` + frame-rate decoding of the `c_eltm` field.
+    pub fn cell_elapsed_time(&self) -> PgcTime {
+        self.general_info.cell_elapsed_time()
+    }
+
+    /// Shortcut for [`DsiGi::cell_elapsed_ns`] — surfaces the
+    /// nanosecond-precision cell elapsed time.
+    pub fn cell_elapsed_ns(&self) -> u64 {
+        self.general_info.cell_elapsed_ns()
     }
 
     /// Parse a DSI packet body. `buf` starts at `DSI_GI 00` (sector
@@ -2232,6 +2268,54 @@ mod tests {
         // rather than read past the slice.
         let short = vec![0u8; DsiPacket::BODY_SIZE - 1];
         assert!(DsiPacket::parse(&short).is_err());
+    }
+
+    #[test]
+    fn dsi_gi_cell_elapsed_time_decodes_bcd() {
+        use crate::ifo::FrameRate;
+
+        // Build a DSI body whose `c_eltm` carries a realistic BCD field:
+        // 00:01:23.10 @ 30 fps.
+        //   hh = 0x00, mm = 0x01, ss = 0x23 (= decimal 23),
+        //   frame byte = 0b11_01_0000 = 0xD0 (rate=30 fps, BCD frames=10).
+        let mut buf = build_dsi_body();
+        let c_eltm_be = [0x00u8, 0x01, 0x23, 0xD0];
+        buf[0x1C..0x20].copy_from_slice(&c_eltm_be);
+
+        let dsi = DsiPacket::parse(&buf).expect("DSI body parses");
+
+        // Typed accessor decodes the four bytes via PgcTime::from_bytes.
+        let t = dsi.general_info.cell_elapsed_time();
+        assert_eq!(t.hours, 0);
+        assert_eq!(t.minutes, 1);
+        assert_eq!(t.seconds, 23);
+        assert_eq!(t.frames, 10);
+        assert_eq!(t.frame_rate, FrameRate::Ntsc30);
+
+        // Nanosecond shortcut matches `total_seconds + frames/30`.
+        // 83 s × 1e9 + 10 × 1e9 / 30 = 83_000_000_000 + 333_333_333.
+        assert_eq!(dsi.general_info.cell_elapsed_ns(), 83_333_333_333);
+
+        // DsiPacket shortcut delegates to DsiGi.
+        assert_eq!(dsi.cell_elapsed_time(), t);
+        assert_eq!(dsi.cell_elapsed_ns(), 83_333_333_333);
+    }
+
+    #[test]
+    fn dsi_gi_cell_elapsed_time_pal_round_trip() {
+        use crate::ifo::FrameRate;
+
+        // 01:00:00.20 @ 25 fps → 3600 s + 20/25 s = 3600.8 s.
+        //   frame byte: rate=01, BCD frames hi=2 lo=0 → 0b01_10_0000 = 0x60.
+        let mut buf = build_dsi_body();
+        buf[0x1C..0x20].copy_from_slice(&[0x01u8, 0x00, 0x00, 0x60]);
+
+        let dsi = DsiPacket::parse(&buf).expect("DSI body parses");
+        let t = dsi.cell_elapsed_time();
+        assert_eq!(t.frame_rate, FrameRate::Pal25);
+        assert_eq!(t.frames, 20);
+        assert_eq!(t.total_seconds(), 3600);
+        assert_eq!(dsi.cell_elapsed_ns(), 3_600_800_000_000);
     }
 
     #[test]

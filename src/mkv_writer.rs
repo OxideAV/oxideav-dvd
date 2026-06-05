@@ -60,7 +60,7 @@ use oxideav_mkv::mux::MkvMuxer;
 
 use crate::disc::{DvdDisc, DvdFileKind};
 use crate::error::{Error, Result};
-use crate::ifo::{DvdChapter, FrameRate, PgcTime, DVD_SECTOR};
+use crate::ifo::{DvdChapter, PgcTime, DVD_SECTOR};
 use crate::vob::{
     looks_like_nav_pack, DvdSubstream, NavPack, PackHeader, PesPacket, SC_PADDING_STREAM,
     SC_PRIVATE_STREAM_1, SC_PRIVATE_STREAM_2, SC_SYSTEM_HEADER,
@@ -73,24 +73,12 @@ const PES_TIME_BASE: TimeBase = TimeBase::new(1, 90_000);
 
 /// Convert a [`PgcTime`] BCD field to absolute nanoseconds.
 ///
-/// See module-level docs for the semantics. Returns `0` when the
-/// frame-rate bits are the spec's `00b` / `10b` "illegal" values — we
-/// can still emit a chapter spanning zero ns (MKV permits it) so the
-/// chapter list never gets dropped silently.
+/// Thin wrapper over [`PgcTime::to_nanoseconds`] preserved for the
+/// historical free-function call shape used by callers that import
+/// `pgc_time_to_ns` directly. See [`PgcTime::to_nanoseconds`] for the
+/// per-frame rounding and illegal-rate handling.
 pub fn pgc_time_to_ns(t: PgcTime) -> u64 {
-    let secs = u64::from(t.total_seconds());
-    let secs_ns = secs.saturating_mul(1_000_000_000);
-    // Rational arithmetic: `(frames * 1e9) / fps` keeps the division
-    // truncation at most ±1 ns instead of accumulating ~5e-9 per frame
-    // (which would make `0:0:1.15 @ 30 fps` round to 1_499_999_995 ns
-    // instead of the spec-exact 1_500_000_000 — caught by the
-    // `pgc_time_ns_ntsc_30` regression test).
-    let frames_ns = match t.frame_rate {
-        FrameRate::Ntsc30 => u64::from(t.frames).saturating_mul(1_000_000_000) / 30,
-        FrameRate::Pal25 => u64::from(t.frames).saturating_mul(1_000_000_000) / 25,
-        FrameRate::Illegal | FrameRate::Reserved => 0,
-    };
-    secs_ns.saturating_add(frames_ns)
+    t.to_nanoseconds()
 }
 
 /// Per-stream slot in the MKV `Tracks` element. We keep `tag` so the
@@ -536,6 +524,7 @@ fn io_static(label: &'static str, _payload: String) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ifo::FrameRate;
 
     #[test]
     fn pgc_time_ns_ntsc_30() {

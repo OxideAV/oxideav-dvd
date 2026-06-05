@@ -148,6 +148,34 @@ impl PgcTime {
     pub fn total_seconds(self) -> u32 {
         u32::from(self.hours) * 3600 + u32::from(self.minutes) * 60 + u32::from(self.seconds)
     }
+
+    /// Convert this BCD field to absolute nanoseconds.
+    ///
+    /// `hh:mm:ss` resolves to whole seconds via [`Self::total_seconds`],
+    /// then the `frames` count is scaled by the per-rate frame period
+    /// (33,333,333 ns at 30 fps, 40,000,000 ns at 25 fps). Rational
+    /// arithmetic — `(frames * 1e9) / fps` — caps the per-call truncation
+    /// at ±1 ns instead of accumulating ~5e-9 per frame.
+    ///
+    /// Spec-`Illegal` and reserved-`10b` frame-rate codes contribute
+    /// only the whole-second portion; the fractional frames are
+    /// dropped because the spec defines no rate to scale them by.
+    /// This keeps a malformed BCD field from poisoning a chapter
+    /// length with a wildly-wrong scaled value, while still letting a
+    /// caller surface a "best-effort" duration.
+    ///
+    /// Layout per `mpucoder-pgc.html` (PgcTime) and
+    /// `mpucoder-dsi_pkt.html` `c_eltm` (same BCD shape).
+    pub fn to_nanoseconds(self) -> u64 {
+        let secs = u64::from(self.total_seconds());
+        let secs_ns = secs.saturating_mul(1_000_000_000);
+        let frames_ns = match self.frame_rate {
+            FrameRate::Ntsc30 => u64::from(self.frames).saturating_mul(1_000_000_000) / 30,
+            FrameRate::Pal25 => u64::from(self.frames).saturating_mul(1_000_000_000) / 25,
+            FrameRate::Illegal | FrameRate::Reserved => 0,
+        };
+        secs_ns.saturating_add(frames_ns)
+    }
 }
 
 // ------------------------------------------------------------------
@@ -2362,6 +2390,52 @@ mod tests {
         assert_eq!(t.frame_rate, FrameRate::Pal25);
         assert_eq!(t.frames, 0);
         assert_eq!(t.total_seconds(), 1);
+    }
+
+    // -------------------------------------------------------------
+    // PgcTime::to_nanoseconds — exposes the per-rate fractional-frame
+    // conversion that mkv_writer previously held privately.
+    // -------------------------------------------------------------
+
+    #[test]
+    fn pgc_time_to_ns_ntsc_30_integer_seconds() {
+        // 00:00:01.00 @ 30 fps → exactly 1 second, no frame fraction.
+        let t = PgcTime::from_bytes([0x00, 0x00, 0x01, 0xC0]);
+        assert_eq!(t.frame_rate, FrameRate::Ntsc30);
+        assert_eq!(t.to_nanoseconds(), 1_000_000_000);
+    }
+
+    #[test]
+    fn pgc_time_to_ns_ntsc_30_half_second() {
+        // 00:00:01.15 @ 30 fps → 1 s + 15/30 s = 1.5 s exact.
+        // Frame byte: rate=11, frames-tens=01 (bits 5+4), frames-units=0101
+        //   = 0b11_01_0101 = 0xD5. BCD frames hi-nibble = 1, lo-nibble = 5
+        //   → 15 frames.
+        let t = PgcTime::from_bytes([0x00, 0x00, 0x01, 0xD5]);
+        assert_eq!(t.frame_rate, FrameRate::Ntsc30);
+        assert_eq!(t.frames, 15);
+        assert_eq!(t.to_nanoseconds(), 1_500_000_000);
+    }
+
+    #[test]
+    fn pgc_time_to_ns_pal_25_frame_period() {
+        // 00:00:00.01 @ 25 fps → 1 frame × 40_000_000 ns/frame = 40 ms.
+        // Frame byte: rate=01, frames=01 → 0b01_00_0001 = 0x41.
+        let t = PgcTime::from_bytes([0x00, 0x00, 0x00, 0x41]);
+        assert_eq!(t.frame_rate, FrameRate::Pal25);
+        assert_eq!(t.frames, 1);
+        assert_eq!(t.to_nanoseconds(), 40_000_000);
+    }
+
+    #[test]
+    fn pgc_time_to_ns_illegal_rate_drops_frames() {
+        // 00:00:02.07 with rate bits = 00 (illegal). Whole-seconds
+        // portion survives; the 7-frame fraction is dropped because the
+        // spec defines no rate to scale it by.
+        let t = PgcTime::from_bytes([0x00, 0x00, 0x02, 0x07]);
+        assert_eq!(t.frame_rate, FrameRate::Illegal);
+        assert_eq!(t.frames, 7);
+        assert_eq!(t.to_nanoseconds(), 2_000_000_000);
     }
 
     // -------------------------------------------------------------

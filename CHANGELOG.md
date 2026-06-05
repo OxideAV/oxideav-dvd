@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`DsiGi` cell-elapsed-time typed accessor.** The DSI_GI block
+  on every Nav-Pack carries a 4-byte BCD `c_eltm` field describing
+  the elapsed playback time inside the current cell, layered out
+  identically to the `PGC_GI` playback-time field (`hh:mm:ss:ff`
+  + 2-bit frame-rate code per `mpucoder-dsi_pkt.html`). Previously
+  surfaced only as the raw `u32`. New methods:
+  - `DsiGi::cell_elapsed_time() -> PgcTime` decodes the four BE
+    bytes through the existing `PgcTime::from_bytes` decoder, so
+    the same `hours / minutes / seconds / frames / frame_rate`
+    fields the PGC playback-time accessor returns become available
+    on the DSI side without the caller re-implementing the BCD
+    nibble split.
+  - `DsiGi::cell_elapsed_ns() -> u64` collapses the typed view to
+    absolute nanoseconds via the new `PgcTime::to_nanoseconds`
+    method below.
+  - `DsiPacket::cell_elapsed_time()` / `cell_elapsed_ns()`
+    convenience getters mirror the existing flat `vobu_ea()` /
+    `vobu_vob_idn()` shape.
+
+- **`PgcTime::to_nanoseconds()` method.** Previously the
+  nanosecond conversion lived only inside the `mkv-output`
+  feature gate as a free function on the MKV-writer (because the
+  chapter timeline was the only consumer). Promoted to a regular
+  method on `PgcTime` so default-feature builds get the rational
+  `(frames × 1e9) / fps` conversion (30 fps → 33,333,333 ns/frame,
+  25 fps → 40,000,000 ns/frame, illegal / reserved rates drop the
+  frame fraction and keep only the integer-second portion). The
+  `mkv_writer::pgc_time_to_ns` free function is preserved as a
+  thin wrapper for callers that imported it directly.
+
 - **VTSI_MAT / VMGI_MAT stream-attribute extension blocks.**
   The two MAT structures previously stopped at sector-pointer
   offset 0x00E4 — the audio / sub-picture / multichannel
