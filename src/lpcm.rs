@@ -37,7 +37,8 @@
 //!   `0xA0..=0xA7` substream allocation that locates this header
 //!   inside the PES payload (one byte after the substream selector).
 //!
-//! No external implementation source consulted; no web search.
+//! Field layouts derive from the two `mpucoder-*.html` references
+//! cited above.
 
 use crate::error::{Error, Result};
 

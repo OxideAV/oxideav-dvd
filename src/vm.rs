@@ -31,8 +31,8 @@
 //! - `docs/container/dvd/application/mpucoder-uops.html` — User
 //!   Operation flag bit numbers.
 //!
-//! No external implementation source consulted — clean-room from
-//! the `docs/container/dvd/` references listed above.
+//! Semantics derive from the `docs/container/dvd/` references
+//! listed above.
 
 use crate::ifo::NavCommand;
 use crate::nav::{

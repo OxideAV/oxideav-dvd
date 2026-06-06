@@ -25,10 +25,10 @@
 //! `dvd://` (auto-detect) is rejected — see [`crate::source::DvdUri`]
 //! for Phase-2 status.
 //!
-//! ## Wall
+//! ## Provenance
 //!
-//! No external implementation source consulted — clean-room from the
-//! `docs/container/dvd/` references only.
+//! Behaviour derives from the `docs/container/dvd/` references
+//! only.
 
 use std::path::{Path, PathBuf};
 

@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`HighlightStatus` typed enum on PCI_GI `hli_ss`.** The PCI
+  packet's `HLI_GI 00` field carries a 16-bit word whose lower two
+  bits encode how a player should treat the menu-button overlay
+  for the VOBU. Previously the field was surfaced only as the raw
+  `u16` (`PciPacket::hli_ss`), forcing every consumer to repeat
+  the `& 0b11` masking and four-way `match` documented in
+  `docs/container/dvd/application/mpucoder-pci_pkt.html`.
+  New typed surface:
+  - `HighlightStatus` enum with four exhaustive variants —
+    `None` (`00`), `AllNew` (`01`), `UsePrevious` (`10`),
+    `UsePreviousExceptCommands` (`11`).
+  - `HighlightStatus::from_hli_ss(u16)` infallible constructor
+    that ignores the 14 reserved upper bits.
+  - `HighlightStatus::to_bits()` round-trip back to the 2-bit
+    code.
+  - Four classifier predicates — `is_none()`,
+    `declares_new_geometry()`, `reuses_previous_geometry()`,
+    `supplies_own_commands()` — that match the four-row spec
+    table directly so call sites no longer have to re-derive
+    "AllNew + UsePreviousExceptCommands ⇒ commands come from
+    this VOBU" from scratch.
+  - `PciPacket::highlight_status()` accessor wrapping the
+    constructor; the raw `hli_ss` word stays exposed so callers
+    that need the reserved bits still have them.
+
+  The `HighlightInfo` geometry struct is still populated only
+  when the VOBU actually declares buttons (`btn_ns > 0`); the
+  typed status accessor is now the documented way to detect a
+  "re-use previous geometry" VOBU whose own `BTN_IT` is empty.
+
 - **`DsiGi` cell-elapsed-time typed accessor.** The DSI_GI block
   on every Nav-Pack carries a 4-byte BCD `c_eltm` field describing
   the elapsed playback time inside the current cell, layered out

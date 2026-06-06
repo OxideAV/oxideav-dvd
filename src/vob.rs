@@ -31,8 +31,8 @@
 //! * `stnsoft-vobov.html`     — pack/sector/VOBU/cell semantics
 //! * `stnsoft-sys_hdr.html`   — Program Stream System Header (0xBB)
 //!
-//! No external implementation source consulted — clean-room from the
-//! `docs/container/dvd/application/` references listed above.
+//! Layouts derive from the `docs/container/dvd/application/`
+//! references listed above.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -539,6 +539,98 @@ pub struct HighlightInfo {
     pub buttons: Vec<ButtonInfo>,
 }
 
+/// Highlight-status code carried in the lower two bits of
+/// `PCI_GI.hli_ss` (offset `HLI_GI 00`).
+///
+/// Per `docs/container/dvd/application/mpucoder-pci_pkt.html`, the
+/// field encodes how a player should treat the menu-button overlay
+/// for the VOBU:
+///
+/// | bits | meaning                                                          |
+/// |------|------------------------------------------------------------------|
+/// | `00` | No highlight information for this VOBU                           |
+/// | `01` | All-new highlight information for this VOBU                      |
+/// | `10` | Re-use the highlight information from the previous VOBU          |
+/// | `11` | Re-use the previous VOBU's highlight but take commands from here |
+///
+/// The remaining 14 bits of the raw `u16` are reserved; the typed
+/// view exposes the four documented states and preserves any
+/// reserved-bit content through [`HighlightStatus::raw`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighlightStatus {
+    /// `00` — no highlight information for this VOBU.
+    None,
+    /// `01` — all-new highlight information for this VOBU.
+    AllNew,
+    /// `10` — re-use the highlight from the previous VOBU.
+    UsePrevious,
+    /// `11` — re-use the previous VOBU's highlight but take its
+    /// per-button commands from this VOBU's `BTN_IT` instead.
+    UsePreviousExceptCommands,
+}
+
+impl HighlightStatus {
+    /// Decode the lower two bits of a raw `hli_ss` word.
+    ///
+    /// Per `mpucoder-pci_pkt.html` the upper 14 bits are reserved;
+    /// they are ignored here. The mapping is exhaustive — every
+    /// 2-bit value maps to a named variant, so the result is
+    /// infallible.
+    #[inline]
+    pub const fn from_hli_ss(hli_ss: u16) -> Self {
+        match hli_ss & 0b11 {
+            0b00 => Self::None,
+            0b01 => Self::AllNew,
+            0b10 => Self::UsePrevious,
+            0b11 => Self::UsePreviousExceptCommands,
+            _ => unreachable!(),
+        }
+    }
+
+    /// `true` when the VOBU carries no highlight information at all.
+    #[inline]
+    pub const fn is_none(self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// `true` when the VOBU declares fresh highlight geometry, i.e.
+    /// `BTN_IT` should be parsed from this packet rather than from
+    /// the predecessor.
+    #[inline]
+    pub const fn declares_new_geometry(self) -> bool {
+        matches!(self, Self::AllNew)
+    }
+
+    /// `true` when the VOBU re-uses the previous highlight's geometry.
+    /// Covers both the plain re-use and the
+    /// "re-use except for commands" variants.
+    #[inline]
+    pub const fn reuses_previous_geometry(self) -> bool {
+        matches!(self, Self::UsePrevious | Self::UsePreviousExceptCommands)
+    }
+
+    /// `true` when this VOBU's `BTN_IT` should supply the per-button
+    /// command words even though geometry is inherited.
+    ///
+    /// Per the spec table, the `UsePreviousExceptCommands` case is
+    /// the only one where geometry is inherited but commands are not.
+    #[inline]
+    pub const fn supplies_own_commands(self) -> bool {
+        matches!(self, Self::AllNew | Self::UsePreviousExceptCommands)
+    }
+
+    /// Encode back to the lower two bits of `hli_ss`.
+    #[inline]
+    pub const fn to_bits(self) -> u16 {
+        match self {
+            Self::None => 0b00,
+            Self::AllNew => 0b01,
+            Self::UsePrevious => 0b10,
+            Self::UsePreviousExceptCommands => 0b11,
+        }
+    }
+}
+
 /// PCI packet — Presentation Control Information.
 ///
 /// Layout per mpucoder-pci_pkt.html. Surfaces the `PCI_GI` general
@@ -630,6 +722,27 @@ impl PciPacket {
     #[inline]
     pub fn is_user_op_allowed(&self, op: crate::uops::UserOp) -> bool {
         self.uop_mask().is_allowed(op)
+    }
+
+    /// Typed view over [`Self::hli_ss`].
+    ///
+    /// The lower two bits of `hli_ss` carry the highlight-status
+    /// code documented in
+    /// `docs/container/dvd/application/mpucoder-pci_pkt.html`. This
+    /// accessor returns the [`HighlightStatus`] variant a player
+    /// should branch on; the remaining 14 reserved bits stay in
+    /// [`Self::hli_ss`] for callers that need the raw word.
+    ///
+    /// Note that [`Self::highlight`] is populated only when the VOBU
+    /// declares geometry — that is, when `btn_ns > 0`. A VOBU with
+    /// status [`HighlightStatus::UsePrevious`] or
+    /// [`HighlightStatus::UsePreviousExceptCommands`] inherits
+    /// geometry from its predecessor and typically reports
+    /// `btn_ns == 0` in its own packet; resolving the inherited
+    /// `BTN_IT` table is the playback engine's job.
+    #[inline]
+    pub fn highlight_status(&self) -> HighlightStatus {
+        HighlightStatus::from_hli_ss(self.hli_ss)
     }
 
     /// Decode the `HLI_GI` + `SL_COLI` + `BTN_IT` sub-structure.
@@ -1972,6 +2085,128 @@ mod tests {
         add_one_button_hli(&mut sector);
         sector[pci(0x71)] = 37; // btn_ns > 36
         assert!(NavPack::parse(&sector).is_err());
+    }
+
+    #[test]
+    fn highlight_status_maps_two_low_bits_to_named_variants() {
+        // Per mpucoder-pci_pkt.html the four 2-bit codes are
+        // exhaustively assigned; the upper 14 bits are reserved
+        // and must not influence the typed decode.
+        for reserved in [0x0000u16, 0xFFFCu16, 0xA5A4u16] {
+            assert_eq!(
+                HighlightStatus::from_hli_ss(reserved),
+                HighlightStatus::None
+            );
+            assert_eq!(
+                HighlightStatus::from_hli_ss(reserved | 0b01),
+                HighlightStatus::AllNew
+            );
+            assert_eq!(
+                HighlightStatus::from_hli_ss(reserved | 0b10),
+                HighlightStatus::UsePrevious
+            );
+            assert_eq!(
+                HighlightStatus::from_hli_ss(reserved | 0b11),
+                HighlightStatus::UsePreviousExceptCommands
+            );
+        }
+    }
+
+    #[test]
+    fn highlight_status_classifier_predicates_match_spec_table() {
+        // `None` is the only variant flagged as carrying no
+        // highlight at all.
+        assert!(HighlightStatus::None.is_none());
+        assert!(!HighlightStatus::AllNew.is_none());
+        assert!(!HighlightStatus::UsePrevious.is_none());
+        assert!(!HighlightStatus::UsePreviousExceptCommands.is_none());
+
+        // Only `AllNew` declares fresh geometry; the two re-use
+        // variants inherit it.
+        assert!(!HighlightStatus::None.declares_new_geometry());
+        assert!(HighlightStatus::AllNew.declares_new_geometry());
+        assert!(!HighlightStatus::UsePrevious.declares_new_geometry());
+        assert!(!HighlightStatus::UsePreviousExceptCommands.declares_new_geometry());
+
+        // Both re-use variants are the only ones that inherit
+        // predecessor geometry.
+        assert!(!HighlightStatus::None.reuses_previous_geometry());
+        assert!(!HighlightStatus::AllNew.reuses_previous_geometry());
+        assert!(HighlightStatus::UsePrevious.reuses_previous_geometry());
+        assert!(HighlightStatus::UsePreviousExceptCommands.reuses_previous_geometry());
+
+        // Per the spec table, `AllNew` and
+        // `UsePreviousExceptCommands` are the two variants where the
+        // current VOBU's `BTN_IT` supplies the per-button commands.
+        assert!(!HighlightStatus::None.supplies_own_commands());
+        assert!(HighlightStatus::AllNew.supplies_own_commands());
+        assert!(!HighlightStatus::UsePrevious.supplies_own_commands());
+        assert!(HighlightStatus::UsePreviousExceptCommands.supplies_own_commands());
+    }
+
+    #[test]
+    fn highlight_status_to_bits_round_trips_through_from_hli_ss() {
+        for status in [
+            HighlightStatus::None,
+            HighlightStatus::AllNew,
+            HighlightStatus::UsePrevious,
+            HighlightStatus::UsePreviousExceptCommands,
+        ] {
+            assert_eq!(HighlightStatus::from_hli_ss(status.to_bits()), status);
+        }
+        // Reserved upper bits must be ignored on the decode side, so
+        // an `hli_ss` word with any pattern in bits 15..2 still
+        // round-trips its low-2-bit semantics.
+        for raw in 0u16..=0xFFFF {
+            let status = HighlightStatus::from_hli_ss(raw);
+            assert_eq!(status.to_bits(), raw & 0b11);
+        }
+    }
+
+    #[test]
+    fn pci_highlight_status_accessor_matches_raw_word() {
+        // Button-less VOBU — hli_ss == 0 → `None`.
+        let sector = build_nav_sector(1, 0, 0);
+        let nav = NavPack::parse(&sector).unwrap();
+        assert_eq!(nav.pci.hli_ss & 0b11, 0);
+        assert_eq!(nav.pci.highlight_status(), HighlightStatus::None);
+
+        // Single-button VOBU — hli_ss == 0x0001 → `AllNew`.
+        let mut sector = build_nav_sector(1, 0, 0);
+        add_one_button_hli(&mut sector);
+        let nav = NavPack::parse(&sector).unwrap();
+        assert_eq!(nav.pci.hli_ss, 0x0001);
+        assert_eq!(nav.pci.highlight_status(), HighlightStatus::AllNew);
+        assert!(nav.pci.highlight_status().declares_new_geometry());
+        assert!(nav.pci.highlight_status().supplies_own_commands());
+
+        // Forge a "use previous" status word on a button-less sector
+        // by writing 0x0002 into HLI_GI.00 and exercise the typed
+        // accessor against the raw word. The decoder still skips
+        // `parse_highlight` because btn_ns == 0; the typed status is
+        // independent of geometry presence.
+        let mut sector = build_nav_sector(1, 0, 0);
+        sector[pci(0x60)] = 0x00;
+        sector[pci(0x61)] = 0x02;
+        let nav = NavPack::parse(&sector).unwrap();
+        assert_eq!(nav.pci.hli_ss, 0x0002);
+        assert_eq!(nav.pci.highlight_status(), HighlightStatus::UsePrevious);
+        assert!(nav.pci.highlight_status().reuses_previous_geometry());
+        assert!(!nav.pci.highlight_status().supplies_own_commands());
+        assert!(nav.pci.highlight.is_none());
+
+        // And the "previous geometry, fresh commands" word 0x0003.
+        let mut sector = build_nav_sector(1, 0, 0);
+        sector[pci(0x60)] = 0x00;
+        sector[pci(0x61)] = 0x03;
+        let nav = NavPack::parse(&sector).unwrap();
+        assert_eq!(nav.pci.hli_ss, 0x0003);
+        assert_eq!(
+            nav.pci.highlight_status(),
+            HighlightStatus::UsePreviousExceptCommands
+        );
+        assert!(nav.pci.highlight_status().reuses_previous_geometry());
+        assert!(nav.pci.highlight_status().supplies_own_commands());
     }
 
     #[test]

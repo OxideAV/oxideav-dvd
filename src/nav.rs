@@ -22,8 +22,8 @@
 //! - `docs/container/dvd/application/mpucoder-sprm.html` — the SPRM
 //!   numbering for the [`Register`] enum.
 //!
-//! No external implementation source consulted — clean-room from the
-//! `docs/container/dvd/` references listed above.
+//! Instruction layouts derive from the `docs/container/dvd/`
+//! references listed above.
 
 use crate::ifo::NavCommand;
 

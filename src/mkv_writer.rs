@@ -45,10 +45,10 @@
 //! than `Pal25` / `Ntsc30` (the spec's `00b` / `10b` "illegal") fall
 //! back to second-granularity by dropping the `frames` component.
 //!
-//! ## Wall
+//! ## Provenance
 //!
-//! No external implementation source consulted — clean-room from the
-//! `docs/container/dvd/` references and the spec citations above.
+//! Behaviour derives from the `docs/container/dvd/` references and
+//! the spec citations above.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
