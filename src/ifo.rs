@@ -1432,11 +1432,26 @@ impl NavCommand {
     /// VMI command-type selector — the top three bits of byte 0.
     ///
     /// This is the coarse command-group field per mpucoder-vmi.html;
-    /// full opcode decode is deferred to the Phase 3c VM. Provided so
-    /// callers can classify a word (e.g. distinguish a link/jump from
-    /// a SetSystem/Compare) without a full interpreter.
+    /// full opcode decode is delegated to the Phase 3c VM via
+    /// [`Self::decode_instruction`]. Provided so callers can classify
+    /// a word (e.g. distinguish a link/jump from a SetSystem/Compare)
+    /// without a full interpreter.
     pub fn command_type(&self) -> u8 {
         self.bytes[0] >> 5
+    }
+
+    /// Decode this raw command word into a typed
+    /// [`crate::nav::NavInstruction`].
+    ///
+    /// Convenience wrapper around the Phase 3c-precursor disassembler
+    /// in the `nav` module, which adds a `decode()` method to this
+    /// same `NavCommand` type. Callers iterating a
+    /// [`PgcCommandTable`] can stay inside the `ifo` namespace and
+    /// reach the typed instruction tree via a single method call
+    /// rather than importing the `nav` module's surface explicitly.
+    #[inline]
+    pub fn decode_instruction(&self) -> crate::nav::NavInstruction {
+        self.decode()
     }
 }
 
@@ -1511,6 +1526,58 @@ impl PgcCommandTable {
             cell,
             end_address,
         })
+    }
+
+    /// Iterate the **pre** command list as typed
+    /// [`crate::nav::NavInstruction`]s.
+    ///
+    /// Per `docs/container/dvd/application/mpucoder-pgc.html` the
+    /// pre-command list runs once at PGC entry, before the first
+    /// cell. Each 8-byte [`NavCommand`] word is fed through the
+    /// `nav` disassembler so iterator consumers receive the typed
+    /// instruction tree directly without a manual decode step.
+    pub fn pre_instructions(&self) -> impl Iterator<Item = crate::nav::NavInstruction> + '_ {
+        self.pre.iter().map(NavCommand::decode_instruction)
+    }
+
+    /// Iterate the **post** command list as typed
+    /// [`crate::nav::NavInstruction`]s.
+    ///
+    /// The post-command list runs once when the last cell of the
+    /// PGC finishes, per `mpucoder-pgc.html`. Same shape as
+    /// [`Self::pre_instructions`].
+    pub fn post_instructions(&self) -> impl Iterator<Item = crate::nav::NavInstruction> + '_ {
+        self.post.iter().map(NavCommand::decode_instruction)
+    }
+
+    /// Iterate the **cell** command list as typed
+    /// [`crate::nav::NavInstruction`]s.
+    ///
+    /// The cell command list is indexed by each
+    /// [`CellPlaybackInfo`]'s 1-based `cell_command` field per
+    /// `mpucoder-pgc.html`; this iterator walks it in storage order.
+    /// Use [`Self::cell_instruction`] for the indexed lookup a
+    /// cell actually performs.
+    pub fn cell_instructions(&self) -> impl Iterator<Item = crate::nav::NavInstruction> + '_ {
+        self.cell.iter().map(NavCommand::decode_instruction)
+    }
+
+    /// Look up a cell command by its 1-based index — the encoding
+    /// `CellPlaybackInfo::cell_command` carries on the wire — and
+    /// return the typed [`crate::nav::NavInstruction`].
+    ///
+    /// Per `mpucoder-pgc.html` `cell_command = 0` means "no command
+    /// associated with this cell"; the spec stores cell commands in
+    /// a 1-based table. Passing `0` returns `None`; passing any
+    /// out-of-range index also returns `None` rather than panicking,
+    /// matching the malformed-disc-tolerance pattern used elsewhere
+    /// in this crate's typed decoders.
+    pub fn cell_instruction(&self, index_1based: u16) -> Option<crate::nav::NavInstruction> {
+        if index_1based == 0 {
+            return None;
+        }
+        let idx = usize::from(index_1based - 1);
+        self.cell.get(idx).map(NavCommand::decode_instruction)
     }
 }
 
@@ -2919,6 +2986,110 @@ mod tests {
         let mut b = vec![0u8; 8 + 8];
         b[0..2].copy_from_slice(&2u16.to_be_bytes());
         assert!(PgcCommandTable::parse(&b).is_err());
+    }
+
+    // -------------------------------------------------------------
+    // PgcCommandTable — typed-instruction iterator surface
+    // -------------------------------------------------------------
+
+    /// Build a synthetic `PgcCommandTable` with 1 pre + 1 post +
+    /// 3 cell words covering distinct instruction types so the
+    /// iterators below have something to discriminate on.
+    fn synth_command_table() -> PgcCommandTable {
+        let pre = 1u16;
+        let post = 1u16;
+        let cell = 3u16;
+        let total = (pre + post + cell) as usize;
+        let size = 8 + total * 8;
+        let mut b = vec![0u8; size];
+        b[0..2].copy_from_slice(&pre.to_be_bytes());
+        b[2..4].copy_from_slice(&post.to_be_bytes());
+        b[4..6].copy_from_slice(&cell.to_be_bytes());
+        b[6..8].copy_from_slice(&((size - 1) as u16).to_be_bytes());
+        // Word layout (per mpucoder-vmi.html "command word layout"):
+        //   byte 0 = TTT D SSSS where TTT = type (bits 7..5),
+        //     D = SET-direct flag (bit 4), SSSS = SET-op nibble.
+        //   byte 1 = C HHH CCCC where C = CMP-direct (bit 7),
+        //     HHH = CMP-op (bits 6..4), CCCC = cmd_nibble (bits 3..0).
+        // pre[0] stays all-zero at offset 8 → Type 0 + cmd_nibble 0
+        //   = NOP per `decode_type0`.
+        // post[0]: Type 1 jumpcall + cmd_nibble 1 = Exit. Byte 0
+        //   needs the SET-direct bit (D=1) so the dispatcher routes
+        //   to `decode_type1_jumpcall`.
+        let post_off = 8 + 8;
+        b[post_off] = 0b0011_0000;
+        b[post_off + 1] = 0x01;
+        // cell[0]: same Type 1 Exit encoding as post[0].
+        let cell0 = post_off + 8;
+        b[cell0] = 0b0011_0000;
+        b[cell0 + 1] = 0x01;
+        // cell[1]: Type 0 Break — byte 0 = 0, cmd_nibble = 2.
+        let cell1 = cell0 + 8;
+        b[cell1] = 0x00;
+        b[cell1 + 1] = 0x02;
+        // cell[2]: Type 0 NOP — all zeros (already).
+        PgcCommandTable::parse(&b).unwrap()
+    }
+
+    #[test]
+    fn pgc_cmd_table_typed_iterators_walk_all_three_lists() {
+        let t = synth_command_table();
+        let pre: Vec<_> = t.pre_instructions().collect();
+        let post: Vec<_> = t.post_instructions().collect();
+        let cell: Vec<_> = t.cell_instructions().collect();
+        assert_eq!(pre.len(), 1);
+        assert_eq!(post.len(), 1);
+        assert_eq!(cell.len(), 3);
+        // pre[0] = NOP per the synth payload.
+        assert!(matches!(pre[0], crate::nav::NavInstruction::Nop));
+        // post[0] = Exit per the Type 1 / link-family `0x01` encoding.
+        assert!(matches!(post[0], crate::nav::NavInstruction::Exit));
+        // cell[0] = Exit; cell[1] = Break; cell[2] = NOP.
+        assert!(matches!(cell[0], crate::nav::NavInstruction::Exit));
+        assert!(matches!(cell[1], crate::nav::NavInstruction::Break));
+        assert!(matches!(cell[2], crate::nav::NavInstruction::Nop));
+    }
+
+    #[test]
+    fn pgc_cmd_table_cell_instruction_uses_one_based_index() {
+        let t = synth_command_table();
+        // Spec: cell_command = 0 means "no command associated"; the
+        // accessor returns None.
+        assert!(t.cell_instruction(0).is_none());
+        // 1-based indexing — index 1 picks cell[0] = Exit.
+        assert!(matches!(
+            t.cell_instruction(1),
+            Some(crate::nav::NavInstruction::Exit)
+        ));
+        // index 2 picks cell[1] = Break.
+        assert!(matches!(
+            t.cell_instruction(2),
+            Some(crate::nav::NavInstruction::Break)
+        ));
+        // index 3 picks cell[2] = NOP.
+        assert!(matches!(
+            t.cell_instruction(3),
+            Some(crate::nav::NavInstruction::Nop)
+        ));
+        // Out-of-range index returns None rather than panicking.
+        assert!(t.cell_instruction(4).is_none());
+        assert!(t.cell_instruction(u16::MAX).is_none());
+    }
+
+    #[test]
+    fn nav_command_decode_instruction_matches_nav_decode() {
+        // Same NavCommand word reached through the IFO-side
+        // convenience and the explicit `nav` disassembler should
+        // yield the same typed instruction.
+        let mut bytes = [0u8; 8];
+        bytes[0] = 0b0011_0000; // Type 1 + SET-direct → jumpcall family.
+        bytes[1] = 0x01; // cmd_nibble = 1 → Exit.
+        let raw = NavCommand { bytes };
+        assert_eq!(raw.decode_instruction(), raw.decode());
+        assert!(matches!(
+            raw.decode_instruction(),
+            crate::nav::NavInstruction::Exit
+        ));
     }
 
     #[test]

@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed-instruction iterators on `PgcCommandTable`.** The PGC
+  command table carries three lists of raw 8-byte
+  [`NavCommand`] words (pre / post / cell) per
+  `docs/container/dvd/application/mpucoder-pgc.html`; the Phase 3c
+  disassembler in the `nav` module turns one word into a typed
+  [`NavInstruction`]. Previously the bridge between the two was
+  manual — callers had to walk `commands.pre` / `commands.post` /
+  `commands.cell`, then call `nav::NavCommand::decode()` on each
+  entry themselves. New surface:
+  - `NavCommand::decode_instruction()` — convenience that
+    delegates to the Phase 3c precursor disassembler so the IFO
+    side can reach a typed instruction without re-importing the
+    `nav` module's surface.
+  - `PgcCommandTable::pre_instructions()` /
+    `post_instructions()` / `cell_instructions()` — borrowing
+    iterators of `NavInstruction` that walk each list in storage
+    order.
+  - `PgcCommandTable::cell_instruction(index_1based: u16)` —
+    1-based indexed lookup matching the on-wire encoding
+    `CellPlaybackInfo::cell_command` carries; passes `0` for
+    "no cell command", out-of-range indices return `None` rather
+    than panicking. Per `mpucoder-pgc.html` the cell-command
+    table is 1-based, so 1 → `cell[0]`, 2 → `cell[1]`, etc.
+
+  Round-trip checked: a `NavCommand` constructed by hand with a
+  Type 1 jumpcall + `cmd_nibble = 1` payload decodes through both
+  `decode()` and `decode_instruction()` to the same `Exit`
+  variant. Four new unit tests in `src/ifo.rs` (synth command
+  table → typed walk; 1-based indexing; `0` and out-of-range
+  return `None`; round-trip with explicit `nav::decode()`).
+
 - **`HighlightStatus` typed enum on PCI_GI `hli_ss`.** The PCI
   packet's `HLI_GI 00` field carries a 16-bit word whose lower two
   bits encode how a player should treat the menu-button overlay

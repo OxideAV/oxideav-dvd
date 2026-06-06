@@ -77,6 +77,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI; DSI_GI `c_eltm` → typed `PgcTime` + ns) | landed (Phase 3a) |
 | MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |
 | VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed (Phase 3c precursor) |
+| `PgcCommandTable` typed-instruction iterators (`pre_instructions` / `post_instructions` / `cell_instructions` + 1-based `cell_instruction(index)`) | landed (Phase 3c bridge) |
 | Sub-Picture Unit (SPU) decode (SPUH + SP_DCSQT command stream + PXDtf/PXDbf 2-bit RLE) | landed |
 | SPU → RGBA compositor (palette + contrast resolve + BT.601 YCbCr→RGB + field interleave) | landed |
 | VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | landed (Phase 3c — Type 0..6, including compound SET+CMP+LINK) |
