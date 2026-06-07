@@ -81,6 +81,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | Sub-Picture Unit (SPU) decode (SPUH + SP_DCSQT command stream + PXDtf/PXDbf 2-bit RLE) | landed |
 | SPU → RGBA compositor (palette + contrast resolve + BT.601 YCbCr→RGB + field interleave) | landed |
 | VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | landed (Phase 3c — Type 0..6, including compound SET+CMP+LINK) |
+| Typed SPRM accessors — language slots + sentinel-typed integer slots (SPRM 0 / 1 / 3 / 12 / 13 / 16 / 17 / 18 / 19) | landed |
 | CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |
 
 ## Quick start
@@ -444,16 +445,25 @@ hang the interpreter.
 
 ### SPRM bitfield-aware accessors
 
-Six SPRMs hold bit-packed payloads (SPRM 2 sub-picture state,
+Every SPRM the spec page documents with a non-integer layout has a
+typed accessor — bit-packed payloads (SPRM 2 sub-picture state,
 SPRM 8 highlighted button, SPRM 11 karaoke mixing, SPRM 14 video
-preference, SPRM 15 audio capabilities, SPRM 20 region mask).
-The `RegisterFile` exposes typed accessors so a playback engine
-doesn't re-implement the bit layouts on each callsite — refer to
-`docs/container/dvd/application/mpucoder-sprm.html` for the
+preference, SPRM 15 audio capabilities, SPRM 20 region mask) as well
+as the two-byte ISO 639 / ISO 3166 language slots
+(SPRM 0 menu language, SPRM 12 parental country, SPRM 16 / 18
+preferred audio / sub-picture language) and the sentinel-typed
+integer slots (SPRM 1 audio stream `0..=7` + `15`-none, SPRM 3 angle
+`1..=9`, SPRM 13 parental level `1..=8` + `15`-none, SPRM 17 / 19
+language extension enums). The `RegisterFile` surfaces them all so a
+playback engine doesn't re-implement the layouts on each callsite —
+refer to `docs/container/dvd/application/mpucoder-sprm.html` for the
 canonical field allocations.
 
 ```rust,no_run
-use oxideav_dvd::{Vm, AspectRatio, DisplayMode};
+use oxideav_dvd::{
+    Vm, AspectRatio, DisplayMode, AudioStreamSelector, ParentalLevel,
+    AudioLanguageExt, SubpictureLanguageExt,
+};
 
 let vm = Vm::new();
 // SPRM 2 default = "stream 62 / do-not-display"
@@ -471,7 +481,36 @@ assert_eq!(vp.mode, DisplayMode::Normal);
 
 // SPRM 20 region mask — default = no regions enabled
 assert!(!vm.regs.region_allowed(1));
+
+// SPRM 1 / 3 sentinels — defaults
+assert_eq!(vm.regs.audio_stream(), AudioStreamSelector::None);
+assert_eq!(vm.regs.angle_number(), Some(1));
+
+// SPRM 13 parental level — uninitialised raw "0" → `Invalid(0)`
+// (the spec defines `1..=8` real, `15` = control-off; the
+// "player specific" default leaves the slot zero).
+assert_eq!(vm.regs.parental_level(), ParentalLevel::Invalid(0));
+
+// SPRM 16 / 18 language code defaults — `0xFFFF` "not specified"
+assert!(vm.regs.preferred_audio_language().is_not_specified());
+assert!(vm.regs.preferred_subpicture_language().is_not_specified());
+
+// SPRM 17 / 19 extension defaults — "not specified"
+assert_eq!(
+    vm.regs.preferred_audio_language_ext(),
+    AudioLanguageExt::NotSpecified,
+);
+assert_eq!(
+    vm.regs.preferred_subpicture_language_ext(),
+    SubpictureLanguageExt::NotSpecified,
+);
 ```
+
+For the language slots, `LanguageCode::ascii_bytes()` returns
+`Some([hi, lo])` when both bytes are printable ASCII letters and
+`as_string()` returns the lower-cased ISO 639 / ISO 3166 alpha-2
+form. The `0xFFFF` value matches the `LanguageCode::NOT_SPECIFIED`
+sentinel and `is_not_specified()` short-circuits both decoders.
 
 Each accessor decomposes the raw `u16` according to the spec
 page's bit allocation and preserves the original word on the

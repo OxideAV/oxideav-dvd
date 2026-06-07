@@ -378,6 +378,73 @@ impl RegisterFile {
     pub fn region_mask(&self) -> u8 {
         self.sprm(SPRM_REGION_MASK) as u8
     }
+
+    // -----------------------------------------------------------------
+    // Language / region / parental / audio-angle accessors for the
+    // remaining SPRMs whose 16-bit slot carries either two ASCII
+    // characters (ISO 639 language / ISO 3166 country) or a sentinel-
+    // typed integer. Layout per
+    // `docs/container/dvd/application/mpucoder-sprm.html`.
+    // -----------------------------------------------------------------
+
+    /// SPRM 0 preferred menu language — two-byte ISO 639 alpha-2 code
+    /// stored as high byte first character, low byte second character.
+    pub fn menu_language(&self) -> LanguageCode {
+        LanguageCode::from_raw(self.sprm(SPRM_MENU_LANG))
+    }
+
+    /// SPRM 1 audio stream number (`0..=7`, `15` = none) — returns
+    /// the typed view that distinguishes the `15` sentinel from a
+    /// real stream index.
+    pub fn audio_stream(&self) -> AudioStreamSelector {
+        AudioStreamSelector::from_raw(self.sprm(SPRM_AUDIO_STREAM))
+    }
+
+    /// SPRM 3 angle number (`1..=9`) — returns the raw lower byte.
+    /// Values outside `1..=9` collapse to `None`.
+    pub fn angle_number(&self) -> Option<u8> {
+        let v = self.sprm(SPRM_ANGLE) as u8;
+        if (1..=9).contains(&v) {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    /// SPRM 12 parental management country code — ISO 3166 alpha-2
+    /// code packed identically to SPRM 0.
+    pub fn parental_country(&self) -> LanguageCode {
+        LanguageCode::from_raw(self.sprm(SPRM_CC_PLT))
+    }
+
+    /// SPRM 13 parental level — typed view that distinguishes the
+    /// `15` sentinel ("none / parental control off") from a real
+    /// level (`1..=8`).
+    pub fn parental_level(&self) -> ParentalLevel {
+        ParentalLevel::from_raw(self.sprm(SPRM_PARENTAL_LEVEL))
+    }
+
+    /// SPRM 16 preferred audio language — ISO 639 alpha-2 code, or
+    /// the `0xFFFF` "not specified" sentinel.
+    pub fn preferred_audio_language(&self) -> LanguageCode {
+        LanguageCode::from_raw(self.sprm(SPRM_PREF_AUDIO_LANG))
+    }
+
+    /// SPRM 17 preferred audio language extension.
+    pub fn preferred_audio_language_ext(&self) -> AudioLanguageExt {
+        AudioLanguageExt::from_raw(self.sprm(SPRM_PREF_AUDIO_LANG_EXT) as u8)
+    }
+
+    /// SPRM 18 preferred sub-picture language — ISO 639 alpha-2 code,
+    /// or the `0xFFFF` "not specified" sentinel.
+    pub fn preferred_subpicture_language(&self) -> LanguageCode {
+        LanguageCode::from_raw(self.sprm(SPRM_PREF_SUBP_LANG))
+    }
+
+    /// SPRM 19 preferred sub-picture language extension.
+    pub fn preferred_subpicture_language_ext(&self) -> SubpictureLanguageExt {
+        SubpictureLanguageExt::from_raw(self.sprm(SPRM_PREF_SUBP_LANG_EXT) as u8)
+    }
 }
 
 /// Decoded view of SPRM 2 (`SPSTN`).
@@ -524,6 +591,233 @@ impl AudioCapabilities {
     /// any of the documented audio types per the spec page.
     pub fn cannot_play(self) -> bool {
         self.raw == 0
+    }
+}
+
+/// Two-byte ASCII language / country code packed into a single `u16`
+/// register slot — the high byte is the first character, the low byte
+/// the second character, per the SPRM 0 / 12 / 16 / 18 layout on
+/// `docs/container/dvd/application/mpucoder-sprm.html`. The
+/// `0xFFFF` value spelled out in the SPRM 16 / 18 default column is
+/// the spec page's "not specified" sentinel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LanguageCode {
+    /// The original SPRM word — exposed so a caller can round-trip
+    /// the slot bit-for-bit including the `0xFFFF` sentinel.
+    pub raw: u16,
+}
+
+impl LanguageCode {
+    /// `0xFFFF` — the SPRM 16 / 18 default "preferred language not
+    /// specified" sentinel.
+    pub const NOT_SPECIFIED: u16 = 0xFFFF;
+
+    /// Wrap a raw 16-bit SPRM slot.
+    pub fn from_raw(raw: u16) -> Self {
+        Self { raw }
+    }
+
+    /// `true` when the slot encodes the `0xFFFF` "not specified"
+    /// sentinel used by the SPRM 16 / 18 defaults.
+    pub fn is_not_specified(self) -> bool {
+        self.raw == Self::NOT_SPECIFIED
+    }
+
+    /// Return the two-byte ASCII code as a `[u8; 2]` when the slot
+    /// carries one (i.e. is not the `0xFFFF` sentinel and both bytes
+    /// are printable ASCII letters per ISO 639 / ISO 3166). Returns
+    /// `None` otherwise — including the "player specific" default
+    /// for SPRM 0 / 12 (which has no on-wire representation; the
+    /// spec leaves the slot uninitialised).
+    pub fn ascii_bytes(self) -> Option<[u8; 2]> {
+        if self.is_not_specified() {
+            return None;
+        }
+        let hi = (self.raw >> 8) as u8;
+        let lo = self.raw as u8;
+        if hi.is_ascii_alphabetic() && lo.is_ascii_alphabetic() {
+            Some([hi, lo])
+        } else {
+            None
+        }
+    }
+
+    /// Return the code as a 2-character `String`, lowercased per
+    /// ISO 639 / ISO 3166 alpha-2 convention. `None` when no valid
+    /// ASCII code is present.
+    pub fn as_string(self) -> Option<String> {
+        let [a, b] = self.ascii_bytes()?;
+        Some(format!(
+            "{}{}",
+            (a.to_ascii_lowercase()) as char,
+            (b.to_ascii_lowercase()) as char,
+        ))
+    }
+}
+
+/// Decoded view of SPRM 1 (`ASTN`).
+///
+/// The spec table allows `0..=7` (a real stream index) and `15` (the
+/// "no audio selected" sentinel). Any other value is malformed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioStreamSelector {
+    /// `0..=7` — concrete audio stream index.
+    Stream(u8),
+    /// `15` — "no audio" sentinel.
+    None,
+    /// Out-of-range raw value preserved verbatim for round-tripping.
+    Invalid(u16),
+}
+
+impl AudioStreamSelector {
+    /// Decode the SPRM 1 slot.
+    pub fn from_raw(raw: u16) -> Self {
+        match raw {
+            0..=7 => Self::Stream(raw as u8),
+            15 => Self::None,
+            other => Self::Invalid(other),
+        }
+    }
+
+    /// `true` ⇒ a concrete stream index was selected (not `15`, not
+    /// out-of-range).
+    pub fn is_stream(self) -> bool {
+        matches!(self, Self::Stream(_))
+    }
+
+    /// `true` ⇒ the slot encodes the `15` "no audio" sentinel.
+    pub fn is_none_sentinel(self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+/// Decoded view of SPRM 13 (`PLT`).
+///
+/// The spec table allows `1..=8` (a real level) and `15` (the
+/// "no parental control" sentinel). The "player specific" default
+/// is whatever the implementing player writes into the slot at boot;
+/// values outside `1..=8` / `15` are surfaced as `Invalid` so the
+/// caller can choose how to handle them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentalLevel {
+    /// `1..=8` — concrete parental level.
+    Level(u8),
+    /// `15` — "parental control off / no level set" sentinel.
+    None,
+    /// Out-of-range raw value preserved verbatim.
+    Invalid(u16),
+}
+
+impl ParentalLevel {
+    /// Decode the SPRM 13 slot.
+    pub fn from_raw(raw: u16) -> Self {
+        match raw {
+            1..=8 => Self::Level(raw as u8),
+            15 => Self::None,
+            other => Self::Invalid(other),
+        }
+    }
+
+    /// `true` ⇒ a concrete level (`1..=8`) is set.
+    pub fn is_level(self) -> bool {
+        matches!(self, Self::Level(_))
+    }
+
+    /// `true` ⇒ the slot encodes the `15` "off" sentinel.
+    pub fn is_none_sentinel(self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+/// Decoded view of SPRM 17 (preferred audio language extension).
+///
+/// Values per `mpucoder-sprm.html`: `0` = not specified, `1` = normal,
+/// `2` = for visually impaired, `3` = director comments,
+/// `4` = alternate director comments. Any other value collapses to
+/// `Reserved`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioLanguageExt {
+    /// `0` — not specified.
+    NotSpecified,
+    /// `1` — normal.
+    Normal,
+    /// `2` — for visually impaired.
+    VisuallyImpaired,
+    /// `3` — director comments.
+    DirectorComments,
+    /// `4` — alternate director comments.
+    AlternateDirectorComments,
+    /// Any other value — preserved verbatim for round-trip.
+    Reserved(u8),
+}
+
+impl AudioLanguageExt {
+    /// Decode the SPRM 17 low byte.
+    pub fn from_raw(raw: u8) -> Self {
+        match raw {
+            0 => Self::NotSpecified,
+            1 => Self::Normal,
+            2 => Self::VisuallyImpaired,
+            3 => Self::DirectorComments,
+            4 => Self::AlternateDirectorComments,
+            other => Self::Reserved(other),
+        }
+    }
+}
+
+/// Decoded view of SPRM 19 (preferred sub-picture language extension).
+///
+/// Values per `mpucoder-sprm.html`: `0` = not specified,
+/// `1` = normal, `2` = large, `3` = children, `5` = normal captions,
+/// `6` = large captions, `7` = children's captions, `9` = forced,
+/// `13` = director comments, `14` = large director comments,
+/// `15` = director comments for children. Other values collapse to
+/// `Reserved`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubpictureLanguageExt {
+    /// `0` — not specified.
+    NotSpecified,
+    /// `1` — normal.
+    Normal,
+    /// `2` — large.
+    Large,
+    /// `3` — children.
+    Children,
+    /// `5` — normal captions.
+    NormalCaptions,
+    /// `6` — large captions.
+    LargeCaptions,
+    /// `7` — children's captions.
+    ChildrensCaptions,
+    /// `9` — forced.
+    Forced,
+    /// `13` — director comments.
+    DirectorComments,
+    /// `14` — large director comments.
+    LargeDirectorComments,
+    /// `15` — director comments for children.
+    DirectorCommentsForChildren,
+    /// Any other value — preserved verbatim for round-trip.
+    Reserved(u8),
+}
+
+impl SubpictureLanguageExt {
+    /// Decode the SPRM 19 low byte.
+    pub fn from_raw(raw: u8) -> Self {
+        match raw {
+            0 => Self::NotSpecified,
+            1 => Self::Normal,
+            2 => Self::Large,
+            3 => Self::Children,
+            5 => Self::NormalCaptions,
+            6 => Self::LargeCaptions,
+            7 => Self::ChildrensCaptions,
+            9 => Self::Forced,
+            13 => Self::DirectorComments,
+            14 => Self::LargeDirectorComments,
+            15 => Self::DirectorCommentsForChildren,
+            other => Self::Reserved(other),
+        }
     }
 }
 
@@ -2122,5 +2416,214 @@ mod tests {
         assert!(!r.region_allowed(7));
         assert!(r.region_allowed(8));
         assert_eq!(r.region_mask(), mask as u8);
+    }
+
+    // -----------------------------------------------------------------
+    // SPRM 0 / 12 / 16 / 18 — ISO 639 / ISO 3166 language codes.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn menu_language_default_is_uninitialised() {
+        let r = RegisterFile::new();
+        // SPRM 0 default ("player specific") = 0 in our table.
+        let lc = r.menu_language();
+        assert!(!lc.is_not_specified());
+        assert_eq!(lc.ascii_bytes(), None);
+    }
+
+    #[test]
+    fn menu_language_encodes_ascii_pair() {
+        let mut r = RegisterFile::new();
+        // "en" — high byte 'e' = 0x65, low byte 'n' = 0x6E.
+        r.set_sprm(SPRM_MENU_LANG, 0x656E);
+        let lc = r.menu_language();
+        assert_eq!(lc.ascii_bytes(), Some([b'e', b'n']));
+        assert_eq!(lc.as_string().as_deref(), Some("en"));
+        assert_eq!(lc.raw, 0x656E);
+    }
+
+    #[test]
+    fn preferred_audio_language_default_is_not_specified() {
+        let r = RegisterFile::new();
+        let lc = r.preferred_audio_language();
+        assert!(lc.is_not_specified());
+        assert_eq!(lc.ascii_bytes(), None);
+        assert_eq!(lc.as_string(), None);
+        assert_eq!(lc.raw, LanguageCode::NOT_SPECIFIED);
+    }
+
+    #[test]
+    fn preferred_subpicture_language_round_trips_uppercase_ascii() {
+        let mut r = RegisterFile::new();
+        // "JA" — uppercase Japanese, as a DVD might emit. The accessor
+        // lowercases on `as_string` but preserves the bytes in
+        // `ascii_bytes`.
+        r.set_sprm(SPRM_PREF_SUBP_LANG, 0x4A41);
+        let lc = r.preferred_subpicture_language();
+        assert_eq!(lc.ascii_bytes(), Some([b'J', b'A']));
+        assert_eq!(lc.as_string().as_deref(), Some("ja"));
+    }
+
+    #[test]
+    fn parental_country_garbage_collapses_to_none() {
+        let mut r = RegisterFile::new();
+        // Non-letter bytes — `ascii_bytes` rejects.
+        r.set_sprm(SPRM_CC_PLT, 0x3030); // "00"
+        let lc = r.parental_country();
+        assert_eq!(lc.ascii_bytes(), None);
+        assert_eq!(lc.as_string(), None);
+        // But the raw is preserved for round-trip.
+        assert_eq!(lc.raw, 0x3030);
+    }
+
+    // -----------------------------------------------------------------
+    // SPRM 1 (audio stream selector).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn audio_stream_default_is_none_sentinel() {
+        let r = RegisterFile::new();
+        let s = r.audio_stream();
+        assert_eq!(s, AudioStreamSelector::None);
+        assert!(s.is_none_sentinel());
+        assert!(!s.is_stream());
+    }
+
+    #[test]
+    fn audio_stream_concrete_index() {
+        let mut r = RegisterFile::new();
+        for i in 0..=7u16 {
+            r.set_sprm(SPRM_AUDIO_STREAM, i);
+            let s = r.audio_stream();
+            assert_eq!(s, AudioStreamSelector::Stream(i as u8));
+            assert!(s.is_stream());
+            assert!(!s.is_none_sentinel());
+        }
+    }
+
+    #[test]
+    fn audio_stream_invalid_preserves_raw() {
+        let mut r = RegisterFile::new();
+        r.set_sprm(SPRM_AUDIO_STREAM, 8);
+        assert_eq!(r.audio_stream(), AudioStreamSelector::Invalid(8));
+        r.set_sprm(SPRM_AUDIO_STREAM, 99);
+        assert_eq!(r.audio_stream(), AudioStreamSelector::Invalid(99));
+    }
+
+    // -----------------------------------------------------------------
+    // SPRM 3 angle.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn angle_default_is_one() {
+        let r = RegisterFile::new();
+        assert_eq!(r.angle_number(), Some(1));
+    }
+
+    #[test]
+    fn angle_in_range_round_trip() {
+        let mut r = RegisterFile::new();
+        for i in 1..=9u16 {
+            r.set_sprm(SPRM_ANGLE, i);
+            assert_eq!(r.angle_number(), Some(i as u8));
+        }
+    }
+
+    #[test]
+    fn angle_out_of_range_is_none() {
+        let mut r = RegisterFile::new();
+        r.set_sprm(SPRM_ANGLE, 0);
+        assert_eq!(r.angle_number(), None);
+        r.set_sprm(SPRM_ANGLE, 10);
+        assert_eq!(r.angle_number(), None);
+        r.set_sprm(SPRM_ANGLE, 0xFFFF);
+        assert_eq!(r.angle_number(), None);
+    }
+
+    // -----------------------------------------------------------------
+    // SPRM 13 parental level.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn parental_level_default_is_uninitialised_zero() {
+        let r = RegisterFile::new();
+        // SPRM 13 default ("player specific") = 0 → Invalid(0).
+        assert_eq!(r.parental_level(), ParentalLevel::Invalid(0));
+        assert!(!r.parental_level().is_level());
+        assert!(!r.parental_level().is_none_sentinel());
+    }
+
+    #[test]
+    fn parental_level_in_range() {
+        let mut r = RegisterFile::new();
+        for i in 1..=8u16 {
+            r.set_sprm(SPRM_PARENTAL_LEVEL, i);
+            assert_eq!(r.parental_level(), ParentalLevel::Level(i as u8));
+            assert!(r.parental_level().is_level());
+        }
+    }
+
+    #[test]
+    fn parental_level_none_sentinel() {
+        let mut r = RegisterFile::new();
+        r.set_sprm(SPRM_PARENTAL_LEVEL, 15);
+        assert_eq!(r.parental_level(), ParentalLevel::None);
+        assert!(r.parental_level().is_none_sentinel());
+    }
+
+    // -----------------------------------------------------------------
+    // SPRM 17 / 19 — audio + subpicture language extensions.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn audio_language_ext_decode_table() {
+        let mut r = RegisterFile::new();
+        assert_eq!(
+            r.preferred_audio_language_ext(),
+            AudioLanguageExt::NotSpecified
+        );
+        for (raw, expected) in [
+            (1, AudioLanguageExt::Normal),
+            (2, AudioLanguageExt::VisuallyImpaired),
+            (3, AudioLanguageExt::DirectorComments),
+            (4, AudioLanguageExt::AlternateDirectorComments),
+            (5, AudioLanguageExt::Reserved(5)),
+            (250, AudioLanguageExt::Reserved(250)),
+        ] {
+            r.set_sprm(SPRM_PREF_AUDIO_LANG_EXT, raw);
+            assert_eq!(r.preferred_audio_language_ext(), expected);
+        }
+    }
+
+    #[test]
+    fn subpicture_language_ext_decode_table() {
+        let mut r = RegisterFile::new();
+        assert_eq!(
+            r.preferred_subpicture_language_ext(),
+            SubpictureLanguageExt::NotSpecified
+        );
+        for (raw, expected) in [
+            (1, SubpictureLanguageExt::Normal),
+            (2, SubpictureLanguageExt::Large),
+            (3, SubpictureLanguageExt::Children),
+            (5, SubpictureLanguageExt::NormalCaptions),
+            (6, SubpictureLanguageExt::LargeCaptions),
+            (7, SubpictureLanguageExt::ChildrensCaptions),
+            (9, SubpictureLanguageExt::Forced),
+            (13, SubpictureLanguageExt::DirectorComments),
+            (14, SubpictureLanguageExt::LargeDirectorComments),
+            (15, SubpictureLanguageExt::DirectorCommentsForChildren),
+            // Gaps in the spec table — 4 / 8 / 10 / 11 / 12 — collapse
+            // to `Reserved`.
+            (4, SubpictureLanguageExt::Reserved(4)),
+            (8, SubpictureLanguageExt::Reserved(8)),
+            (10, SubpictureLanguageExt::Reserved(10)),
+            (11, SubpictureLanguageExt::Reserved(11)),
+            (12, SubpictureLanguageExt::Reserved(12)),
+            (200, SubpictureLanguageExt::Reserved(200)),
+        ] {
+            r.set_sprm(SPRM_PREF_SUBP_LANG_EXT, raw);
+            assert_eq!(r.preferred_subpicture_language_ext(), expected);
+        }
     }
 }

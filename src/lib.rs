@@ -145,13 +145,14 @@ pub use uops::{
     UOP_VIDEO_PRESENTATION_MODE_CHANGE,
 };
 pub use vm::{
-    AspectRatio, AudioCapabilities, AudioMixMode, DisplayMode, LinkAction, RegisterFile,
-    ResumePoint, SubpictureStreamView, VideoPreference, Vm, VmAction, GPRM_COUNT, MAX_RSM_DEPTH,
-    SPRM_AMXMD, SPRM_ANGLE, SPRM_AUDIO_CAPS, SPRM_AUDIO_STREAM, SPRM_CC_PLT, SPRM_COUNT,
-    SPRM_HL_BTNN, SPRM_MENU_LANG, SPRM_NV_PGCN, SPRM_NV_TIMER, SPRM_PARENTAL_LEVEL, SPRM_PGCN,
-    SPRM_PREF_AUDIO_LANG, SPRM_PREF_AUDIO_LANG_EXT, SPRM_PREF_SUBP_LANG, SPRM_PREF_SUBP_LANG_EXT,
-    SPRM_PTT, SPRM_REGION_MASK, SPRM_SUBPICTURE_STREAM, SPRM_TITLE, SPRM_VIDEO_PREF,
-    SPRM_VTS_TITLE,
+    AspectRatio, AudioCapabilities, AudioLanguageExt, AudioMixMode, AudioStreamSelector,
+    DisplayMode, LanguageCode, LinkAction, ParentalLevel, RegisterFile, ResumePoint,
+    SubpictureLanguageExt, SubpictureStreamView, VideoPreference, Vm, VmAction, GPRM_COUNT,
+    MAX_RSM_DEPTH, SPRM_AMXMD, SPRM_ANGLE, SPRM_AUDIO_CAPS, SPRM_AUDIO_STREAM, SPRM_CC_PLT,
+    SPRM_COUNT, SPRM_HL_BTNN, SPRM_MENU_LANG, SPRM_NV_PGCN, SPRM_NV_TIMER, SPRM_PARENTAL_LEVEL,
+    SPRM_PGCN, SPRM_PREF_AUDIO_LANG, SPRM_PREF_AUDIO_LANG_EXT, SPRM_PREF_SUBP_LANG,
+    SPRM_PREF_SUBP_LANG_EXT, SPRM_PTT, SPRM_REGION_MASK, SPRM_SUBPICTURE_STREAM, SPRM_TITLE,
+    SPRM_VIDEO_PREF, SPRM_VTS_TITLE,
 };
 pub use vob::{
     demux_vobs, demux_vobs_path, looks_like_nav_pack, ButtonInfo, CellId, DsiGi, DsiPacket,

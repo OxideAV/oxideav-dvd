@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed accessors for the remaining language / sentinel SPRMs.**
+  Round 3c's first SPRM accessor sweep covered the six bit-packed
+  slots (SPRM 2 / 8 / 11 / 14 / 15 / 20); the rest of
+  `docs/container/dvd/application/mpucoder-sprm.html` documents
+  nine more SPRMs that aren't plain integers either — the four
+  two-byte ASCII slots (SPRM 0 menu language, SPRM 12 parental
+  country, SPRM 16 / 18 preferred audio / sub-picture language,
+  ISO 639 / ISO 3166 alpha-2) and the sentinel-typed integer
+  slots (SPRM 1 audio stream `0..=7` + `15`-none, SPRM 3 angle
+  `1..=9`, SPRM 13 parental level `1..=8` + `15`-none, SPRM 17
+  audio language extension five-value enum, SPRM 19 sub-picture
+  language extension eleven-value enum). New surface on
+  `RegisterFile`:
+  - `menu_language()` / `parental_country()` /
+    `preferred_audio_language()` /
+    `preferred_subpicture_language()` return a `LanguageCode`
+    that exposes the raw word, an `is_not_specified()` predicate
+    (the `0xFFFF` SPRM 16 / 18 default), an `ascii_bytes()` →
+    `Option<[u8; 2]>` accessor that only succeeds when both bytes
+    are printable ASCII letters, and an `as_string()` lower-cased
+    alpha-2 form for downstream tooling.
+  - `audio_stream()` returns an `AudioStreamSelector` enum that
+    distinguishes the `15`-none sentinel from real stream indices
+    `Stream(0..=7)` and preserves out-of-range raws as `Invalid`.
+  - `angle_number()` collapses the SPRM 3 word to
+    `Option<u8>` with the `1..=9` range enforced.
+  - `parental_level()` returns a `ParentalLevel` enum with
+    `Level(1..=8)` / `None` (= 15) / `Invalid` shapes.
+  - `preferred_audio_language_ext()` /
+    `preferred_subpicture_language_ext()` return
+    `AudioLanguageExt` / `SubpictureLanguageExt` enums covering
+    every spec-table value; unmapped values collapse to
+    `Reserved(raw)` for round-trip.
+  Twelve new tests cover the defaults, the in-range values, and
+  the out-of-range / sentinel collapse for each accessor.
+
 - **Typed-instruction iterators on `PgcCommandTable`.** The PGC
   command table carries three lists of raw 8-byte
   [`NavCommand`] words (pre / post / cell) per
