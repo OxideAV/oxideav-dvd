@@ -1825,6 +1825,308 @@ impl Pgci {
 }
 
 // ------------------------------------------------------------------
+// VMGM_PGCI_UT / VTSM_PGCI_UT — Menu PGCI Unit Table
+// ------------------------------------------------------------------
+//
+// Per `docs/container/dvd/application/mpucoder-ifo_vmg.html` §VMGM_PGCI_UT
+// and `mpucoder-ifo_vts.html` §VTSM_PGCI_UT. Two-level hierarchy:
+//
+//   VMGM_PGCI_UT / VTSM_PGCI_UT
+//     ├── language-unit search-pointer list (one per ISO 639 language)
+//     │     each entry: ISO639 code (2 B) + language-code ext (1 B)
+//     │     + menu-existence-flag byte (1 B) + offset to LU (4 B)
+//     └── Language Unit (PGCI_LU)
+//           ├── PGC search-pointer list (one per menu PGC in this LU)
+//           │     each entry: PGC category (4 B) + offset to PGC (4 B)
+//           └── PGC bodies (parsed via `Pgc::parse`)
+//
+// The 8-byte unit-header at the LU and the unit-table top use the same
+// `{ u16 count, u16 reserved, u32 end_address }` shape, then each list
+// entry is 8 bytes.
+
+/// Menu existence-flag bits used in a VTSM language-unit entry's byte 3.
+///
+/// Per `mpucoder-ifo_vts.html` §VTSM_PGCI_UT — bit set ⇒ the
+/// corresponding menu exists in that language unit. Bit `0x80` ("root")
+/// is the only flag VMGM_PGCI_UT uses (treated as "title" on the VMG
+/// side per `mpucoder-ifo_vmg.html`).
+pub mod menu_existence {
+    /// `0x80` — root menu exists (VTSM) / title menu exists (VMGM).
+    pub const ROOT: u8 = 0x80;
+    /// `0x40` — sub-picture menu exists (VTSM only).
+    pub const SUBPICTURE: u8 = 0x40;
+    /// `0x20` — audio menu exists (VTSM only).
+    pub const AUDIO: u8 = 0x20;
+    /// `0x10` — angle menu exists (VTSM only).
+    pub const ANGLE: u8 = 0x10;
+    /// `0x08` — PTT (chapter) menu exists (VTSM only).
+    pub const PTT: u8 = 0x08;
+}
+
+/// Menu-type enum decoded from a PGC category byte 0 (low nibble) per
+/// `mpucoder-ifo_vts.html` §VTSM_PGCI_UT (PGC category breakdown).
+///
+/// Only meaningful when the entry-PGC flag (`category[0] >> 7`) is set;
+/// for non-entry PGCs the menu-type field is unused per the spec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuType {
+    /// VMGM-side: title menu (`2`).
+    Title,
+    /// VTSM-side: root menu (`3`).
+    Root,
+    /// VTSM-side: sub-picture menu (`4`).
+    Subpicture,
+    /// VTSM-side: audio menu (`5`).
+    Audio,
+    /// VTSM-side: angle menu (`6`).
+    Angle,
+    /// VTSM-side: PTT (chapter) menu (`7`).
+    Ptt,
+    /// Any other value the spec doesn't define (reserved).
+    Unknown(u8),
+}
+
+impl MenuType {
+    /// Decode the low nibble of PGC category byte 0.
+    pub fn from_nibble(n: u8) -> Self {
+        match n & 0x0F {
+            2 => MenuType::Title,
+            3 => MenuType::Root,
+            4 => MenuType::Subpicture,
+            5 => MenuType::Audio,
+            6 => MenuType::Angle,
+            7 => MenuType::Ptt,
+            other => MenuType::Unknown(other),
+        }
+    }
+}
+
+/// One PGC search-pointer inside a Language Unit (`PGCI_LU`).
+///
+/// `category` is the 32-bit PGC category dword; the high bit of byte 0
+/// is the entry-PGC flag and the low nibble of byte 0 is the menu type
+/// (only valid when the entry-PGC flag is set). Bytes 2..4 carry the
+/// parental management mask. `offset` is the byte distance from the
+/// start of the enclosing Language Unit to the PGC body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PgciLuSrp {
+    /// Raw 32-bit PGC category dword.
+    pub category: u32,
+    /// Byte offset to the PGC body, relative to this Language Unit's
+    /// start.
+    pub offset: u32,
+}
+
+impl PgciLuSrp {
+    /// `true` when the entry-PGC flag (byte 0 bit 7) is set.
+    pub fn is_entry_pgc(&self) -> bool {
+        (self.category >> 24) & 0x80 != 0
+    }
+
+    /// Decode the menu-type nibble (only meaningful when
+    /// [`Self::is_entry_pgc`] is `true`).
+    pub fn menu_type(&self) -> MenuType {
+        MenuType::from_nibble((self.category >> 24) as u8)
+    }
+
+    /// Parental management mask (low 16 bits of the category dword).
+    pub fn parental_mask(&self) -> u16 {
+        (self.category & 0xFFFF) as u16
+    }
+}
+
+/// One Language Unit (`PGCI_LU`) — a PGC search-pointer list plus the
+/// parsed PGC bodies it points at.
+#[derive(Debug, Clone)]
+pub struct PgciLu {
+    /// Number of PGCs in this language unit.
+    pub number_of_pgcs: u16,
+    /// Last byte address of the last PGC body in this LU, relative to
+    /// the LU's start.
+    pub end_address: u32,
+    /// PGC search pointers in declaration order.
+    pub srp: Vec<PgciLuSrp>,
+    /// Parsed PGC bodies in the same order as `srp`.
+    pub pgcs: Vec<Pgc>,
+}
+
+impl PgciLu {
+    /// Parse a Language Unit body. `buf` must start at the LU's first
+    /// byte and span at least through the last PGC body.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 8 {
+            return Err(Error::InvalidUdf("PGCI_LU: shorter than 8-byte header"));
+        }
+        let number_of_pgcs = read_u16(buf, 0)?;
+        // bytes 2..4 reserved
+        let end_address = read_u32(buf, 4)?;
+        let n = usize::from(number_of_pgcs);
+        let srp_end = 8usize
+            .checked_add(
+                n.checked_mul(8)
+                    .ok_or(Error::InvalidUdf("PGCI_LU: SRP list × 8 overflow"))?,
+            )
+            .ok_or(Error::InvalidUdf("PGCI_LU: SRP list size overflow"))?;
+        if buf.len() < srp_end {
+            return Err(Error::InvalidUdf("PGCI_LU: SRP list past end of buffer"));
+        }
+        let mut srp = Vec::with_capacity(n);
+        for i in 0..n {
+            let base = 8 + i * 8;
+            srp.push(PgciLuSrp {
+                category: read_u32(buf, base)?,
+                offset: read_u32(buf, base + 4)?,
+            });
+        }
+        let mut pgcs = Vec::with_capacity(n);
+        for entry in &srp {
+            let off = entry.offset as usize;
+            if off == 0 || off >= buf.len() {
+                return Err(Error::InvalidUdf("PGCI_LU: PGC offset out of range"));
+            }
+            pgcs.push(Pgc::parse(&buf[off..])?);
+        }
+        Ok(Self {
+            number_of_pgcs,
+            end_address,
+            srp,
+            pgcs,
+        })
+    }
+}
+
+/// One language-unit search-pointer in the menu PGCI Unit Table.
+///
+/// `language_code` is the raw 16-bit ISO 639 alpha-2 code (two ASCII
+/// letters packed big-endian — e.g. `b"en"` = `0x656E`).
+/// `language_code_ext` is the 1-byte language-code extension slot (the
+/// spec keeps it reserved-zero; mirrors the SPRM-17 / SPRM-19 layout).
+/// `menu_existence` is the byte 3 flag byte — see the
+/// [`menu_existence`] constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PgciUtSrp {
+    /// Big-endian-packed ISO 639 language code.
+    pub language_code: u16,
+    /// Language-code extension byte (reserved-zero by the spec).
+    pub language_code_ext: u8,
+    /// Menu existence flag byte — bitset of [`menu_existence`] bits.
+    pub menu_existence: u8,
+    /// Byte offset to the Language Unit body, relative to the start
+    /// of `PGCI_UT`.
+    pub offset: u32,
+}
+
+impl PgciUtSrp {
+    /// `true` when bit `0x80` (root / title menu) is set.
+    pub fn has_root_menu(&self) -> bool {
+        self.menu_existence & menu_existence::ROOT != 0
+    }
+
+    /// `true` when bit `0x40` (sub-picture menu) is set. Only
+    /// meaningful for VTSM_PGCI_UT.
+    pub fn has_subpicture_menu(&self) -> bool {
+        self.menu_existence & menu_existence::SUBPICTURE != 0
+    }
+
+    /// `true` when bit `0x20` (audio menu) is set. Only meaningful for
+    /// VTSM_PGCI_UT.
+    pub fn has_audio_menu(&self) -> bool {
+        self.menu_existence & menu_existence::AUDIO != 0
+    }
+
+    /// `true` when bit `0x10` (angle menu) is set. Only meaningful for
+    /// VTSM_PGCI_UT.
+    pub fn has_angle_menu(&self) -> bool {
+        self.menu_existence & menu_existence::ANGLE != 0
+    }
+
+    /// `true` when bit `0x08` (PTT menu) is set. Only meaningful for
+    /// VTSM_PGCI_UT.
+    pub fn has_ptt_menu(&self) -> bool {
+        self.menu_existence & menu_existence::PTT != 0
+    }
+}
+
+/// Parsed VMGM_PGCI_UT or VTSM_PGCI_UT body.
+///
+/// Two-level table: an outer search-pointer list keyed by ISO 639
+/// language code, with each entry pointing at a Language Unit that
+/// itself holds the menu PGCs for that language. The wire format is
+/// identical between the VMG and VTS sides; the only difference is
+/// the documented set of `menu_existence` / `MenuType` values
+/// (the VMG side only authors a "title" menu type, while the VTS
+/// side authors root / subpicture / audio / angle / PTT menus).
+#[derive(Debug, Clone)]
+pub struct PgciUt {
+    /// Number of Language Units in this table.
+    pub number_of_language_units: u16,
+    /// Last byte address of the last PGC body in the last LU,
+    /// relative to the start of `PGCI_UT`.
+    pub end_address: u32,
+    /// Outer search-pointer list — one entry per language unit.
+    pub srp: Vec<PgciUtSrp>,
+    /// Parsed Language Units in the same order as `srp`.
+    pub language_units: Vec<PgciLu>,
+}
+
+impl PgciUt {
+    /// Parse a `VMGM_PGCI_UT` or `VTSM_PGCI_UT` body. `buf` must start
+    /// at the first byte of the table and span at least through the
+    /// last PGC body in the last LU.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 8 {
+            return Err(Error::InvalidUdf("PGCI_UT: shorter than 8-byte header"));
+        }
+        let number_of_language_units = read_u16(buf, 0)?;
+        // bytes 2..4 reserved
+        let end_address = read_u32(buf, 4)?;
+        let n = usize::from(number_of_language_units);
+        let srp_end = 8usize
+            .checked_add(
+                n.checked_mul(8)
+                    .ok_or(Error::InvalidUdf("PGCI_UT: SRP list × 8 overflow"))?,
+            )
+            .ok_or(Error::InvalidUdf("PGCI_UT: SRP list size overflow"))?;
+        if buf.len() < srp_end {
+            return Err(Error::InvalidUdf("PGCI_UT: SRP list past end of buffer"));
+        }
+        let mut srp = Vec::with_capacity(n);
+        for i in 0..n {
+            let base = 8 + i * 8;
+            srp.push(PgciUtSrp {
+                language_code: read_u16(buf, base)?,
+                language_code_ext: buf[base + 2],
+                menu_existence: buf[base + 3],
+                offset: read_u32(buf, base + 4)?,
+            });
+        }
+        let mut language_units = Vec::with_capacity(n);
+        for entry in &srp {
+            let off = entry.offset as usize;
+            if off == 0 || off >= buf.len() {
+                return Err(Error::InvalidUdf("PGCI_UT: LU offset out of range"));
+            }
+            language_units.push(PgciLu::parse(&buf[off..])?);
+        }
+        Ok(Self {
+            number_of_language_units,
+            end_address,
+            srp,
+            language_units,
+        })
+    }
+
+    /// Look up the Language Unit for the given 16-bit ISO 639 language
+    /// code (e.g. `b"en"` packed big-endian = `0x656E`).
+    pub fn language_unit(&self, language_code: u16) -> Option<&PgciLu> {
+        self.srp
+            .iter()
+            .position(|s| s.language_code == language_code)
+            .and_then(|i| self.language_units.get(i))
+    }
+}
+
+// ------------------------------------------------------------------
 // VTS_C_ADT — Cell Address Table
 // ------------------------------------------------------------------
 
@@ -4516,5 +4818,207 @@ mod tests {
         buf[8..10].copy_from_slice(&0x7553u16.to_be_bytes());
         buf[12..14].copy_from_slice(&16u16.to_be_bytes()); // body starts past buf end
         assert!(VmgPtlMait::parse(&buf).is_err());
+    }
+
+    // ----------------------------------------------------------------
+    // VMGM_PGCI_UT / VTSM_PGCI_UT — Menu PGCI Unit Table
+    // ----------------------------------------------------------------
+
+    /// Minimal PGC body (236 bytes) — all sub-table offsets zero so
+    /// `Pgc::parse` walks the header alone.
+    fn empty_pgc_body() -> Vec<u8> {
+        vec![0u8; 0xEC]
+    }
+
+    /// Build a synthetic PGCI_UT buffer from `(language_code,
+    /// language_code_ext, menu_existence, pgc_categories)` tuples.
+    /// Each language unit gets one PGC per `pgc_categories` entry,
+    /// each PGC carries an empty 236-byte body.
+    fn build_pgci_ut(units: &[(u16, u8, u8, Vec<u32>)]) -> Vec<u8> {
+        let header_len = 8 + 8 * units.len();
+        // Layout: outer header, outer SRP list, then back-to-back LUs.
+        // Each LU has its own (8 + n_pgcs × 8) header + (n_pgcs × 236)
+        // PGC bodies.
+        let lu_lens: Vec<usize> = units
+            .iter()
+            .map(|(_, _, _, pgcs)| 8 + pgcs.len() * 8 + pgcs.len() * 0xEC)
+            .collect();
+        let total: usize = header_len + lu_lens.iter().sum::<usize>();
+        let mut buf = vec![0u8; total];
+        // Outer header: num LUs + end_address.
+        buf[0..2].copy_from_slice(&(units.len() as u16).to_be_bytes());
+        buf[4..8].copy_from_slice(&((total - 1) as u32).to_be_bytes());
+
+        let mut lu_offset = header_len;
+        for (i, ((lang, ext, exist, pgcs), &lu_len)) in units.iter().zip(lu_lens.iter()).enumerate()
+        {
+            // Outer SRP entry: lang(u16) | ext(u8) | exist(u8) | offset(u32)
+            let srp_base = 8 + i * 8;
+            buf[srp_base..srp_base + 2].copy_from_slice(&lang.to_be_bytes());
+            buf[srp_base + 2] = *ext;
+            buf[srp_base + 3] = *exist;
+            buf[srp_base + 4..srp_base + 8].copy_from_slice(&(lu_offset as u32).to_be_bytes());
+
+            // LU header at lu_offset: n_pgcs + end_address relative to LU.
+            buf[lu_offset..lu_offset + 2].copy_from_slice(&(pgcs.len() as u16).to_be_bytes());
+            buf[lu_offset + 4..lu_offset + 8].copy_from_slice(&((lu_len - 1) as u32).to_be_bytes());
+
+            // Inner SRP entries + back-to-back PGC bodies.
+            let inner_srp_end = 8 + pgcs.len() * 8;
+            for (j, &cat) in pgcs.iter().enumerate() {
+                let inner_base = lu_offset + 8 + j * 8;
+                buf[inner_base..inner_base + 4].copy_from_slice(&cat.to_be_bytes());
+                let pgc_offset_in_lu = (inner_srp_end + j * 0xEC) as u32;
+                buf[inner_base + 4..inner_base + 8]
+                    .copy_from_slice(&pgc_offset_in_lu.to_be_bytes());
+
+                // Body is all zero from the vec init — that matches
+                // empty_pgc_body() and parses fine.
+                let pgc_global = lu_offset + pgc_offset_in_lu as usize;
+                let empty = empty_pgc_body();
+                buf[pgc_global..pgc_global + 0xEC].copy_from_slice(&empty);
+            }
+
+            lu_offset += lu_len;
+        }
+        buf
+    }
+
+    #[test]
+    fn pgci_ut_walks_two_language_units() {
+        // EN + JP, each with 2 PGCs. Categories encode entry-PGC flag
+        // (bit 31) + menu-type nibble (low 4 bits of byte 0).
+        // EN: PGC1 = entry-Root (0x83_00_00_00), PGC2 = non-entry (0x00_…).
+        // JP: PGC1 = entry-Title (0x82_00_00_00), PGC2 = non-entry.
+        let units = vec![
+            (
+                0x656E, // "en"
+                0,
+                menu_existence::ROOT | menu_existence::AUDIO,
+                vec![0x83_00_00_00, 0x00_00_00_00],
+            ),
+            (
+                0x6A70, // "jp"
+                0,
+                menu_existence::ROOT,
+                vec![0x82_00_00_00, 0x00_00_00_00],
+            ),
+        ];
+        let buf = build_pgci_ut(&units);
+        let table = PgciUt::parse(&buf).unwrap();
+
+        assert_eq!(table.number_of_language_units, 2);
+        assert_eq!(table.srp.len(), 2);
+        assert_eq!(table.language_units.len(), 2);
+
+        // First LU: English, root + audio menus.
+        let en_srp = &table.srp[0];
+        assert_eq!(en_srp.language_code, 0x656E);
+        assert!(en_srp.has_root_menu());
+        assert!(en_srp.has_audio_menu());
+        assert!(!en_srp.has_subpicture_menu());
+        assert!(!en_srp.has_angle_menu());
+        assert!(!en_srp.has_ptt_menu());
+
+        let en_lu = &table.language_units[0];
+        assert_eq!(en_lu.number_of_pgcs, 2);
+        assert_eq!(en_lu.srp.len(), 2);
+        assert_eq!(en_lu.pgcs.len(), 2);
+        assert!(en_lu.srp[0].is_entry_pgc());
+        assert_eq!(en_lu.srp[0].menu_type(), MenuType::Root);
+        assert!(!en_lu.srp[1].is_entry_pgc());
+
+        // Second LU: Japanese, title-menu entry.
+        let jp_srp = &table.srp[1];
+        assert_eq!(jp_srp.language_code, 0x6A70);
+        let jp_lu = &table.language_units[1];
+        assert_eq!(jp_lu.srp[0].menu_type(), MenuType::Title);
+
+        // language_unit() lookup round-trips.
+        assert_eq!(
+            table.language_unit(0x656E).map(|lu| lu.number_of_pgcs),
+            Some(2)
+        );
+        assert!(table.language_unit(0x4242).is_none());
+    }
+
+    #[test]
+    fn pgci_ut_zero_language_units_decodes_empty() {
+        let buf = build_pgci_ut(&[]);
+        let table = PgciUt::parse(&buf).unwrap();
+        assert_eq!(table.number_of_language_units, 0);
+        assert!(table.srp.is_empty());
+        assert!(table.language_units.is_empty());
+    }
+
+    #[test]
+    fn pgci_ut_rejects_short_header() {
+        let buf = vec![0u8; 4];
+        assert!(PgciUt::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn pgci_ut_rejects_srp_list_past_buffer() {
+        // Claim 5 LUs but truncate after the header.
+        let mut buf = vec![0u8; 8];
+        buf[0..2].copy_from_slice(&5u16.to_be_bytes());
+        assert!(PgciUt::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn pgci_ut_rejects_lu_offset_zero() {
+        // One LU with offset=0 — should be rejected per the in-range
+        // check in `PgciUt::parse`.
+        let mut buf = vec![0u8; 16];
+        buf[0..2].copy_from_slice(&1u16.to_be_bytes());
+        // outer SRP entry at offset 8: lang=0x656E, exist=0x80, off=0.
+        buf[8..10].copy_from_slice(&0x656Eu16.to_be_bytes());
+        buf[11] = menu_existence::ROOT;
+        // offset bytes already zero.
+        assert!(PgciUt::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn pgci_ut_rejects_lu_offset_past_buffer() {
+        // One LU whose offset points beyond the buffer end.
+        let mut buf = vec![0u8; 16];
+        buf[0..2].copy_from_slice(&1u16.to_be_bytes());
+        buf[8..10].copy_from_slice(&0x656Eu16.to_be_bytes());
+        buf[11] = menu_existence::ROOT;
+        buf[12..16].copy_from_slice(&64u32.to_be_bytes()); // beyond 16-byte buf
+        assert!(PgciUt::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn pgci_lu_rejects_pgc_offset_past_buffer() {
+        // A 16-byte LU body claiming 1 PGC whose offset points outside
+        // the LU buffer.
+        let mut buf = vec![0u8; 16];
+        buf[0..2].copy_from_slice(&1u16.to_be_bytes());
+        // Inner SRP at offset 8: category=0, offset=512 (way past 16).
+        buf[12..16].copy_from_slice(&512u32.to_be_bytes());
+        assert!(PgciLu::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn pgci_lu_srp_decodes_parental_mask() {
+        // Build a single-LU table with one PGC whose category dword
+        // is 0x83_00_00_FF — entry-Root menu, parental mask 0x00FF.
+        let units = vec![(0x656E, 0, menu_existence::ROOT, vec![0x83_00_00_FF_u32])];
+        let buf = build_pgci_ut(&units);
+        let table = PgciUt::parse(&buf).unwrap();
+        let lu = &table.language_units[0];
+        assert!(lu.srp[0].is_entry_pgc());
+        assert_eq!(lu.srp[0].menu_type(), MenuType::Root);
+        assert_eq!(lu.srp[0].parental_mask(), 0x00FF);
+    }
+
+    #[test]
+    fn menu_type_unknown_for_undefined_nibble() {
+        // The spec defines 2..=7; 1 / 8..=15 fall through to Unknown.
+        assert_eq!(MenuType::from_nibble(1), MenuType::Unknown(1));
+        assert_eq!(MenuType::from_nibble(0), MenuType::Unknown(0));
+        // High nibble is masked off — only low 4 bits matter.
+        assert_eq!(MenuType::from_nibble(0xF3), MenuType::Root);
     }
 }

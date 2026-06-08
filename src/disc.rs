@@ -34,7 +34,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::ifo::{DvdTitleEntry, TtSrpt, VmgIfo, VmgPtlMait, VmgVtsAtrt, VtsIfo};
+use crate::ifo::{DvdTitleEntry, PgciUt, TtSrpt, VmgIfo, VmgPtlMait, VmgVtsAtrt, VtsIfo};
 use crate::iso9660::Iso9660Volume;
 use crate::udf::{UdfFile, UdfVolume};
 
@@ -384,6 +384,96 @@ impl DvdDisc {
         let max_sectors = next_table_sector.saturating_sub(mat.ptl_mait_sector).max(1);
         let buf = read_sector_range(reader, f.lba + mat.ptl_mait_sector, max_sectors)?;
         VmgPtlMait::parse(&buf).map(Some)
+    }
+
+    /// Read `VIDEO_TS.IFO`'s [`PgciUt`] — the VMGM (First-Play / VMG
+    /// menu) program-chain table indexed by ISO 639 language unit.
+    ///
+    /// Per `docs/container/dvd/application/mpucoder-ifo_vmg.html`
+    /// §VMGM_PGCI_UT — two-level hierarchy: outer search-pointer list
+    /// keyed by language, each pointing at a Language Unit (`PGCI_LU`)
+    /// that lists the per-PGC search pointers + the PGC bodies
+    /// themselves (parsed via [`crate::ifo::Pgc::parse`]).
+    ///
+    /// Returns `Ok(None)` when the MAT's `vmgm_pgci_ut_sector` is zero
+    /// (no VMG menu authored — possible on minimal discs).
+    pub fn parse_vmgm_pgci_ut<R: Read + Seek>(&self, reader: &mut R) -> Result<Option<PgciUt>> {
+        let f = self
+            .vmgi()
+            .ok_or(Error::NotDvdVideo("VIDEO_TS.IFO absent"))?;
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = VmgIfo::parse(&mat_buf)?;
+        if mat.vmgm_pgci_ut_sector == 0 {
+            return Ok(None);
+        }
+        // Bound the read at the next non-zero VMG table boundary so
+        // a malformed `end_address` field can't pull bytes from an
+        // unrelated table. Falls back to the IFO file's last sector.
+        let next_table_sector = [
+            mat.ptl_mait_sector,
+            mat.vts_atrt_sector,
+            mat.txtdt_mg_sector,
+            mat.vmgm_c_adt_sector,
+            mat.vmgm_vobu_admap_sector,
+            mat.last_sector_ifo + 1,
+        ]
+        .iter()
+        .copied()
+        .filter(|s| *s > mat.vmgm_pgci_ut_sector)
+        .min()
+        .unwrap_or(mat.last_sector_ifo + 1);
+        let max_sectors = next_table_sector
+            .saturating_sub(mat.vmgm_pgci_ut_sector)
+            .max(1);
+        let buf = read_sector_range(reader, f.lba + mat.vmgm_pgci_ut_sector, max_sectors)?;
+        PgciUt::parse(&buf).map(Some)
+    }
+
+    /// Read `VTS_xx_0.IFO`'s [`PgciUt`] — the VTSM (per-title-set
+    /// menu) program-chain table indexed by ISO 639 language unit.
+    ///
+    /// Per `docs/container/dvd/application/mpucoder-ifo_vts.html`
+    /// §VTSM_PGCI_UT — same shape as the VMG side except the per-LU
+    /// search-pointer carries a richer menu-existence flag byte
+    /// (root / sub-picture / audio / angle / PTT — see
+    /// [`crate::ifo::menu_existence`]).
+    ///
+    /// Returns `Ok(None)` when the VTSI_MAT's `vtsm_pgci_ut_sector`
+    /// is zero (no per-title-set menus authored on this title set).
+    pub fn parse_vtsm_pgci_ut<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        ts_index: u8,
+    ) -> Result<Option<PgciUt>> {
+        let f = self
+            .vtsi(ts_index)
+            .ok_or(Error::NotDvdVideo("VTS_xx_0.IFO absent"))?;
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = crate::ifo::VtsiMat::parse(&mat_buf)?;
+        if mat.vtsm_pgci_ut_sector == 0 {
+            return Ok(None);
+        }
+        // Same bounded-read pattern: clip at the next non-zero VTS
+        // table boundary so a malformed length field is harmless.
+        let next_table_sector = [
+            mat.vts_pgci_sector,
+            mat.vts_tmapti_sector,
+            mat.vtsm_c_adt_sector,
+            mat.vtsm_vobu_admap_sector,
+            mat.vts_c_adt_sector,
+            mat.vts_vobu_admap_sector,
+            mat.last_sector_ifo + 1,
+        ]
+        .iter()
+        .copied()
+        .filter(|s| *s > mat.vtsm_pgci_ut_sector)
+        .min()
+        .unwrap_or(mat.last_sector_ifo + 1);
+        let max_sectors = next_table_sector
+            .saturating_sub(mat.vtsm_pgci_ut_sector)
+            .max(1);
+        let buf = read_sector_range(reader, f.lba + mat.vtsm_pgci_ut_sector, max_sectors)?;
+        PgciUt::parse(&buf).map(Some)
     }
 }
 

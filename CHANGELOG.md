@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`VMGM_PGCI_UT` + `VTSM_PGCI_UT` decoders (menu PGCI Unit Table).**
+  The MAT records the sector pointers `vmgm_pgci_ut_sector` and
+  `vtsm_pgci_ut_sector` for the menu PGC tables on both the VMG and
+  VTS sides, but no body parser existed. This round materialises both
+  per `docs/container/dvd/application/mpucoder-ifo_vmg.html` §VMGM_PGCI_UT
+  and `mpucoder-ifo_vts.html` §VTSM_PGCI_UT — the wire format is
+  identical between the two sides:
+  - `PgciUt` — the outer search-pointer list keyed by ISO 639 language
+    code (each entry: 16-bit language code + 1-byte language-code
+    extension + 1-byte `menu_existence` flag + 32-bit offset to LU).
+    The `language_unit(lang_code)` lookup round-trips a packed
+    `b"en"`-style code to its parsed Language Unit; the per-entry
+    `has_root_menu` / `has_subpicture_menu` / `has_audio_menu` /
+    `has_angle_menu` / `has_ptt_menu` accessors decode each
+    menu-existence flag bit per the table at `mpucoder-ifo_vts.html`
+    (bit `0x80` = root/title, `0x40` = sub-picture, `0x20` = audio,
+    `0x10` = angle, `0x08` = PTT — the constants live in the public
+    `menu_existence` sub-module).
+  - `PgciLu` — one Language Unit body: a per-PGC search-pointer list
+    (`PgciLuSrp`: 32-bit PGC category dword + 32-bit offset to the
+    PGC body) plus the parsed `Pgc` bodies themselves (via
+    `Pgc::parse`). The `PgciLuSrp::is_entry_pgc` /
+    `menu_type` / `parental_mask` accessors decompose the category
+    dword per `mpucoder-ifo_vts.html` (PGC category breakdown).
+  - `MenuType` enum — decodes the low nibble of the PGC category
+    byte 0 (`2` = title / `3` = root / `4` = sub-picture / `5` =
+    audio / `6` = angle / `7` = PTT, plus `Unknown(_)` for the
+    reserved nibble values).
+  - `DvdDisc::parse_vmgm_pgci_ut(reader)` /
+    `parse_vtsm_pgci_ut(reader, ts_index)` — high-level reader helpers
+    that read the appropriate MAT, follow the sector pointer, and
+    parse the body. Both return `Ok(None)` when the corresponding
+    MAT sector pointer is zero (table absent on this disc / title
+    set). The reads are bounded at the next non-zero table sector
+    so a malformed length field can't pull bytes from an unrelated
+    table.
+
+  Nine new unit tests cover the happy path (two-language walkthrough
+  with entry-PGC + menu-type round-trip), the boundary cases (zero
+  language units, parental-mask extraction from the category dword),
+  and the four malformed-input rejection paths (short header /
+  SRP list past buffer / LU offset zero / LU offset past buffer /
+  inner PGC offset past buffer).
+
 - **`VMG_VTS_ATRT` + `VMG_PTL_MAIT` decoders on the VMG side.** The
   VMG IFO's MAT carries two table pointers we'd previously parsed
   (`vts_atrt_sector`, `ptl_mait_sector`) without surfacing the

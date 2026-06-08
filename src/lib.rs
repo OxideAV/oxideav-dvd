@@ -104,14 +104,14 @@ pub mod pipeline;
 pub use disc::{DvdDisc, DvdFile, DvdFileKind};
 pub use error::{Error, Result};
 pub use ifo::{
-    AudioApplicationMode, AudioAttributes, AudioCodingMode, AudioLanguageType,
+    menu_existence, AudioApplicationMode, AudioAttributes, AudioCodingMode, AudioLanguageType,
     AudioQuantizationDrc, CellAddrEntry, CellPlaybackInfo, CellPositionInfo, DvdChapter, DvdTitle,
-    DvdTitleEntry, FrameRate, McExtensionEntry, MenuAttributes, NavCommand, PaletteEntry, Pgc,
-    PgcCommandTable, PgcTime, Pgci, PgciSrp, PtlMait, Ptt, PttTitle, SubpictureAttributes,
-    SubpictureCodingMode, SubpictureLanguageType, TitleAttributes, TmapEntry, TtSrpt,
-    VideoAspectRatio, VideoAttributes, VideoCodingMode, VideoResolution, VideoStandard, VmgIfo,
-    VmgPtlMait, VmgVtsAtrt, VmgVtsAtrtEntry, VobuAdmap, VtsCAdt, VtsIfo, VtsPttSrpt, VtsTmap,
-    VtsTmapti, VtsiMat, DVD_SECTOR, VMG_MAGIC, VTS_MAGIC,
+    DvdTitleEntry, FrameRate, McExtensionEntry, MenuAttributes, MenuType, NavCommand, PaletteEntry,
+    Pgc, PgcCommandTable, PgcTime, Pgci, PgciLu, PgciLuSrp, PgciSrp, PgciUt, PgciUtSrp, PtlMait,
+    Ptt, PttTitle, SubpictureAttributes, SubpictureCodingMode, SubpictureLanguageType,
+    TitleAttributes, TmapEntry, TtSrpt, VideoAspectRatio, VideoAttributes, VideoCodingMode,
+    VideoResolution, VideoStandard, VmgIfo, VmgPtlMait, VmgVtsAtrt, VmgVtsAtrtEntry, VobuAdmap,
+    VtsCAdt, VtsIfo, VtsPttSrpt, VtsTmap, VtsTmapti, VtsiMat, DVD_SECTOR, VMG_MAGIC, VTS_MAGIC,
 };
 pub use iso9660::{
     DirectoryRecord, Iso9660Entry, Iso9660Volume, PathTableEntry, PrimaryVolumeDescriptor,
