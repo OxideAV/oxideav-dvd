@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`VMG_VTS_ATRT` + `VMG_PTL_MAIT` decoders on the VMG side.** The
+  VMG IFO's MAT carries two table pointers we'd previously parsed
+  (`vts_atrt_sector`, `ptl_mait_sector`) without surfacing the
+  table bodies. This round materialises both per
+  `docs/container/dvd/application/mpucoder-ifo_vmg.html`:
+  - `VmgVtsAtrt` — per-VTS attribute copies that mirror each VTS
+    IFO's attribute block (the buffer at VTS IFO offset `0x0100`,
+    typically `0x300` bytes long) onto the VMG side. Each
+    `VmgVtsAtrtEntry` exposes the entry's `vts_category` field
+    (`0` = unspecified, `1` = Karaoke), a 1-based `vts_number`,
+    and the raw attribute blob. `entry(vts_number)` looks up an
+    entry; bound checks reject malformed EAs that would overlap
+    the next entry.
+  - `VmgPtlMait` — the country-keyed parental management table.
+    Each `PtlMait` body carries the eight parental-level mask
+    arrays (`Nts + 1` 16-bit masks per level — index 0 is the
+    VMG-side mask, `1..=nts` are the title sets). The on-disc
+    storage order is descending (level 8 first), but the typed
+    `masks` array is surfaced ascending (`masks[0]` = level 1) so
+    a caller can index with `parental_level - 1` directly.
+    `country(code)` looks up a country sub-table; `mask(level,
+    title_set)` returns the 16-bit allow-mask for the
+    `(parental_level, title_set)` pair.
+  - `DvdDisc::parse_vmg_vts_atrt(reader)` /
+    `parse_vmg_ptl_mait(reader)` — high-level reader helpers that
+    read the MAT, follow the sector pointer, and parse the body.
+    Both return `Ok(None)` when the corresponding MAT sector
+    pointer is zero (table absent on this disc). The PTL_MAIT
+    reader bounds its sector read at the next non-zero table
+    pointer in the MAT so a malformed length field can't pull
+    bytes from an unrelated table.
+  Nine new tests cover the happy path (two-country / two-VTS
+  walkthroughs with mask + blob round-trip), boundary cases (zero
+  countries, partial header), and the four malformed-input
+  rejection paths (short header / offset list past buffer /
+  body offset past buffer / per-entry EA overlapping the next
+  entry).
+
 - **Typed accessors for the remaining language / sentinel SPRMs.**
   Round 3c's first SPRM accessor sweep covered the six bit-packed
   slots (SPRM 2 / 8 / 11 / 14 / 15 / 20); the rest of

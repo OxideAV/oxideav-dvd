@@ -2423,6 +2423,312 @@ impl VtsIfo {
 }
 
 // ------------------------------------------------------------------
+// VMG_VTS_ATRT — per-VTS attribute table on the VMG side
+// ------------------------------------------------------------------
+
+/// One entry of the `VMG_VTS_ATRT` table.
+///
+/// Per `mpucoder-ifo_vmg.html` each `VTS_ATRT` body is:
+///   - offset `0..4`: end address (EA) of this entry, relative to the
+///     entry's own start.
+///   - offset `4..8`: `VTS_CAT` — a 32-bit category copy of `0x022..0x025`
+///     of the corresponding VTS IFO (`0` = unspecified, `1` = Karaoke).
+///   - offset `8..EA-7`: raw copy of the VTS attribute block starting
+///     at offset `0x0100` of the VTS IFO (usually `0x300` bytes long;
+///     equivalent to the buffer fed to [`parse_menu_attribute_block`] +
+///     the title-side block that [`VtsiMat::parse`] already handles).
+///
+/// We keep the attribute blob as raw bytes so callers that want the
+/// typed shape can feed it back through [`MenuAttributes`] /
+/// [`TitleAttributes`] reuse without us re-decoding the same fields
+/// twice (once here, once in the VTSI proper). The 1-based VTS index
+/// is the entry's position in the table.
+#[derive(Debug, Clone)]
+pub struct VmgVtsAtrtEntry {
+    /// 1-based VTS number this entry mirrors.
+    pub vts_number: u8,
+    /// `VTS_CAT` copy of the VTS IFO's `0x022..0x025` field.
+    pub vts_category: u32,
+    /// Raw VTS attribute block — a verbatim copy of bytes `0x0100..`
+    /// of the corresponding `VTS_xx_0.IFO` file (length = entry-EA - 7).
+    pub attributes_blob: Vec<u8>,
+}
+
+/// Parsed `VMG_VTS_ATRT` — the per-VTS attribute copies stored on the
+/// VMG side.
+///
+/// `VIDEO_TS.IFO` carries `VMG_VTS_ATRT` so a player can answer
+/// per-VTS attribute queries (audio/subpicture stream counts, codec
+/// IDs, language codes, …) without having to open every `VTS_xx_0.IFO`
+/// individually. Each entry mirrors the attribute block found at the
+/// start of the corresponding VTSI body.
+#[derive(Debug, Clone)]
+pub struct VmgVtsAtrt {
+    /// Number of title sets referenced by this table.
+    pub number_of_title_sets: u16,
+    /// Last byte address of the last `VTS_ATRT` entry — relative to
+    /// the start of `VMG_VTS_ATRT` itself.
+    pub end_address: u32,
+    /// One entry per title set, in `vts_number` order (1-based).
+    pub entries: Vec<VmgVtsAtrtEntry>,
+}
+
+impl VmgVtsAtrt {
+    /// Parse the `VMG_VTS_ATRT` table from a buffer that starts at
+    /// the table's first byte.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 8 {
+            return Err(Error::InvalidUdf("VMG_VTS_ATRT: header < 8 bytes"));
+        }
+        let number_of_title_sets = read_u16(buf, 0)?;
+        // bytes 2..4 reserved
+        let end_address = read_u32(buf, 4)?;
+
+        let count = usize::from(number_of_title_sets);
+        let offset_table_len = count.checked_mul(4).ok_or(Error::InvalidUdf(
+            "VMG_VTS_ATRT: title-set count × 4 overflow",
+        ))?;
+        let header_len = 8usize
+            .checked_add(offset_table_len)
+            .ok_or(Error::InvalidUdf("VMG_VTS_ATRT: header length overflow"))?;
+        if buf.len() < header_len {
+            return Err(Error::InvalidUdf("VMG_VTS_ATRT: offset table past end"));
+        }
+
+        // Read the offset list first so we can derive the EA of each
+        // entry (next-entry-offset minus one, or table EA for the last).
+        let mut offsets = Vec::with_capacity(count);
+        for i in 0..count {
+            offsets.push(read_u32(buf, 8 + i * 4)?);
+        }
+
+        let mut entries = Vec::with_capacity(count);
+        for (i, &off) in offsets.iter().enumerate() {
+            // Per-entry "end address" lives in the entry header at
+            // offset 0 (relative to the entry start). Trust the header
+            // EA, but bound-check against the next entry's offset
+            // (or the table EA) so a malformed entry can't read past
+            // the buffer / past the next entry.
+            let entry_start = off as usize;
+            let entry_hdr = buf
+                .get(entry_start..entry_start + 8)
+                .ok_or(Error::InvalidUdf("VMG_VTS_ATRT: entry header past buffer"))?;
+            let entry_ea_rel =
+                u32::from_be_bytes([entry_hdr[0], entry_hdr[1], entry_hdr[2], entry_hdr[3]])
+                    as usize;
+            let vts_category =
+                u32::from_be_bytes([entry_hdr[4], entry_hdr[5], entry_hdr[6], entry_hdr[7]]);
+            // The entry's "end_address" is inclusive of the last byte
+            // of the entry (zero-based, relative to the entry start);
+            // total entry length is therefore `entry_ea_rel + 1`. The
+            // attribute blob runs from offset 8 through end-of-entry.
+            let entry_total = entry_ea_rel
+                .checked_add(1)
+                .ok_or(Error::InvalidUdf("VMG_VTS_ATRT: entry EA overflow"))?;
+            if entry_total < 8 {
+                return Err(Error::InvalidUdf(
+                    "VMG_VTS_ATRT: entry length shorter than 8-byte header",
+                ));
+            }
+            // Bound against the next entry's offset (if any) so an
+            // overlong EA can't pull bytes out of the following entry.
+            let next_start = offsets
+                .get(i + 1)
+                .map(|&n| n as usize)
+                .unwrap_or((end_address as usize).saturating_add(1));
+            if entry_start.saturating_add(entry_total) > next_start {
+                return Err(Error::InvalidUdf(
+                    "VMG_VTS_ATRT: entry EA overlaps next entry",
+                ));
+            }
+            let blob_end = entry_start
+                .checked_add(entry_total)
+                .ok_or(Error::InvalidUdf("VMG_VTS_ATRT: entry end overflow"))?;
+            let blob = buf
+                .get(entry_start + 8..blob_end)
+                .ok_or(Error::InvalidUdf("VMG_VTS_ATRT: blob past buffer"))?
+                .to_vec();
+            entries.push(VmgVtsAtrtEntry {
+                vts_number: (i as u8).saturating_add(1),
+                vts_category,
+                attributes_blob: blob,
+            });
+        }
+
+        Ok(Self {
+            number_of_title_sets,
+            end_address,
+            entries,
+        })
+    }
+
+    /// Return the entry for the 1-based `vts_number`, or `None` when
+    /// the index is past the table.
+    pub fn entry(&self, vts_number: u8) -> Option<&VmgVtsAtrtEntry> {
+        if vts_number == 0 {
+            return None;
+        }
+        self.entries.get(usize::from(vts_number - 1))
+    }
+}
+
+// ------------------------------------------------------------------
+// VMG_PTL_MAIT — parental management table
+// ------------------------------------------------------------------
+
+/// One country-keyed sub-table of `VMG_PTL_MAIT`.
+///
+/// Each country gets one `PTL_MAIT` body — a flat array of
+/// `Nts + 1` 16-bit masks per parental level. The spec describes
+/// the body as 8 stacked level-blocks (level 8 first at body offset
+/// 0, then level 7, …, level 1 at body offset `14 × (Nts + 1)`).
+///
+/// `masks[level_minus_one][title_set_index]` is the 16-bit mask for
+/// the title set (where `title_set_index = 0` is the VMG itself and
+/// `1..=nts` are the title sets in `1..=nts` order).
+#[derive(Debug, Clone)]
+pub struct PtlMait {
+    /// 16-bit country code (BCD-packed ISO 3166 per `mpucoder-sprm.html`).
+    pub country_code: u16,
+    /// Eight per-level mask arrays. `masks[0]` = level 1, …,
+    /// `masks[7]` = level 8 (level order surfaced ascending — easier
+    /// to index by `parental_level - 1` than to invert the spec's
+    /// descending storage order at every call site).
+    ///
+    /// Each inner `Vec` has `nts + 1` entries: index `0` = VMG mask,
+    /// `1..=nts` = title-set 1..=nts mask. A set bit at position `i`
+    /// in `masks[L-1][T]` means title-set `T` is blocked from level `L`
+    /// in this country.
+    pub masks: [Vec<u16>; 8],
+}
+
+impl PtlMait {
+    /// Look up the mask for `parental_level` (1..=8) and
+    /// `title_set` (0 = VMG, 1..=nts = title set).
+    pub fn mask(&self, parental_level: u8, title_set: u8) -> Option<u16> {
+        if !(1..=8).contains(&parental_level) {
+            return None;
+        }
+        let level_idx = usize::from(parental_level - 1);
+        self.masks[level_idx].get(usize::from(title_set)).copied()
+    }
+}
+
+/// Parsed `VMG_PTL_MAIT` (parental management country/level table).
+///
+/// `mpucoder-ifo_vmg.html` documents one country-keyed entry per
+/// supported region — each entry pointing at a sub-table of 8
+/// parental-level mask arrays of length `nts + 1`. Strict literal
+/// reading of the entry layout (8 cells of 16 bits each):
+/// `country_code (u16) | reserved (u16) | ptl_mait_offset (u16) |
+/// reserved (u16)`. The 16-bit offset bounds the per-country
+/// sub-table to within the first 64 KB of `VMG_PTL_MAIT`, which is
+/// the natural ceiling on DVD-Video discs (99 title sets × 16 bytes
+/// per level × 8 levels = 12.7 KB per country, with up to ~100
+/// countries fitting under the bound).
+#[derive(Debug, Clone)]
+pub struct VmgPtlMait {
+    /// Number of countries (each gets one sub-table).
+    pub number_of_countries: u16,
+    /// Number of title sets (the body sub-tables carry `Nts + 1`
+    /// masks per level — index 0 is the VMG-side mask).
+    pub number_of_title_sets: u16,
+    /// Last byte address of the last `PTL_MAIT` body, relative to
+    /// the start of `VMG_PTL_MAIT`.
+    pub end_address: u32,
+    /// One sub-table per country.
+    pub entries: Vec<PtlMait>,
+}
+
+impl VmgPtlMait {
+    /// Parse `VMG_PTL_MAIT` from a buffer that starts at the
+    /// table's first byte.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 8 {
+            return Err(Error::InvalidUdf("VMG_PTL_MAIT: header < 8 bytes"));
+        }
+        let number_of_countries = read_u16(buf, 0)?;
+        let number_of_title_sets = read_u16(buf, 2)?;
+        let end_address = read_u32(buf, 4)?;
+
+        let nts = usize::from(number_of_title_sets);
+        let masks_per_level = nts
+            .checked_add(1)
+            .ok_or(Error::InvalidUdf("VMG_PTL_MAIT: nts + 1 overflow"))?;
+        let level_block_bytes = masks_per_level
+            .checked_mul(2)
+            .ok_or(Error::InvalidUdf("VMG_PTL_MAIT: level block size overflow"))?;
+        let body_bytes = level_block_bytes
+            .checked_mul(8)
+            .ok_or(Error::InvalidUdf("VMG_PTL_MAIT: body size overflow"))?;
+
+        let count = usize::from(number_of_countries);
+        // Country entries are 8 bytes each starting at offset 8.
+        let header_len = 8usize
+            .checked_add(
+                count
+                    .checked_mul(8)
+                    .ok_or(Error::InvalidUdf("VMG_PTL_MAIT: country list × 8 overflow"))?,
+            )
+            .ok_or(Error::InvalidUdf("VMG_PTL_MAIT: header length overflow"))?;
+        if buf.len() < header_len {
+            return Err(Error::InvalidUdf("VMG_PTL_MAIT: country list past end"));
+        }
+
+        let mut entries = Vec::with_capacity(count);
+        for i in 0..count {
+            let entry_base = 8 + i * 8;
+            let country_code = read_u16(buf, entry_base)?;
+            // bytes 2..4 reserved
+            let body_offset = usize::from(read_u16(buf, entry_base + 4)?);
+            // bytes 6..8 reserved
+            let body_end = body_offset
+                .checked_add(body_bytes)
+                .ok_or(Error::InvalidUdf("VMG_PTL_MAIT: country body end overflow"))?;
+            if body_end > buf.len() {
+                return Err(Error::InvalidUdf(
+                    "VMG_PTL_MAIT: country body past buffer end",
+                ));
+            }
+
+            // The body stores level 8 first at body_offset, then level 7
+            // at body_offset + level_block_bytes, … level 1 at
+            // body_offset + 7 × level_block_bytes. Surface them in
+            // ascending order so `masks[0]` = level 1.
+            let mut masks: [Vec<u16>; 8] = Default::default();
+            for level_storage_idx in 0..8 {
+                // Storage idx 0 = level 8; storage idx 7 = level 1.
+                let level_value = 8 - level_storage_idx; // 8..=1
+                let block_start = body_offset + level_storage_idx * level_block_bytes;
+                let mut row = Vec::with_capacity(masks_per_level);
+                for slot in 0..masks_per_level {
+                    row.push(read_u16(buf, block_start + slot * 2)?);
+                }
+                masks[level_value - 1] = row;
+            }
+
+            entries.push(PtlMait {
+                country_code,
+                masks,
+            });
+        }
+
+        Ok(Self {
+            number_of_countries,
+            number_of_title_sets,
+            end_address,
+            entries,
+        })
+    }
+
+    /// Look up the country-keyed sub-table for the given 16-bit
+    /// country code.
+    pub fn country(&self, country_code: u16) -> Option<&PtlMait> {
+        self.entries.iter().find(|e| e.country_code == country_code)
+    }
+}
+
+// ------------------------------------------------------------------
 // Tests
 // ------------------------------------------------------------------
 
@@ -3985,5 +4291,230 @@ mod tests {
         assert!(mat.title_attributes.video.is_none());
         assert!(mat.title_attributes.audio_streams.is_empty());
         assert!(mat.title_attributes.multichannel_extension.is_empty());
+    }
+
+    // -------------------------------------------------------------
+    // VMG_VTS_ATRT
+    // -------------------------------------------------------------
+
+    /// Build a synthetic `VMG_VTS_ATRT` with `entries.len()` entries,
+    /// each carrying the supplied `(vts_category, blob)` pair.
+    fn build_vts_atrt(entries: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        // Header is 8 bytes + 4 bytes per offset entry.
+        let header = 8 + 4 * entries.len();
+        // Each entry body = 8-byte header + blob.
+        let mut offsets = Vec::with_capacity(entries.len());
+        let mut bodies = Vec::with_capacity(entries.len());
+        let mut cursor = header;
+        for (cat, blob) in entries {
+            offsets.push(cursor as u32);
+            let entry_total = 8 + blob.len();
+            let entry_ea = (entry_total - 1) as u32;
+            let mut e = Vec::with_capacity(entry_total);
+            e.extend_from_slice(&entry_ea.to_be_bytes());
+            e.extend_from_slice(&cat.to_be_bytes());
+            e.extend_from_slice(blob);
+            bodies.push(e);
+            cursor += entry_total;
+        }
+        let total = cursor;
+        let mut out = vec![0u8; total];
+        out[0..2].copy_from_slice(&(entries.len() as u16).to_be_bytes());
+        // bytes 2..4 reserved
+        out[4..8].copy_from_slice(&((total - 1) as u32).to_be_bytes());
+        for (i, off) in offsets.iter().enumerate() {
+            out[8 + i * 4..8 + (i + 1) * 4].copy_from_slice(&off.to_be_bytes());
+        }
+        for (i, body) in bodies.iter().enumerate() {
+            let start = offsets[i] as usize;
+            out[start..start + body.len()].copy_from_slice(body);
+        }
+        out
+    }
+
+    #[test]
+    fn vts_atrt_walks_two_entries() {
+        let blob_a = (0..0x300u32).map(|i| (i & 0xFF) as u8).collect::<Vec<_>>();
+        let blob_b = vec![0x55u8; 0x300];
+        let buf = build_vts_atrt(&[(0, blob_a.clone()), (1, blob_b.clone())]);
+        let atrt = VmgVtsAtrt::parse(&buf).unwrap();
+        assert_eq!(atrt.number_of_title_sets, 2);
+        assert_eq!(atrt.entries.len(), 2);
+
+        let e1 = atrt.entry(1).unwrap();
+        assert_eq!(e1.vts_number, 1);
+        assert_eq!(e1.vts_category, 0);
+        assert_eq!(e1.attributes_blob, blob_a);
+
+        let e2 = atrt.entry(2).unwrap();
+        assert_eq!(e2.vts_number, 2);
+        assert_eq!(e2.vts_category, 1); // Karaoke flag
+        assert_eq!(e2.attributes_blob, blob_b);
+
+        assert!(atrt.entry(0).is_none());
+        assert!(atrt.entry(3).is_none());
+    }
+
+    #[test]
+    fn vts_atrt_rejects_short_header() {
+        let buf = vec![0u8; 4];
+        assert!(VmgVtsAtrt::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn vts_atrt_rejects_offset_list_past_end() {
+        let mut buf = vec![0u8; 8];
+        buf[0..2].copy_from_slice(&5u16.to_be_bytes()); // claims 5 entries
+                                                        // but the offset list (20 bytes) doesn't fit in the 8-byte buffer
+        assert!(VmgVtsAtrt::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn vts_atrt_rejects_entry_ea_overlapping_next_entry() {
+        // Build a valid 2-entry table, then corrupt entry 1's EA so it
+        // claims more bytes than entry 2's offset allows.
+        let blob = vec![0xAAu8; 0x100];
+        let mut buf = build_vts_atrt(&[(0, blob.clone()), (0, blob.clone())]);
+        // Entry 1 is at offset = read_u32(buf, 8). Bloat its EA field
+        // (entry-local offset 0..4) so the entry would extend past
+        // entry 2's start.
+        let e1_off = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]) as usize;
+        buf[e1_off..e1_off + 4].copy_from_slice(&0xFFFFu32.to_be_bytes());
+        assert!(VmgVtsAtrt::parse(&buf).is_err());
+    }
+
+    // -------------------------------------------------------------
+    // VMG_PTL_MAIT
+    // -------------------------------------------------------------
+
+    /// Build a synthetic `VMG_PTL_MAIT` with `entries.len()` countries
+    /// and `nts` title sets. Each entry's `masks` are passed as
+    /// `[level1..level8]` arrays of `nts + 1` u16s — they're stored on
+    /// disc in descending level order (level 8 first).
+    fn build_ptl_mait(
+        country_codes: &[u16],
+        nts: u16,
+        masks_per_country: &[[Vec<u16>; 8]],
+    ) -> Vec<u8> {
+        assert_eq!(country_codes.len(), masks_per_country.len());
+        let header_len = 8 + 8 * country_codes.len();
+        let level_block_bytes = (usize::from(nts) + 1) * 2;
+        let body_bytes = level_block_bytes * 8;
+        let total = header_len + body_bytes * country_codes.len();
+
+        let mut buf = vec![0u8; total];
+        buf[0..2].copy_from_slice(&(country_codes.len() as u16).to_be_bytes());
+        buf[2..4].copy_from_slice(&nts.to_be_bytes());
+        buf[4..8].copy_from_slice(&((total - 1) as u32).to_be_bytes());
+
+        for (i, (&cc, masks)) in country_codes
+            .iter()
+            .zip(masks_per_country.iter())
+            .enumerate()
+        {
+            let body_offset = header_len + i * body_bytes;
+            // Entry: cc(u16) | reserved(u16) | offset(u16) | reserved(u16)
+            let entry_base = 8 + i * 8;
+            buf[entry_base..entry_base + 2].copy_from_slice(&cc.to_be_bytes());
+            // bytes 2..4 reserved
+            buf[entry_base + 4..entry_base + 6]
+                .copy_from_slice(&(body_offset as u16).to_be_bytes());
+            // bytes 6..8 reserved
+            // Body: 8 stacked blocks, level 8 first.
+            for storage_idx in 0..8usize {
+                let level_value = 8 - storage_idx; // 8..=1
+                let row = &masks[level_value - 1]; // user passed ascending
+                assert_eq!(row.len(), usize::from(nts) + 1);
+                let block_start = body_offset + storage_idx * level_block_bytes;
+                for (slot, &m) in row.iter().enumerate() {
+                    buf[block_start + slot * 2..block_start + slot * 2 + 2]
+                        .copy_from_slice(&m.to_be_bytes());
+                }
+            }
+        }
+        buf
+    }
+
+    #[test]
+    fn ptl_mait_walks_two_countries() {
+        // 2 countries × nts=2 (so masks_per_level = 3: VMG + 2 VTSs).
+        let mut country_a_masks: [Vec<u16>; 8] = Default::default();
+        let mut country_b_masks: [Vec<u16>; 8] = Default::default();
+        for lvl_idx in 0..8 {
+            // level 1..=8 stored ascending in the user-facing layout.
+            let lvl = (lvl_idx + 1) as u16;
+            country_a_masks[lvl_idx] = vec![lvl, lvl + 0x10, lvl + 0x20];
+            country_b_masks[lvl_idx] =
+                vec![0xF000 | lvl, 0xF000 | (lvl + 0x10), 0xF000 | (lvl + 0x20)];
+        }
+        // Country code 'us' = 0x7553; 'jp' = 0x6A70.
+        let buf = build_ptl_mait(
+            &[0x7553, 0x6A70],
+            2,
+            &[country_a_masks.clone(), country_b_masks.clone()],
+        );
+
+        let pm = VmgPtlMait::parse(&buf).unwrap();
+        assert_eq!(pm.number_of_countries, 2);
+        assert_eq!(pm.number_of_title_sets, 2);
+        assert_eq!(pm.entries.len(), 2);
+
+        let us = pm.country(0x7553).expect("US country present");
+        // Level 1 mask for VMG (title_set=0) was 1.
+        assert_eq!(us.mask(1, 0), Some(1));
+        // Level 1 mask for VTS 1 was 0x11.
+        assert_eq!(us.mask(1, 1), Some(0x11));
+        // Level 1 mask for VTS 2 was 0x21.
+        assert_eq!(us.mask(1, 2), Some(0x21));
+        // Level 8 mask for VTS 2 was 8 + 0x20 = 0x28.
+        assert_eq!(us.mask(8, 2), Some(0x28));
+
+        let jp = pm.country(0x6A70).unwrap();
+        assert_eq!(jp.mask(1, 0), Some(0xF001));
+        assert_eq!(jp.mask(8, 2), Some(0xF028));
+
+        assert!(pm.country(0x4242).is_none());
+        // Out-of-range parental level.
+        assert_eq!(us.mask(0, 0), None);
+        assert_eq!(us.mask(9, 0), None);
+        // Out-of-range title-set index.
+        assert_eq!(us.mask(1, 3), None);
+    }
+
+    #[test]
+    fn ptl_mait_zero_countries_decodes_empty() {
+        let buf = build_ptl_mait(&[], 2, &[]);
+        let pm = VmgPtlMait::parse(&buf).unwrap();
+        assert_eq!(pm.number_of_countries, 0);
+        assert!(pm.entries.is_empty());
+    }
+
+    #[test]
+    fn ptl_mait_rejects_short_header() {
+        let buf = vec![0u8; 4];
+        assert!(VmgPtlMait::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn ptl_mait_rejects_country_list_past_end() {
+        let mut buf = vec![0u8; 8];
+        buf[0..2].copy_from_slice(&5u16.to_be_bytes()); // 5 countries
+        buf[2..4].copy_from_slice(&2u16.to_be_bytes());
+        // Truncated — no room for 5 × 8-byte entries after the header.
+        assert!(VmgPtlMait::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn ptl_mait_rejects_body_offset_past_buffer() {
+        // 1 country, nts=2 → body needs 8 × 6 = 48 bytes. Header
+        // (8) + entry (8) = 16. Total valid buffer would be 16 + 48 = 64
+        // bytes; truncate to 16 to trip the bound check.
+        let mut buf = vec![0u8; 16];
+        buf[0..2].copy_from_slice(&1u16.to_be_bytes());
+        buf[2..4].copy_from_slice(&2u16.to_be_bytes());
+        buf[4..8].copy_from_slice(&63u32.to_be_bytes());
+        buf[8..10].copy_from_slice(&0x7553u16.to_be_bytes());
+        buf[12..14].copy_from_slice(&16u16.to_be_bytes()); // body starts past buf end
+        assert!(VmgPtlMait::parse(&buf).is_err());
     }
 }

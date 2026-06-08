@@ -34,7 +34,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::ifo::{DvdTitleEntry, TtSrpt, VmgIfo, VtsIfo};
+use crate::ifo::{DvdTitleEntry, TtSrpt, VmgIfo, VmgPtlMait, VmgVtsAtrt, VtsIfo};
 use crate::iso9660::Iso9660Volume;
 use crate::udf::{UdfFile, UdfVolume};
 
@@ -322,6 +322,68 @@ impl DvdDisc {
         let mat = VmgIfo::parse(&mat_buf)?;
         let tt_buf = read_sector_range(reader, f.lba + mat.tt_srpt_sector, 1)?;
         TtSrpt::parse(&tt_buf)
+    }
+
+    /// Read `VIDEO_TS.IFO`'s [`VmgVtsAtrt`] — the per-VTS attribute
+    /// table that mirrors each VTS IFO's attribute block (`0x100..`)
+    /// onto the VMG side, so a player can answer per-VTS attribute
+    /// queries without opening every `VTS_xx_0.IFO` individually.
+    ///
+    /// Returns `Ok(None)` when the MAT's `vts_atrt_sector` is zero
+    /// (the spec allows the table to be elided when no VTSs are
+    /// authored — extremely rare in practice).
+    pub fn parse_vmg_vts_atrt<R: Read + Seek>(&self, reader: &mut R) -> Result<Option<VmgVtsAtrt>> {
+        let f = self
+            .vmgi()
+            .ok_or(Error::NotDvdVideo("VIDEO_TS.IFO absent"))?;
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = VmgIfo::parse(&mat_buf)?;
+        if mat.vts_atrt_sector == 0 {
+            return Ok(None);
+        }
+        // VTS_ATRT can span multiple sectors on discs with many VTSs
+        // (99 entries × ~0x308 bytes ≈ 76 KB ≈ 38 sectors). Bound the
+        // read at the IFO file's tail to avoid pulling past EOF.
+        let max_sectors = ((mat.last_sector_ifo + 1).saturating_sub(mat.vts_atrt_sector)).max(1);
+        let buf = read_sector_range(reader, f.lba + mat.vts_atrt_sector, max_sectors)?;
+        VmgVtsAtrt::parse(&buf).map(Some)
+    }
+
+    /// Read `VIDEO_TS.IFO`'s [`VmgPtlMait`] — the parental management
+    /// table that lists, per country, the 16-bit allow-mask of each
+    /// title set at each of the 8 parental levels.
+    ///
+    /// Returns `Ok(None)` when the MAT's `ptl_mait_sector` is zero
+    /// (no parental management on this disc — common on unrated /
+    /// region-free authoring).
+    pub fn parse_vmg_ptl_mait<R: Read + Seek>(&self, reader: &mut R) -> Result<Option<VmgPtlMait>> {
+        let f = self
+            .vmgi()
+            .ok_or(Error::NotDvdVideo("VIDEO_TS.IFO absent"))?;
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = VmgIfo::parse(&mat_buf)?;
+        if mat.ptl_mait_sector == 0 {
+            return Ok(None);
+        }
+        // PTL_MAIT is bounded similarly to VTS_ATRT — sized by
+        // (num_countries × 8 + num_title_sets-derived body) but
+        // capped by the IFO file's tail. Read up to the next-table
+        // boundary so we don't pull garbage from a different table.
+        let next_table_sector = [
+            mat.vts_atrt_sector,
+            mat.txtdt_mg_sector,
+            mat.vmgm_c_adt_sector,
+            mat.vmgm_vobu_admap_sector,
+            mat.last_sector_ifo + 1,
+        ]
+        .iter()
+        .copied()
+        .filter(|s| *s > mat.ptl_mait_sector)
+        .min()
+        .unwrap_or(mat.last_sector_ifo + 1);
+        let max_sectors = next_table_sector.saturating_sub(mat.ptl_mait_sector).max(1);
+        let buf = read_sector_range(reader, f.lba + mat.ptl_mait_sector, max_sectors)?;
+        VmgPtlMait::parse(&buf).map(Some)
     }
 }
 
