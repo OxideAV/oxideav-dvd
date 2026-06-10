@@ -34,7 +34,9 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::ifo::{DvdTitleEntry, PgciUt, TtSrpt, VmgIfo, VmgPtlMait, VmgVtsAtrt, VtsIfo};
+use crate::ifo::{
+    DvdTitleEntry, PgciUt, TtSrpt, VmgIfo, VmgPtlMait, VmgVtsAtrt, VobuAdmap, VtsCAdt, VtsIfo,
+};
 use crate::iso9660::Iso9660Volume;
 use crate::udf::{UdfFile, UdfVolume};
 
@@ -475,6 +477,165 @@ impl DvdDisc {
         let buf = read_sector_range(reader, f.lba + mat.vtsm_pgci_ut_sector, max_sectors)?;
         PgciUt::parse(&buf).map(Some)
     }
+
+    /// Read `VIDEO_TS.IFO`'s [`VtsCAdt`] for the VMG menu — the
+    /// `VMGM_C_ADT` cell-address table that maps each `(VOBidn,
+    /// CELLidn)` pair to its `[start_sector, end_sector]` range inside
+    /// the VMG menu VOB (`VIDEO_TS.VOB`).
+    ///
+    /// Per `docs/container/dvd/application/mpucoder-ifo.html` §c_adt —
+    /// the `#c_adt` anchor documents `VMGM_C_ADT`, `VTSM_C_ADT`, and
+    /// `VTS_C_ADT` under one heading because all three share the wire
+    /// format (16-bit number-of-VOB-IDs + 32-bit end-address header
+    /// followed by 12-byte entries), so [`VtsCAdt::parse`] decodes the
+    /// VMG menu copy unchanged.
+    ///
+    /// Returns `Ok(None)` when the MAT's `vmgm_c_adt_sector` is zero
+    /// (no VMG menu VOB authored on this disc).
+    pub fn parse_vmgm_c_adt<R: Read + Seek>(&self, reader: &mut R) -> Result<Option<VtsCAdt>> {
+        let f = self
+            .vmgi()
+            .ok_or(Error::NotDvdVideo("VIDEO_TS.IFO absent"))?;
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = VmgIfo::parse(&mat_buf)?;
+        if mat.vmgm_c_adt_sector == 0 {
+            return Ok(None);
+        }
+        // Bound the read at the next non-zero VMG table boundary so a
+        // malformed `end_address` can't pull bytes from an unrelated
+        // table.
+        let next_table_sector = [mat.vmgm_vobu_admap_sector, mat.last_sector_ifo + 1]
+            .iter()
+            .copied()
+            .filter(|s| *s > mat.vmgm_c_adt_sector)
+            .min()
+            .unwrap_or(mat.last_sector_ifo + 1);
+        let max_sectors = next_table_sector
+            .saturating_sub(mat.vmgm_c_adt_sector)
+            .max(1);
+        let buf = read_sector_range(reader, f.lba + mat.vmgm_c_adt_sector, max_sectors)?;
+        VtsCAdt::parse(&buf).map(Some)
+    }
+
+    /// Read `VIDEO_TS.IFO`'s [`VobuAdmap`] for the VMG menu — the
+    /// `VMGM_VOBU_ADMAP` absolute-sector list covering every VOBU in
+    /// the VMG menu VOB.
+    ///
+    /// Per `docs/container/dvd/application/mpucoder-ifo.html` §vam —
+    /// the `#vam` anchor documents `VMGM_VOBU_ADMAP`,
+    /// `VTSM_VOBU_ADMAP`, and `VTS_VOBU_ADMAP` under one heading
+    /// because all three share the wire format (32-bit end-address
+    /// header followed by 4-byte VOB-relative sector words), so
+    /// [`VobuAdmap::parse`] decodes the VMG menu copy unchanged.
+    ///
+    /// Returns `Ok(None)` when the MAT's `vmgm_vobu_admap_sector` is
+    /// zero (no VMG menu VOB authored on this disc).
+    pub fn parse_vmgm_vobu_admap<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+    ) -> Result<Option<VobuAdmap>> {
+        let f = self
+            .vmgi()
+            .ok_or(Error::NotDvdVideo("VIDEO_TS.IFO absent"))?;
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = VmgIfo::parse(&mat_buf)?;
+        if mat.vmgm_vobu_admap_sector == 0 {
+            return Ok(None);
+        }
+        // VMGM_VOBU_ADMAP is the last VMG table; bound at the IFO
+        // file's tail.
+        let max_sectors = (mat.last_sector_ifo + 1)
+            .saturating_sub(mat.vmgm_vobu_admap_sector)
+            .max(1);
+        let buf = read_sector_range(reader, f.lba + mat.vmgm_vobu_admap_sector, max_sectors)?;
+        VobuAdmap::parse(&buf).map(Some)
+    }
+
+    /// Read `VTS_xx_0.IFO`'s [`VtsCAdt`] for the per-title-set menu —
+    /// the `VTSM_C_ADT` cell-address table that maps each `(VOBidn,
+    /// CELLidn)` pair to its `[start_sector, end_sector]` range inside
+    /// the VTS menu VOB (`VTS_xx_0.VOB`).
+    ///
+    /// Per `docs/container/dvd/application/mpucoder-ifo.html` §c_adt
+    /// (same shared heading as the VMG menu copy; see
+    /// [`Self::parse_vmgm_c_adt`]).
+    ///
+    /// Returns `Ok(None)` when the VTSI_MAT's `vtsm_c_adt_sector` is
+    /// zero (no per-title-set menu VOB authored on this title set).
+    pub fn parse_vtsm_c_adt<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        ts_index: u8,
+    ) -> Result<Option<VtsCAdt>> {
+        let f = self
+            .vtsi(ts_index)
+            .ok_or(Error::NotDvdVideo("VTS_xx_0.IFO absent"))?;
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = crate::ifo::VtsiMat::parse(&mat_buf)?;
+        if mat.vtsm_c_adt_sector == 0 {
+            return Ok(None);
+        }
+        // Bound at the next non-zero VTS table boundary after the
+        // menu C_ADT so a malformed length field is harmless.
+        let next_table_sector = [
+            mat.vtsm_vobu_admap_sector,
+            mat.vts_c_adt_sector,
+            mat.vts_vobu_admap_sector,
+            mat.last_sector_ifo + 1,
+        ]
+        .iter()
+        .copied()
+        .filter(|s| *s > mat.vtsm_c_adt_sector)
+        .min()
+        .unwrap_or(mat.last_sector_ifo + 1);
+        let max_sectors = next_table_sector
+            .saturating_sub(mat.vtsm_c_adt_sector)
+            .max(1);
+        let buf = read_sector_range(reader, f.lba + mat.vtsm_c_adt_sector, max_sectors)?;
+        VtsCAdt::parse(&buf).map(Some)
+    }
+
+    /// Read `VTS_xx_0.IFO`'s [`VobuAdmap`] for the per-title-set menu —
+    /// the `VTSM_VOBU_ADMAP` absolute-sector list covering every VOBU
+    /// in the VTS menu VOB.
+    ///
+    /// Per `docs/container/dvd/application/mpucoder-ifo.html` §vam
+    /// (same shared heading as the VMG menu copy; see
+    /// [`Self::parse_vmgm_vobu_admap`]).
+    ///
+    /// Returns `Ok(None)` when the VTSI_MAT's `vtsm_vobu_admap_sector`
+    /// is zero (no per-title-set menu VOB authored on this title set).
+    pub fn parse_vtsm_vobu_admap<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        ts_index: u8,
+    ) -> Result<Option<VobuAdmap>> {
+        let f = self
+            .vtsi(ts_index)
+            .ok_or(Error::NotDvdVideo("VTS_xx_0.IFO absent"))?;
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = crate::ifo::VtsiMat::parse(&mat_buf)?;
+        if mat.vtsm_vobu_admap_sector == 0 {
+            return Ok(None);
+        }
+        // Bound at the next non-zero VTS table boundary after the
+        // menu VOBU_ADMAP so a malformed length field is harmless.
+        let next_table_sector = [
+            mat.vts_c_adt_sector,
+            mat.vts_vobu_admap_sector,
+            mat.last_sector_ifo + 1,
+        ]
+        .iter()
+        .copied()
+        .filter(|s| *s > mat.vtsm_vobu_admap_sector)
+        .min()
+        .unwrap_or(mat.last_sector_ifo + 1);
+        let max_sectors = next_table_sector
+            .saturating_sub(mat.vtsm_vobu_admap_sector)
+            .max(1);
+        let buf = read_sector_range(reader, f.lba + mat.vtsm_vobu_admap_sector, max_sectors)?;
+        VobuAdmap::parse(&buf).map(Some)
+    }
 }
 
 /// Read `count` consecutive 2048-byte logical sectors starting at
@@ -682,5 +843,138 @@ mod tests {
         let disc = DvdDisc::classify("EMPTY_AUDIO_TS".to_string(), &video_ts, &[]).unwrap();
         assert!(disc.audio_ts_files.is_empty());
         assert_eq!(disc.title_set_count, 1);
+    }
+
+    // ---- menu C_ADT / VOBU_ADMAP reader helpers --------------------
+    //
+    // The body decoders are exercised in `ifo.rs`; these tests pin the
+    // sector-pointer plumbing of the four `DvdDisc::parse_*` helpers
+    // (zero-pointer → None, non-zero → followed + parsed).
+
+    use crate::ifo::{DVD_SECTOR, VMG_MAGIC, VTS_MAGIC};
+    use std::io::Cursor;
+
+    /// A C_ADT body per `mpucoder-ifo.html` §c_adt: 2-byte
+    /// number-of-VOB-IDs + 2-byte reserved + 4-byte end_address, then
+    /// 12-byte entries (VOBidn:2 / CELLidn:1 / reserved:1 /
+    /// start_sector:4 / end_sector:4). One entry here.
+    fn synth_c_adt() -> Vec<u8> {
+        let mut b = vec![0u8; DVD_SECTOR];
+        b[0..2].copy_from_slice(&1u16.to_be_bytes()); // number of VOB IDs
+        b[4..8].copy_from_slice(&19u32.to_be_bytes()); // end_address = 8 + 12 - 1
+                                                       // entry 0
+        b[8..10].copy_from_slice(&7u16.to_be_bytes()); // VOBidn
+        b[10] = 3; // CELLidn
+        b[12..16].copy_from_slice(&100u32.to_be_bytes()); // start sector
+        b[16..20].copy_from_slice(&199u32.to_be_bytes()); // end sector
+        b
+    }
+
+    /// A VOBU_ADMAP body per `mpucoder-ifo.html` §vam: 4-byte
+    /// end_address then 4-byte VOB-relative sector words. Two entries.
+    fn synth_vobu_admap() -> Vec<u8> {
+        let mut b = vec![0u8; DVD_SECTOR];
+        b[0..4].copy_from_slice(&11u32.to_be_bytes()); // end_address = 4 + 2*4 - 1
+        b[4..8].copy_from_slice(&0u32.to_be_bytes()); // VOBU 1 @ sector 0
+        b[8..12].copy_from_slice(&50u32.to_be_bytes()); // VOBU 2 @ sector 50
+        b
+    }
+
+    /// Build a single-VMGI / single-VTSI disc image laid out as:
+    /// VMGI MAT @ lba 0, VMGM_C_ADT @ 1, VMGM_VOBU_ADMAP @ 2,
+    /// VTSI MAT @ 4, VTSM_C_ADT @ 5, VTSM_VOBU_ADMAP @ 6. Zero
+    /// pointers are written when `populate` is false to drive the
+    /// `None` paths.
+    fn synth_disc(populate: bool) -> (DvdDisc, Cursor<Vec<u8>>) {
+        let mut image = vec![0u8; DVD_SECTOR * 8];
+
+        // VMGI MAT @ sector 0.
+        let vmgi = &mut image[0..DVD_SECTOR];
+        vmgi[0..12].copy_from_slice(VMG_MAGIC);
+        vmgi[0x1C..0x20].copy_from_slice(&3u32.to_be_bytes()); // last_sector_ifo
+        if populate {
+            vmgi[0xD8..0xDC].copy_from_slice(&1u32.to_be_bytes()); // VMGM_C_ADT
+            vmgi[0xDC..0xE0].copy_from_slice(&2u32.to_be_bytes()); // VMGM_VOBU_ADMAP
+        }
+        image[DVD_SECTOR..2 * DVD_SECTOR].copy_from_slice(&synth_c_adt());
+        image[2 * DVD_SECTOR..3 * DVD_SECTOR].copy_from_slice(&synth_vobu_admap());
+
+        // VTSI MAT @ sector 4.
+        let vtsi = &mut image[4 * DVD_SECTOR..5 * DVD_SECTOR];
+        vtsi[0..12].copy_from_slice(VTS_MAGIC);
+        vtsi[0x1C..0x20].copy_from_slice(&3u32.to_be_bytes()); // last_sector_ifo
+        if populate {
+            vtsi[0xD8..0xDC].copy_from_slice(&1u32.to_be_bytes()); // VTSM_C_ADT
+            vtsi[0xDC..0xE0].copy_from_slice(&2u32.to_be_bytes()); // VTSM_VOBU_ADMAP
+        }
+        image[5 * DVD_SECTOR..6 * DVD_SECTOR].copy_from_slice(&synth_c_adt());
+        image[6 * DVD_SECTOR..7 * DVD_SECTOR].copy_from_slice(&synth_vobu_admap());
+
+        let disc = DvdDisc {
+            volume_id: "SYNTH".to_string(),
+            title_set_count: 1,
+            video_ts_files: vec![
+                DvdFile {
+                    kind: DvdFileKind::Vmgi,
+                    name: "VIDEO_TS.IFO".to_string(),
+                    lba: 0,
+                    size: DVD_SECTOR as u64,
+                    title_set: 0,
+                    vob_index: 0,
+                },
+                DvdFile {
+                    kind: DvdFileKind::Vtsi(1),
+                    name: "VTS_01_0.IFO".to_string(),
+                    lba: 4,
+                    size: DVD_SECTOR as u64,
+                    title_set: 1,
+                    vob_index: 0,
+                },
+            ],
+            audio_ts_files: Vec::new(),
+        };
+        (disc, Cursor::new(image))
+    }
+
+    #[test]
+    fn parse_vmgm_c_adt_populated() {
+        let (disc, mut r) = synth_disc(true);
+        let c_adt = disc.parse_vmgm_c_adt(&mut r).unwrap().unwrap();
+        assert_eq!(c_adt.number_of_vob_ids, 1);
+        assert_eq!(c_adt.entries.len(), 1);
+        assert_eq!(c_adt.lookup(7, 3), Some((100, 199)));
+    }
+
+    #[test]
+    fn parse_vmgm_vobu_admap_populated() {
+        let (disc, mut r) = synth_disc(true);
+        let admap = disc.parse_vmgm_vobu_admap(&mut r).unwrap().unwrap();
+        assert_eq!(admap.vobu_count(), 2);
+        assert_eq!(admap.vobu_start_sector(2), Some(50));
+    }
+
+    #[test]
+    fn parse_vtsm_c_adt_populated() {
+        let (disc, mut r) = synth_disc(true);
+        let c_adt = disc.parse_vtsm_c_adt(&mut r, 1).unwrap().unwrap();
+        assert_eq!(c_adt.entries.len(), 1);
+        assert_eq!(c_adt.lookup(7, 3), Some((100, 199)));
+    }
+
+    #[test]
+    fn parse_vtsm_vobu_admap_populated() {
+        let (disc, mut r) = synth_disc(true);
+        let admap = disc.parse_vtsm_vobu_admap(&mut r, 1).unwrap().unwrap();
+        assert_eq!(admap.vobu_count(), 2);
+        assert_eq!(admap.vobu_start_sector(1), Some(0));
+    }
+
+    #[test]
+    fn menu_tables_none_when_pointer_zero() {
+        let (disc, mut r) = synth_disc(false);
+        assert!(disc.parse_vmgm_c_adt(&mut r).unwrap().is_none());
+        assert!(disc.parse_vmgm_vobu_admap(&mut r).unwrap().is_none());
+        assert!(disc.parse_vtsm_c_adt(&mut r, 1).unwrap().is_none());
+        assert!(disc.parse_vtsm_vobu_admap(&mut r, 1).unwrap().is_none());
     }
 }

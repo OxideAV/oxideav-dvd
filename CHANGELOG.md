@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Menu `C_ADT` + `VOBU_ADMAP` reader helpers on `DvdDisc`.** The
+  VMGI / VTSI MATs carry sector pointers to the menu-side cell-address
+  tables (`vmgm_c_adt_sector` / `vtsm_c_adt_sector`) and menu VOBU
+  address maps (`vmgm_vobu_admap_sector` / `vtsm_vobu_admap_sector`),
+  but no high-level reader followed them. The body decoders already
+  existed — `docs/container/dvd/application/mpucoder-ifo.html` documents
+  `VMGM_C_ADT` / `VTSM_C_ADT` / `VTS_C_ADT` under one shared `#c_adt`
+  heading (and the three VOBU_ADMAP variants under `#vam`) because all
+  share the wire format, so `VtsCAdt::parse` / `VobuAdmap::parse`
+  decode the menu copies unchanged. This round wires the four
+  high-level reader helpers that read the appropriate MAT, follow the
+  sector pointer, and parse the body:
+  - `DvdDisc::parse_vmgm_c_adt(reader)` — VMG menu cell-address table
+    (`VIDEO_TS.VOB` cells).
+  - `DvdDisc::parse_vmgm_vobu_admap(reader)` — VMG menu VOBU sector
+    list.
+  - `DvdDisc::parse_vtsm_c_adt(reader, ts_index)` — per-title-set menu
+    cell-address table (`VTS_xx_0.VOB` cells).
+  - `DvdDisc::parse_vtsm_vobu_admap(reader, ts_index)` — per-title-set
+    menu VOBU sector list.
+  Each returns `Ok(None)` when the corresponding MAT sector pointer is
+  zero (no menu VOB authored). The reads are bounded at the next
+  non-zero table sector in the MAT so a malformed `end_address` length
+  field can't pull bytes from an unrelated table — the same
+  bounded-read discipline the `parse_vmgm_pgci_ut` / `parse_vtsm_pgci_ut`
+  helpers use. Five new in-module tests cover the populated happy path
+  for all four helpers (synthetic VMGI/VTSI disc image → cell lookup +
+  VOBU sector-count/start round-trip) and the four zero-pointer `None`
+  paths. **308 lib tests** (was 303) under default features; **318 lib
+  tests** (was 313) under `--all-features`.
+
 - **`VMGM_PGCI_UT` + `VTSM_PGCI_UT` decoders (menu PGCI Unit Table).**
   The MAT records the sector pointers `vmgm_pgci_ut_sector` and
   `vtsm_pgci_ut_sector` for the menu PGC tables on both the VMG and

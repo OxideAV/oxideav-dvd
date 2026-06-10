@@ -68,6 +68,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | TT_SRPT (title list) + VTS_PTT_SRPT (chapter list) | landed |
 | VTS_PGCI + PGC (program chains + cells + colour-LUT + command table) | landed |
 | VTS_C_ADT (cell-to-VOB-sector lookup) | landed |
+| VMGM_C_ADT / VTSM_C_ADT + VMGM_VOBU_ADMAP / VTSM_VOBU_ADMAP (menu cell-address tables + menu VOBU sector maps via `DvdDisc::parse_vmgm_c_adt` / `parse_vtsm_c_adt` / `parse_vmgm_vobu_admap` / `parse_vtsm_vobu_admap`) | landed |
 | VTS_VOBU_ADMAP (per-VOBU sector list + partition lookup) | landed |
 | VTS_TMAPTI (per-PGC time map + seconds → VOBU sector seek) | landed |
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed (Phase 3a) |
