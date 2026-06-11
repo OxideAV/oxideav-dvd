@@ -35,7 +35,7 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::ifo::{
-    DvdTitleEntry, PgciUt, TtSrpt, VmgIfo, VmgPtlMait, VmgVtsAtrt, VobuAdmap, VtsCAdt, VtsIfo,
+    DvdTitleEntry, Pgc, PgciUt, TtSrpt, VmgIfo, VmgPtlMait, VmgVtsAtrt, VobuAdmap, VtsCAdt, VtsIfo,
 };
 use crate::iso9660::Iso9660Volume;
 use crate::udf::{UdfFile, UdfVolume};
@@ -386,6 +386,65 @@ impl DvdDisc {
         let max_sectors = next_table_sector.saturating_sub(mat.ptl_mait_sector).max(1);
         let buf = read_sector_range(reader, f.lba + mat.ptl_mait_sector, max_sectors)?;
         VmgPtlMait::parse(&buf).map(Some)
+    }
+
+    /// Read `VIDEO_TS.IFO`'s **First-Play PGC** (`FP_PGC`) — the
+    /// program chain a player enters when the disc is inserted,
+    /// before any title or menu domain is active.
+    ///
+    /// Per `docs/container/dvd/application/mpucoder-ifo.html` the
+    /// VMGI_MAT word at `0x0084` is the *start byte address* of
+    /// `FP_PGC` (same byte-address unit as the `0x0080`
+    /// "end byte address of VMGI_MAT" word — relative to the start of
+    /// `VIDEO_TS.IFO`), and the body is an ordinary PGC per
+    /// `mpucoder-pgc.html` (the MAT row links straight to the PGC
+    /// page), so [`Pgc::parse`] decodes it unchanged. On commercial
+    /// discs the FP_PGC typically carries no cells — just a
+    /// pre-command list ending in a `JumpSS` / `JumpTT`, which is the
+    /// disc's startup routing; feed [`Pgc::commands`]`.pre` through
+    /// [`crate::Vm::run_list`] to obtain the first [`crate::VmAction`].
+    ///
+    /// Returns `Ok(None)` when the MAT's `fp_pgc_addr` is zero (no
+    /// First-Play PGC authored — the spec marks the field optional).
+    pub fn parse_fp_pgc<R: Read + Seek>(&self, reader: &mut R) -> Result<Option<Pgc>> {
+        let f = self
+            .vmgi()
+            .ok_or(Error::NotDvdVideo("VIDEO_TS.IFO absent"))?;
+        let mat_buf = read_sector_range(reader, f.lba, 1)?;
+        let mat = VmgIfo::parse(&mat_buf)?;
+        if mat.fp_pgc_addr == 0 {
+            return Ok(None);
+        }
+        // FP_PGC lives inside the IFO between the MAT and the first
+        // sector-aligned table (it is the only VMGI structure
+        // addressed in bytes rather than sectors). Bound the read at
+        // the first non-zero table sector so a malformed address
+        // can't pull bytes from an unrelated table; fall back to the
+        // IFO file's last sector.
+        let first_table_sector = [
+            mat.tt_srpt_sector,
+            mat.vmgm_pgci_ut_sector,
+            mat.ptl_mait_sector,
+            mat.vts_atrt_sector,
+            mat.txtdt_mg_sector,
+            mat.vmgm_c_adt_sector,
+            mat.vmgm_vobu_admap_sector,
+        ]
+        .iter()
+        .copied()
+        .filter(|s| *s != 0)
+        .min()
+        .unwrap_or(mat.last_sector_ifo + 1)
+        .min(mat.last_sector_ifo + 1);
+        let start = mat.fp_pgc_addr as usize;
+        let end = first_table_sector as usize * crate::ifo::DVD_SECTOR;
+        if start >= end {
+            return Err(Error::InvalidUdf(
+                "VMGI_MAT: fp_pgc_addr points past the first VMG table",
+            ));
+        }
+        let buf = read_sector_range(reader, f.lba, first_table_sector.max(1))?;
+        Pgc::parse(&buf[start..]).map(Some)
     }
 
     /// Read `VIDEO_TS.IFO`'s [`PgciUt`] — the VMGM (First-Play / VMG
@@ -881,10 +940,10 @@ mod tests {
     }
 
     /// Build a single-VMGI / single-VTSI disc image laid out as:
-    /// VMGI MAT @ lba 0, VMGM_C_ADT @ 1, VMGM_VOBU_ADMAP @ 2,
-    /// VTSI MAT @ 4, VTSM_C_ADT @ 5, VTSM_VOBU_ADMAP @ 6. Zero
-    /// pointers are written when `populate` is false to drive the
-    /// `None` paths.
+    /// VMGI MAT @ lba 0 (FP_PGC at byte 0x0400, inside sector 0),
+    /// VMGM_C_ADT @ 1, VMGM_VOBU_ADMAP @ 2, VTSI MAT @ 4,
+    /// VTSM_C_ADT @ 5, VTSM_VOBU_ADMAP @ 6. Zero pointers are
+    /// written when `populate` is false to drive the `None` paths.
     fn synth_disc(populate: bool) -> (DvdDisc, Cursor<Vec<u8>>) {
         let mut image = vec![0u8; DVD_SECTOR * 8];
 
@@ -893,8 +952,20 @@ mod tests {
         vmgi[0..12].copy_from_slice(VMG_MAGIC);
         vmgi[0x1C..0x20].copy_from_slice(&3u32.to_be_bytes()); // last_sector_ifo
         if populate {
+            vmgi[0x84..0x88].copy_from_slice(&0x0400u32.to_be_bytes()); // FP_PGC byte addr
             vmgi[0xD8..0xDC].copy_from_slice(&1u32.to_be_bytes()); // VMGM_C_ADT
             vmgi[0xDC..0xE0].copy_from_slice(&2u32.to_be_bytes()); // VMGM_VOBU_ADMAP
+
+            // FP_PGC body @ byte 0x0400 (still sector 0, after the
+            // 0x0200-byte MAT region): a cell-less PGC whose only
+            // content is a one-entry pre-command list — `JumpTT 1`,
+            // the canonical "skip straight to the main feature"
+            // startup routing.
+            vmgi[0x0400 + 0xE4..0x0400 + 0xE6].copy_from_slice(&0x00ECu16.to_be_bytes());
+            let ct = 0x0400 + 0xEC; // command table, right after the header
+            vmgi[ct..ct + 2].copy_from_slice(&1u16.to_be_bytes()); // pre count
+            vmgi[ct + 6..ct + 8].copy_from_slice(&15u16.to_be_bytes()); // end address
+            vmgi[ct + 8..ct + 16].copy_from_slice(&[0x30, 0x02, 0, 0, 0, 0x01, 0, 0]);
         }
         image[DVD_SECTOR..2 * DVD_SECTOR].copy_from_slice(&synth_c_adt());
         image[2 * DVD_SECTOR..3 * DVD_SECTOR].copy_from_slice(&synth_vobu_admap());
@@ -976,5 +1047,46 @@ mod tests {
         assert!(disc.parse_vmgm_vobu_admap(&mut r).unwrap().is_none());
         assert!(disc.parse_vtsm_c_adt(&mut r, 1).unwrap().is_none());
         assert!(disc.parse_vtsm_vobu_admap(&mut r, 1).unwrap().is_none());
+    }
+
+    // ---- First-Play PGC reader helper ------------------------------
+
+    #[test]
+    fn parse_fp_pgc_populated_and_routes_through_vm() {
+        let (disc, mut r) = synth_disc(true);
+        let fp = disc.parse_fp_pgc(&mut r).unwrap().unwrap();
+
+        // The synthetic FP_PGC is cell-less — startup routing only.
+        assert_eq!(fp.number_of_programs, 0);
+        assert_eq!(fp.number_of_cells, 0);
+        let commands = fp.commands.as_ref().unwrap();
+        assert_eq!(commands.pre.len(), 1);
+        assert!(commands.post.is_empty());
+        assert!(commands.cell.is_empty());
+
+        // Drive the disc-insertion path end-to-end: FP_PGC
+        // pre-commands through the Phase 3c VM must surface the
+        // `JumpTT 1` startup routing as a typed action.
+        let mut vm = crate::vm::Vm::new();
+        let (action, _pc) = vm.run_list(&commands.pre);
+        assert_eq!(action, crate::vm::VmAction::JumpTitle { ttn: 1 });
+    }
+
+    #[test]
+    fn parse_fp_pgc_none_when_pointer_zero() {
+        let (disc, mut r) = synth_disc(false);
+        assert!(disc.parse_fp_pgc(&mut r).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_fp_pgc_rejects_addr_past_first_table() {
+        // Point fp_pgc_addr at the VMGM_C_ADT sector (byte 0x0800 =
+        // sector 1) — the bounded read must refuse to parse a PGC out
+        // of an unrelated table.
+        let (disc, r) = synth_disc(true);
+        let mut image = r.into_inner();
+        image[0x84..0x88].copy_from_slice(&0x0800u32.to_be_bytes());
+        let mut r = Cursor::new(image);
+        assert!(disc.parse_fp_pgc(&mut r).is_err());
     }
 }

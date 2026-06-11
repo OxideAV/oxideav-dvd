@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **First-Play PGC reader — `DvdDisc::parse_fp_pgc`.** The VMGI_MAT
+  word at `0x0084` is the start *byte* address of `FP_PGC`, the
+  program chain a player enters at disc insertion before any title or
+  menu domain is active — per
+  `docs/container/dvd/application/mpucoder-ifo.html` it is the only
+  VMGI structure addressed in bytes rather than sectors (same unit as
+  the `0x0080` "end byte address of VMGI_MAT" word), and its body is
+  an ordinary PGC per `mpucoder-pgc.html` (the MAT row links straight
+  to the PGC page), so `Pgc::parse` decodes it unchanged. The new
+  helper reads the MAT, follows the byte address, and parses the PGC;
+  it returns `Ok(None)` when `fp_pgc_addr` is zero (no First-Play PGC
+  authored). The read is bounded at the first non-zero sector-aligned
+  VMG table so a malformed address can't pull bytes from an unrelated
+  table — an address at/past that boundary is rejected with an error
+  rather than mis-parsed. This closes the navigation bootstrap gap:
+  the Phase 3c VM could already *execute* startup routing
+  (`JumpSs(FirstPlay)` / `JumpTT` actions) but nothing could *fetch*
+  the FP_PGC those commands live in. Three new tests: the populated
+  path drives the disc-insertion sequence end-to-end (synthetic
+  cell-less FP_PGC at byte `0x0400` → `parse_fp_pgc` →
+  `commands.pre` → `Vm::run_list` → `VmAction::JumpTitle { ttn: 1 }`),
+  plus the zero-pointer `None` path and the past-first-table
+  rejection. **311 lib tests** (was 308) under default features;
+  **321 lib tests** (was 318) under `--all-features`.
+
 - **Menu `C_ADT` + `VOBU_ADMAP` reader helpers on `DvdDisc`.** The
   VMGI / VTSI MATs carry sector pointers to the menu-side cell-address
   tables (`vmgm_c_adt_sector` / `vtsm_c_adt_sector`) and menu VOBU
