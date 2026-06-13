@@ -156,9 +156,9 @@ pub use vm::{
 };
 pub use vob::{
     demux_vobs, demux_vobs_path, looks_like_nav_pack, ButtonInfo, CellId, DsiGi, DsiPacket,
-    DvdSubstream, ElementaryStream, HighlightInfo, HighlightStatus, NavPack, PackHeader, PciPacket,
-    PesPacket, SlColi, SlColiCell, SmlAgli, SmlAngleCell, SmlAudioGap, SmlPbi, Synci, VobDemuxer,
-    VobId, VobStreams, VobuSri,
+    DvdSubstream, ElementaryStream, HighlightInfo, HighlightStatus, NavPack, NsmlAgli,
+    NsmlAngleCell, PackHeader, PciPacket, PesPacket, SlColi, SlColiCell, SmlAgli, SmlAngleCell,
+    SmlAudioGap, SmlPbi, Synci, VobDemuxer, VobId, VobStreams, VobuSri,
 };
 
 #[cfg(feature = "registry")]

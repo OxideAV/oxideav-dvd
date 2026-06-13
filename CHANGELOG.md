@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PCI NSML_AGLI non-seamless angle jump table.** `PciPacket` now
+  decodes the 36-byte NSML_AGLI block at PCI packet offset
+  `0x3C..0x60` into a typed `NsmlAgli { cells: [NsmlAngleCell; 9] }`
+  per `docs/container/dvd/application/mpucoder-pci_pkt.html`. Each
+  `nsml_agl_cN_dsta` cell carries the relative sector offset to the
+  current ILVU for that angle, with bit 31 as the direction
+  (0 = forward, 1 = backward) and the `0x0000_0000` (angle absent) /
+  `0x7FFF_FFFF` (no more video) sentinels. `NsmlAngleCell` exposes
+  `is_absent` / `is_no_more_video` / `is_backward` / `offset_sectors`;
+  `NsmlAgli` exposes `is_empty`, `active_angle_count`, and a 1-based
+  `angle(n)` accessor that pairs with SPRM 3 (current angle). This is
+  the PCI counterpart to the existing DSI `SmlAgli` seamless-angle
+  table, completing the multi-angle navigation surface a player needs
+  to switch angles on a non-seamless interleaved block.
 - **First-Play PGC reader — `DvdDisc::parse_fp_pgc`.** The VMGI_MAT
   word at `0x0084` is the start *byte* address of `FP_PGC`, the
   program chain a player enters at disc insertion before any title or

@@ -33,7 +33,11 @@ sync pointers) that chapter-accurate seek and A/V sync need, plus the
 PCI **highlight information** (HLI_GI timing + the three SL_COLI
 selection/action colour-contrast schemes + the per-button BTN_IT
 table — geometry, D-pad adjacency and the raw action command) that a
-menu renderer needs to draw and route button input. A new
+menu renderer needs to draw and route button input, plus the PCI
+**NSML_AGLI** non-seamless angle jump table (9 `nsml_agl_cN_dsta`
+cells, each carrying a direction bit + signed sector offset, with the
+`0x0000_0000` absent and `0x7FFF_FFFF` no-more-video sentinels) that a
+player re-seeks against on a non-seamless angle switch. A new
 **`nav` module** (Phase 3c precursor) decodes each 8-byte
 `NavCommand` word into a typed `NavInstruction` tree —
 NOP / Goto / Break / SetTmpPML, the full `Link*` family (with
@@ -78,6 +82,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed (Phase 3c support) |
 | VOBU_SRI search-table decode | landed (Phase 3a) |
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed (Phase 3a) |
+| NAV-pack PCI NSML_AGLI (non-seamless angle jump table — 9 `nsml_agl_cN_dsta` cells with direction bit + absent / no-more-video sentinels + 1-based `angle()` accessor) | landed (Phase 3a) |
 | PCI_GI `hli_ss` → typed `HighlightStatus` enum (None / AllNew / UsePrevious / UsePreviousExceptCommands) + geometry-inheritance + own-commands classifiers | landed (Phase 3a) |
 | NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI; DSI_GI `c_eltm` → typed `PgcTime` + ns) | landed (Phase 3a) |
 | MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |

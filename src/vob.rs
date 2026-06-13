@@ -631,11 +631,147 @@ impl HighlightStatus {
     }
 }
 
+/// One angle's non-seamless jump descriptor within [`NsmlAgli`].
+///
+/// Per `mpucoder-pci_pkt.html` NSML_AGLI sub-table, every angle gets a
+/// 4-byte `nsml_agl_cN_dsta` record: the relative offset (in sectors)
+/// to the VOBU that begins the *current* ILVU for that angle, so a
+/// player switching angles non-seamlessly knows where to jump. Bit 31
+/// is the direction (0 = forward, 1 = backward); the remaining 31 bits
+/// are the magnitude. `0x0000_0000` flags an absent angle and
+/// `0x7FFF_FFFF` flags "no more video for this angle".
+///
+/// Unlike the DSI [`SmlAngleCell`] (seamless playback), the PCI
+/// non-seamless record carries only the jump offset — there is no ILVU
+/// size field, because a non-seamless angle change re-seeks rather than
+/// stitching the next interleaved unit inline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NsmlAngleCell {
+    /// Relative VOBU offset (in sectors) to the current ILVU for this
+    /// angle. Bit 31 is the direction (0 = forward, 1 = backward); the
+    /// low 31 bits are the magnitude. `0x0000_0000` = angle absent;
+    /// `0x7FFF_FFFF` = no more video for this angle.
+    pub dsta: u32,
+}
+
+impl NsmlAngleCell {
+    /// Sentinel: this angle does not exist for the current VOBU.
+    pub const ABSENT: u32 = 0x0000_0000;
+    /// Sentinel: no more video for this angle.
+    pub const NO_MORE_VIDEO: u32 = 0x7FFF_FFFF;
+
+    /// `true` when no angle is defined for this slot
+    /// (`dsta == 0x0000_0000`).
+    #[inline]
+    pub fn is_absent(&self) -> bool {
+        self.dsta == Self::ABSENT
+    }
+
+    /// `true` when the angle exists but has no further video
+    /// (`dsta == 0x7FFF_FFFF`).
+    #[inline]
+    pub fn is_no_more_video(&self) -> bool {
+        self.dsta == Self::NO_MORE_VIDEO
+    }
+
+    /// `true` when the jump direction is backward (bit 31 set).
+    ///
+    /// Only meaningful when the cell is neither [`Self::is_absent`] nor
+    /// [`Self::is_no_more_video`].
+    #[inline]
+    pub fn is_backward(&self) -> bool {
+        self.dsta & 0x8000_0000 != 0
+    }
+
+    /// Jump magnitude in sectors (bit 31 stripped).
+    ///
+    /// Returns `None` for the [`Self::ABSENT`] / [`Self::NO_MORE_VIDEO`]
+    /// sentinels, which do not encode a real offset.
+    #[inline]
+    pub fn offset_sectors(&self) -> Option<u32> {
+        if self.is_absent() || self.is_no_more_video() {
+            None
+        } else {
+            Some(self.dsta & 0x7FFF_FFFF)
+        }
+    }
+}
+
+/// NSML_AGLI — Non-Seamless Angle Information (PCI sub-block).
+///
+/// 36-byte block at PCI packet offset `0x3C..0x60` carrying the 9
+/// `nsml_agl_cN_dsta` jump pointers (1-based angle index 1..=9). When a
+/// title is a non-seamless multi-angle block, a player that wants to
+/// switch to angle *N* at the next VOBU reads `cells[N - 1].dsta` and
+/// re-seeks by that relative sector offset. A title with no multi-angle
+/// data leaves every cell at [`NsmlAngleCell::ABSENT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NsmlAgli {
+    /// The 9 non-seamless angle jump descriptors (angle 1..=9).
+    pub cells: [NsmlAngleCell; 9],
+}
+
+impl NsmlAgli {
+    /// NSML_AGLI start offset within the PCI packet body
+    /// (`PCI_GI` is `0x00..0x3C`).
+    pub const PACKET_OFFSET: usize = 0x3C;
+    /// Size of the NSML_AGLI block: 9 × 4 bytes.
+    pub const SIZE: usize = 9 * 4;
+
+    /// Parse NSML_AGLI from a PCI packet body `buf` (slice starting at
+    /// `PCI_GI 00`). Reads the 9 angle cells at
+    /// [`Self::PACKET_OFFSET`].
+    fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < Self::PACKET_OFFSET + Self::SIZE {
+            return Err(Error::InvalidUdf("NSML_AGLI: short buffer"));
+        }
+        let mut cells = [NsmlAngleCell::default(); 9];
+        for (i, slot) in cells.iter_mut().enumerate() {
+            *slot = NsmlAngleCell {
+                dsta: read_u32_be(buf, Self::PACKET_OFFSET + i * 4)?,
+            };
+        }
+        Ok(Self { cells })
+    }
+
+    /// `true` when no angle slot defines a jump
+    /// (every cell is [`NsmlAngleCell::ABSENT`]) — i.e. this VOBU is not
+    /// part of a non-seamless multi-angle block.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.cells.iter().all(NsmlAngleCell::is_absent)
+    }
+
+    /// Number of angles that define a real jump for this VOBU
+    /// (neither absent nor "no more video").
+    #[inline]
+    pub fn active_angle_count(&self) -> usize {
+        self.cells
+            .iter()
+            .filter(|c| !c.is_absent() && !c.is_no_more_video())
+            .count()
+    }
+
+    /// Jump descriptor for a 1-based angle number (`1..=9`).
+    ///
+    /// Returns `None` if `angle` is out of range. SPRM 3 holds the
+    /// player's current 1-based angle; pass it straight through.
+    #[inline]
+    pub fn angle(&self, angle: u8) -> Option<NsmlAngleCell> {
+        if (1..=9).contains(&angle) {
+            Some(self.cells[angle as usize - 1])
+        } else {
+            None
+        }
+    }
+}
+
 /// PCI packet — Presentation Control Information.
 ///
 /// Layout per mpucoder-pci_pkt.html. Surfaces the `PCI_GI` general
-/// information block (timing + UOP mask) plus, when the VOBU carries
-/// a menu, the decoded [`HighlightInfo`] (HLI_GI + SL_COLI + BTN_IT).
+/// information block (timing + UOP mask) plus the NSML_AGLI
+/// non-seamless angle jump table and, when the VOBU carries a menu, the
+/// decoded [`HighlightInfo`] (HLI_GI + SL_COLI + BTN_IT).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PciPacket {
     /// `PCI_GI 00` — `nv_pck_lbn`: disc-LBA of this NAV pack.
@@ -652,6 +788,9 @@ pub struct PciPacket {
     pub vobu_se_e_ptm: u32,
     /// `PCI_GI 18` — `c_eltm`: cell elapsed time (BCD + frame-rate bits).
     pub c_eltm: u32,
+    /// `NSML_AGLI 00..24` — non-seamless angle jump table (9 cells).
+    /// Every cell is [`NsmlAngleCell::ABSENT`] for a single-angle title.
+    pub nsml_agli: NsmlAgli,
     /// `HLI_GI 00` — `hli_ss`: highlight status (lower 2 bits).
     pub hli_ss: u16,
     /// Decoded highlight / button overlay for this VOBU. `None` when
@@ -684,6 +823,9 @@ impl PciPacket {
             ));
         }
         let hli_ss = read_u16_be(buf, Self::HLI_GI)?;
+        // NSML_AGLI (0x3C..0x60) sits entirely below HLI_GI (0x60), so
+        // the length check above already guarantees these reads.
+        let nsml_agli = NsmlAgli::parse(buf)?;
         let highlight = Self::parse_highlight(buf)?;
         Ok(Self {
             nv_pck_lbn: read_u32_be(buf, 0x00)?,
@@ -693,6 +835,7 @@ impl PciPacket {
             vobu_e_ptm: read_u32_be(buf, 0x10)?,
             vobu_se_e_ptm: read_u32_be(buf, 0x14)?,
             c_eltm: read_u32_be(buf, 0x18)?,
+            nsml_agli,
             hli_ss,
             highlight,
         })
@@ -1974,6 +2117,81 @@ mod tests {
     /// at sector 0x2D per mpucoder-pci_pkt.html).
     fn pci(p: usize) -> usize {
         0x2D + p
+    }
+
+    // ----- PCI NSML_AGLI (non-seamless angle table) ----------------
+
+    #[test]
+    fn pci_default_nsml_agli_is_empty() {
+        // A nav sector with no angle data leaves NSML_AGLI all-zero.
+        let sector = build_nav_sector(1, 0, 0);
+        let nav = NavPack::parse(&sector).unwrap();
+        assert!(nav.pci.nsml_agli.is_empty());
+        assert_eq!(nav.pci.nsml_agli.active_angle_count(), 0);
+        for c in &nav.pci.nsml_agli.cells {
+            assert!(c.is_absent());
+            assert!(!c.is_no_more_video());
+            assert_eq!(c.offset_sectors(), None);
+        }
+    }
+
+    #[test]
+    fn pci_parses_nsml_agli_block() {
+        let mut sector = build_nav_sector(1, 0, 0);
+        // NSML_AGLI begins at PCI packet 0x3C; 9 cells × 4 bytes.
+        // Angle 1: forward jump of 0x100 sectors.
+        sector[pci(0x3C)..pci(0x40)].copy_from_slice(&0x0000_0100u32.to_be_bytes());
+        // Angle 2: backward jump of 0x080 sectors (bit 31 set).
+        sector[pci(0x40)..pci(0x44)].copy_from_slice(&0x8000_0080u32.to_be_bytes());
+        // Angle 3: "no more video" sentinel.
+        sector[pci(0x44)..pci(0x48)].copy_from_slice(&NsmlAngleCell::NO_MORE_VIDEO.to_be_bytes());
+        // Angles 4..=9 stay absent (0x0000_0000).
+        // Angle 9 explicitly written to prove the last cell is reached.
+        sector[pci(0x5C)..pci(0x60)].copy_from_slice(&0x0000_0009u32.to_be_bytes());
+
+        let nav = NavPack::parse(&sector).unwrap();
+        let agli = &nav.pci.nsml_agli;
+        assert!(!agli.is_empty());
+
+        // Angle 1 — forward, magnitude 0x100.
+        let a1 = agli.angle(1).unwrap();
+        assert_eq!(a1.dsta, 0x0000_0100);
+        assert!(!a1.is_backward());
+        assert!(!a1.is_absent());
+        assert_eq!(a1.offset_sectors(), Some(0x100));
+
+        // Angle 2 — backward, magnitude 0x080.
+        let a2 = agli.angle(2).unwrap();
+        assert!(a2.is_backward());
+        assert_eq!(a2.offset_sectors(), Some(0x080));
+
+        // Angle 3 — no more video (no real offset).
+        let a3 = agli.angle(3).unwrap();
+        assert!(a3.is_no_more_video());
+        assert_eq!(a3.offset_sectors(), None);
+
+        // Angle 4 — absent.
+        assert!(agli.angle(4).unwrap().is_absent());
+
+        // Angle 9 — last cell parsed.
+        assert_eq!(agli.angle(9).unwrap().dsta, 0x0000_0009);
+
+        // Active = angles that encode a real jump (1, 2, 9).
+        assert_eq!(agli.active_angle_count(), 3);
+
+        // Out-of-range angle numbers reject.
+        assert_eq!(agli.angle(0), None);
+        assert_eq!(agli.angle(10), None);
+    }
+
+    #[test]
+    fn nsml_agli_parse_rejects_short_buffer() {
+        // Truncated before the NSML_AGLI block (0x3C + 36 = 0x60).
+        let buf = [0u8; 0x40];
+        assert!(NsmlAgli::parse(&buf).is_err());
+        // Exactly enough bytes for NSML_AGLI parses.
+        let buf = [0u8; 0x60];
+        assert!(NsmlAgli::parse(&buf).is_ok());
     }
 
     /// Inject a single-button HLI block into a nav sector built by
