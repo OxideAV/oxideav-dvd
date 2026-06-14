@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.2...v0.0.3) - 2026-06-14
+
+### Other
+
+- AC-3 sync-frame header decoder (syncinfo + bsi prefix)
+- decode HLI_GI btn_md into typed ButtonMode (PCI highlight button groups)
+- PCI NSML_AGLI non-seamless angle jump table
+- add First-Play PGC reader (DvdDisc::parse_fp_pgc)
+- menu C_ADT + VOBU_ADMAP reader helpers on DvdDisc
+- decode VMGM_PGCI_UT + VTSM_PGCI_UT (menu PGCI Unit Table)
+- decode VMG_VTS_ATRT + VMG_PTL_MAIT on the VMG side
+- typed accessors for the remaining language / sentinel SPRMs
+- drop release-plz.toml — use release-plz defaults across the workspace
+- typed-instruction iterators on PgcCommandTable + decode_instruction bridge
+- typed HighlightStatus enum on PCI_GI hli_ss
+- typed cell-elapsed-time accessor on DsiGi + PgcTime::to_nanoseconds
+- VTSI_MAT / VMGI_MAT stream-attribute extension decoders
+- VOBU_ADMAP + VTS_TMAPTI typed decoders for time-based seek
+- typed UOP-prohibition decoder + three-level OR-merge
+- decode DVD-Video LPCM private_stream_1 audio-pack header
+- SPRM bitfield accessors + named SPRM indices (Phase 3c next-item)
+- execute Type 4..6 compound CMP/SET/LNK families (Phase 3c completion)
+- Phase 3c interpreter — SPRM/GPRM register file + Link/Jump/Call execution
+
 ### Added
 
 - **AC-3 sync-frame header decode (`ac3` module).** `Ac3Header::parse`
