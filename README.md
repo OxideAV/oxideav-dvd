@@ -84,6 +84,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed (Phase 3a) |
 | NAV-pack PCI NSML_AGLI (non-seamless angle jump table — 9 `nsml_agl_cN_dsta` cells with direction bit + absent / no-more-video sentinels + 1-based `angle()` accessor) | landed (Phase 3a) |
 | PCI_GI `hli_ss` → typed `HighlightStatus` enum (None / AllNew / UsePrevious / UsePreviousExceptCommands) + geometry-inheritance + own-commands classifiers | landed (Phase 3a) |
+| HLI_GI `btn_md` → typed `ButtonMode` view (`btngr_ns` group count + three 3-bit `btngrN_ty` codes) | landed (Phase 3a) |
 | NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI; DSI_GI `c_eltm` → typed `PgcTime` + ns) | landed (Phase 3a) |
 | MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |
 | VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed (Phase 3c precursor) |

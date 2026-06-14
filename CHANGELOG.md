@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **HLI_GI `btn_md` typed decode.** `HighlightInfo::button_mode()`
+  now returns a `ButtonMode { group_count, group_types: [u8; 3] }`
+  decoded from the raw `btn_md` word per the `btn_md word` sub-table
+  of `docs/container/dvd/application/mpucoder-pci_pkt.html`:
+  `btngr_ns` (number of button groups, u16 bits 13..12) and the three
+  3-bit `btngrN_ty` group-type codes (bits 10..8 / 6..4 / 2..0), with
+  the reserved bits (15..14, 11, 7, 3) masked out. `ButtonMode`
+  also provides `from_btn_md` / `to_btn_md` (reserved-bit-dropping
+  round-trip). The reference labels the type codes "normal / lb /
+  p/s" (normal / letterbox / pan-scan) but gives no numeric
+  value-to-name mapping, so the codes are surfaced raw rather than as
+  a named enum; the field had previously been kept as an opaque `u16`.
+
 - **PCI NSML_AGLI non-seamless angle jump table.** `PciPacket` now
   decodes the 36-byte NSML_AGLI block at PCI packet offset
   `0x3C..0x60` into a typed `NsmlAgli { cells: [NsmlAngleCell; 9] }`

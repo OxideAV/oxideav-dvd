@@ -517,9 +517,10 @@ pub struct HighlightInfo {
     /// `btn_sl_e_ptm` — button-selection end time (user input after
     /// this is ignored).
     pub btn_sl_e_ptm: u32,
-    /// `btn_md` — the raw button-grouping word (4 nibbles describing
-    /// up to 3 button groups). Surfaced raw; the group-type decode is
-    /// left to a renderer.
+    /// `btn_md` — the raw button-grouping word (describes up to 3
+    /// button groups and their display-mode types). Use
+    /// [`HighlightInfo::button_mode`] for the decoded
+    /// [`ButtonMode`] view.
     pub btn_md: u16,
     /// `btn_sn` — starting button number (1-based).
     pub btn_sn: u8,
@@ -537,6 +538,21 @@ pub struct HighlightInfo {
     /// The button table — exactly `btn_ns` entries (a VOBU declares
     /// up to 36 buttons).
     pub buttons: Vec<ButtonInfo>,
+}
+
+impl HighlightInfo {
+    /// Typed view over [`Self::btn_md`].
+    ///
+    /// Decodes the `btn_md` word's button-group count and the three
+    /// per-group display-mode type codes per the `btn_md word`
+    /// sub-table of
+    /// `docs/container/dvd/application/mpucoder-pci_pkt.html`. See
+    /// [`ButtonMode`] for the bit layout and the spec caveat on the
+    /// type-code naming.
+    #[inline]
+    pub const fn button_mode(&self) -> ButtonMode {
+        ButtonMode::from_btn_md(self.btn_md)
+    }
 }
 
 /// Highlight-status code carried in the lower two bits of
@@ -628,6 +644,77 @@ impl HighlightStatus {
             Self::UsePrevious => 0b10,
             Self::UsePreviousExceptCommands => 0b11,
         }
+    }
+}
+
+/// Typed view over the `HLI_GI.btn_md` word (`HLI_GI 0x0E`).
+///
+/// Per the `btn_md word` sub-table of
+/// `docs/container/dvd/application/mpucoder-pci_pkt.html`, the 16-bit
+/// field groups the VOBU's buttons into up to three *button groups*,
+/// each carrying a display-mode type. A button group lets the author
+/// supply alternate button geometry for the three display aspects a
+/// 4:3 player can present a 16:9 title in (normal/widescreen,
+/// letterbox, pan-and-scan), so the active group is chosen by the
+/// player's current display mode.
+///
+/// Bit layout, with the word read big-endian (high byte first):
+///
+/// | u16 bits | field       | meaning                              |
+/// |----------|-------------|--------------------------------------|
+/// | 15..14   | reserved    | —                                    |
+/// | 13..12   | `btngr_ns`  | number of button groups (0..=3)      |
+/// | 11       | reserved    | —                                    |
+/// | 10..8    | `btngr1_ty` | button group 1 type (3-bit code)     |
+/// | 7        | reserved    | —                                    |
+/// | 6..4     | `btngr2_ty` | button group 2 type (3-bit code)     |
+/// | 3        | reserved    | —                                    |
+/// | 2..0     | `btngr3_ty` | button group 3 type (3-bit code)     |
+///
+/// The reference labels the three 3-bit type codes "normal, lb, p/s"
+/// (normal / letterbox / pan-scan) but does **not** give the numeric
+/// value-to-name mapping, so the group types are surfaced as raw 3-bit
+/// codes rather than a named enum. A renderer that needs to pick the
+/// group matching the current display mode keys off these codes plus
+/// the title's own aspect attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ButtonMode {
+    /// `btngr_ns` — number of button groups declared (0..=3).
+    pub group_count: u8,
+    /// The three group type codes (`btngr1_ty`, `btngr2_ty`,
+    /// `btngr3_ty`), each a raw 3-bit value (0..=7). Only the first
+    /// [`Self::group_count`] entries are meaningful; the rest are
+    /// whatever the authoring tool left in the field.
+    pub group_types: [u8; 3],
+}
+
+impl ButtonMode {
+    /// Decode a raw `btn_md` word into its documented sub-fields.
+    ///
+    /// The mapping is exhaustive over the documented bit ranges; the
+    /// reserved bits (15..14, 11, 7, 3) are ignored.
+    #[inline]
+    pub const fn from_btn_md(btn_md: u16) -> Self {
+        Self {
+            group_count: ((btn_md >> 12) & 0x3) as u8,
+            group_types: [
+                ((btn_md >> 8) & 0x7) as u8,
+                ((btn_md >> 4) & 0x7) as u8,
+                (btn_md & 0x7) as u8,
+            ],
+        }
+    }
+
+    /// Encode back to a raw `btn_md` word.
+    ///
+    /// Reserved bits are emitted as zero; the low three bits of each
+    /// group type and the low two bits of the count are preserved.
+    #[inline]
+    pub const fn to_btn_md(self) -> u16 {
+        (((self.group_count & 0x3) as u16) << 12)
+            | (((self.group_types[0] & 0x7) as u16) << 8)
+            | (((self.group_types[1] & 0x7) as u16) << 4)
+            | ((self.group_types[2] & 0x7) as u16)
     }
 }
 
@@ -2257,6 +2344,11 @@ mod tests {
         assert_eq!(hli.hli_e_ptm, 0x0000_2222);
         assert_eq!(hli.btn_sl_e_ptm, 0x0000_3333);
         assert_eq!(hli.btn_md, 0x0100);
+        // btn_md 0x0100: group_count = (0x0100>>12)&3 = 0; btngr1_ty =
+        // (0x0100>>8)&7 = 1; remaining group types zero.
+        let bm = hli.button_mode();
+        assert_eq!(bm.group_count, 0);
+        assert_eq!(bm.group_types, [1, 0, 0]);
         assert_eq!(hli.btn_sn, 1);
         assert_eq!(hli.btn_ns, 1);
         assert_eq!(hli.nsl_btn_ns, 1);
@@ -2303,6 +2395,39 @@ mod tests {
         add_one_button_hli(&mut sector);
         sector[pci(0x71)] = 37; // btn_ns > 36
         assert!(NavPack::parse(&sector).is_err());
+    }
+
+    #[test]
+    fn button_mode_decodes_btn_md_subfields() {
+        // Construct a btn_md with distinct values in every documented
+        // field and reserved bits all set, to confirm the masks isolate
+        // the right ranges. Per mpucoder-pci_pkt.html `btn_md word`:
+        //   bits 13..12 = btngr_ns, 10..8 = btngr1_ty,
+        //   6..4 = btngr2_ty, 2..0 = btngr3_ty; bits 15,14,11,7,3 rsv.
+        // Pick: count = 0b10 (2), ty1 = 0b101 (5), ty2 = 0b011 (3),
+        // ty3 = 0b110 (6); set all reserved bits.
+        let reserved = (1u16 << 15) | (1 << 14) | (1 << 11) | (1 << 7) | (1 << 3);
+        let btn_md = reserved | (0b10 << 12) | (0b101 << 8) | (0b011 << 4) | 0b110;
+        let bm = ButtonMode::from_btn_md(btn_md);
+        assert_eq!(bm.group_count, 2);
+        assert_eq!(bm.group_types, [5, 3, 6]);
+        // Round-trip drops reserved bits but preserves the meaningful
+        // fields.
+        let cleaned = (0b10u16 << 12) | (0b101 << 8) | (0b011 << 4) | 0b110;
+        assert_eq!(bm.to_btn_md(), cleaned);
+        // Decoding the cleaned word yields an identical view.
+        assert_eq!(ButtonMode::from_btn_md(cleaned), bm);
+    }
+
+    #[test]
+    fn button_mode_zero_is_default() {
+        // A button-less / single-group VOBU commonly leaves btn_md
+        // zero: no groups, all type codes zero.
+        let bm = ButtonMode::from_btn_md(0);
+        assert_eq!(bm, ButtonMode::default());
+        assert_eq!(bm.group_count, 0);
+        assert_eq!(bm.group_types, [0, 0, 0]);
+        assert_eq!(bm.to_btn_md(), 0);
     }
 
     #[test]
