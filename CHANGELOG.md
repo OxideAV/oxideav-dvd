@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **AC-3 sync-frame header decode (`ac3` module).** `Ac3Header::parse`
+  decodes the `syncinfo()` (sync word `0x0B77`, `crc1`, `fscod`
+  sampling-rate code, `frmsizecod` frame-size code) and the
+  deterministically-positioned prefix of `bsi()` (`bsid`, `bsmod`
+  bitstream mode, `acmod` audio-coding mode, and the `cmixlev` /
+  `surmixlev` / `dsurmod` conditional fields whose presence is a pure
+  function of `acmod`, plus `lfeon`) off the start of an AC-3
+  elementary stream routed from `DvdSubstream::Ac3`. Accessors:
+  `sample_rate_hz`, `nominal_bitrate_kbps` and `frame_size_words` /
+  `frame_size_bytes` (driven by the 38-entry `frmsizecod` table with
+  per-sample-rate columns), `total_channel_count` (`nfchans + lfeon`),
+  and the `Ac3AudioCodingMode` channel-layout / conditional-field
+  classifiers. Reserved `fscod` / `frmsizecod` codes are preserved and
+  surface as `None` from the rate/size accessors. Header-only: fields
+  past `lfeon` (variable-length `bsi()` tail) and the audio blocks stay
+  with a downstream AC-3 decoder. Clean-room per
+  `docs/container/dvd/application/stnsoft-ac3hdr.html` +
+  `mpucoder-dvdmpeg.html`.
+
 - **HLI_GI `btn_md` typed decode.** `HighlightInfo::button_mode()`
   now returns a `ButtonMode { group_count, group_types: [u8; 3] }`
   decoded from the raw `btn_md` word per the `btn_md word` sub-table

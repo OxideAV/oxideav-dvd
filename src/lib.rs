@@ -83,6 +83,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
+pub mod ac3;
 pub mod disc;
 pub mod error;
 pub mod ifo;
@@ -101,6 +102,7 @@ pub mod mkv_writer;
 #[cfg(feature = "mkv-output")]
 pub mod pipeline;
 
+pub use ac3::{Ac3AudioCodingMode, Ac3BitstreamMode, Ac3Header, Ac3SampleRate, AC3_SYNC_WORD};
 pub use disc::{DvdDisc, DvdFile, DvdFileKind};
 pub use error::{Error, Result};
 pub use ifo::{

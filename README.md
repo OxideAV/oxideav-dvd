@@ -79,6 +79,7 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed (Phase 3a) |
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed (Phase 3a) |
 | LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed (Phase 3a) |
+| AC-3 sync-frame header decode (`syncinfo()` fscod / frmsizecod + `bsi()` bsid / bsmod / acmod / mix-level conditionals / lfeon → sample rate + frame size + nominal bitrate + channel layout) | landed (Phase 3a) |
 | User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed (Phase 3c support) |
 | VOBU_SRI search-table decode | landed (Phase 3a) |
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed (Phase 3a) |
@@ -260,6 +261,47 @@ the result against the 6144 kbps DVD-Video ceiling per
 dynamic-range coefficient on `mpucoder-lpcm.html`
 (`2^(4 - (X + Y/30))` and `24.082 - 6.0206 X - 0.2007 Y`); applying
 the gain to the decoded samples stays with the audio decoder.
+
+## Decoding an AC-3 sync-frame header
+
+The `ac3` module pulls the AC-3 (Dolby Digital) `syncinfo()` +
+`bsi()` header fields off the start of an AC-3 elementary stream —
+the raw bytes the demuxer routes to `VobStreams::ac3` from
+`private_stream_1` substream `0x80..=0x87`. It surfaces the format
+a player needs to size buffers and label the track without pulling
+in a full AC-3 audio decoder:
+
+```rust,no_run
+use oxideav_dvd::{Ac3Header, Ac3AudioCodingMode, Ac3SampleRate};
+
+// `frame` starts at the AC-3 sync word (0x0B77).
+let frame: &[u8] = &[];
+let h = Ac3Header::parse(frame).unwrap();
+
+assert_eq!(h.sample_rate, Ac3SampleRate::Hz48000);
+println!("{} Hz, {} kbps nominal",
+         h.sample_rate_hz().unwrap(),
+         h.nominal_bitrate_kbps().unwrap());
+
+// 3/2 + LFE → 5.1
+if h.audio_coding_mode == Ac3AudioCodingMode::ThreeTwo && h.lfe_on {
+    println!("5.1 surround ({} channels)", h.total_channel_count());
+}
+
+// Seek to the next frame boundary.
+let next = h.frame_size_bytes().unwrap();
+println!("frame is {next} bytes");
+```
+
+`frame_size_words()` / `frame_size_bytes()` read the 38-entry
+`frmsizecod` table (with separate 32 / 44.1 / 48 kHz word-count
+columns) selected by the decoded `fscod`; reserved `fscod` /
+`frmsizecod` codes are preserved and return `None`. The decode
+covers the deterministically-positioned `bsi()` prefix
+(`bsid` / `bsmod` / `acmod` + the `cmixlev` / `surmixlev` /
+`dsurmod` conditionals + `lfeon`); the variable-length `bsi()` tail
+and the audio blocks stay with a downstream decoder, per
+`stnsoft-ac3hdr.html`.
 
 ## Querying User Operation prohibitions
 
@@ -594,6 +636,13 @@ This crate was written entirely against:
   per-`(sample_rate × quantisation × channels)` bitrate table and
   the 6144 kbps DVD-Video ceiling used by
   `LpcmHeader::is_within_dvd_video_limit`.
+- `docs/container/dvd/application/stnsoft-ac3hdr.html` — the AC-3
+  (Dolby Digital) `syncinfo()` field layout, the `fscod`
+  sampling-rate table, the 38-entry `frmsizecod` frame-size /
+  nominal-bit-rate table (with separate 32 / 44.1 / 48 kHz word-count
+  columns), and the `bsi()` field order (`bsid` / `bsmod` / `acmod`
+  with the conditional `cmixlev` / `surmixlev` / `dsurmod` presence
+  rules + `lfeon`) feeding the `ac3` module's `Ac3Header` decoder.
 - `docs/container/dvd/application/mpucoder-uops.html` — the 25-row
   User Operation flag table (bit numbers + per-level applicability
   matrix + three-level OR-merge rule) feeding the `uops` module's
