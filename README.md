@@ -15,15 +15,15 @@ mpucoder + stnsoft community RE references.
 
 ## Scope
 
-Phases 1, 2, and 3a (this release) handle the **physical +
-filesystem + disc-identification + IFO structural + VOB demux**
-layers — enough to point a player at a DVD-Video disc image or
-block device, enumerate the title-set files, pull the title /
-chapter / program-chain / cell layout out of every IFO, demux
-each cell's VOBUs into raw MPEG-2 video + AC-3 / DTS / LPCM audio
-+ subpicture elementary streams keyed by track ID, and answer
-time-based seek queries through the per-PGC `VTS_TMAPTI` time
-map + the title-set `VTS_VOBU_ADMAP` absolute-sector list. The Phase 3a
+The crate handles the **physical + filesystem + disc-identification +
+IFO structural + VOB demux + navigation-VM** layers — enough to point a
+player at a DVD-Video disc image or block device, enumerate the
+title-set files, pull the title / chapter / program-chain / cell layout
+out of every IFO, demux each cell's VOBUs into raw MPEG-2 video + AC-3 /
+DTS / LPCM audio + subpicture elementary streams keyed by track ID,
+answer time-based seek queries through the per-PGC `VTS_TMAPTI` time map
++ the title-set `VTS_VOBU_ADMAP` absolute-sector list, decode subpicture
+overlays to RGBA, and execute the PGC navigation command VM. The
 nav-pack decoder also surfaces the typed **DSI** sub-sections
 (`DSI_GI` general info; `SML_PBI` seamless-playback interleaved-unit
 flags + jump pointers + per-stream audio-gap table; `SML_AGLI` 9-cell
@@ -38,7 +38,7 @@ menu renderer needs to draw and route button input, plus the PCI
 cells, each carrying a direction bit + signed sector offset, with the
 `0x0000_0000` absent and `0x7FFF_FFFF` no-more-video sentinels) that a
 player re-seeks against on a non-seamless angle switch. A new
-**`nav` module** (Phase 3c precursor) decodes each 8-byte
+**`nav` module** decodes each 8-byte
 `NavCommand` word into a typed `NavInstruction` tree —
 NOP / Goto / Break / SetTmpPML, the full `Link*` family (with
 the 13-entry link-subset table), `Exit` / `JumpTT` /
@@ -47,7 +47,7 @@ the 13-entry link-subset table), `Exit` / `JumpTT` /
 (`SetSTN` / `SetNVTMR` / `SetGPRMMD` with counter-mode bit /
 `SetAMXMD` / `SetHL_BTNN`), the plain `Set` arithmetic family
 (12 SET sub-ops × GPRM-or-SPRM source), and classifier sub-ops
-for the compound Type 4..6 CMP/SET/LNK encodings. The Phase 3c
+for the compound Type 4..6 CMP/SET/LNK encodings. The
 **`vm` module** wraps the decoder with a register file
 (16 GPRMs + 24 SPRMs with spec-defined defaults + per-GPRM
 counter-mode bits), an RSM call/return stack, intra-list PC
@@ -55,8 +55,8 @@ handling (`Goto` / `Break` / runaway-loop bound), and a
 `Vm::step(NavInstruction) -> VmAction` interpreter that surfaces
 `Link` / `JumpTitle` / `JumpVtsTitle` / `JumpVtsPtt` / `JumpSs` /
 `CallSs` / `Resume` / `SetNavTimer` / `Exit` actions to the
-playback engine. **No CSS yet** — Phase 3c via the external
-`oxideav-css` crate.
+playback engine. **No CSS yet** — CSS authentication / descrambling
+is delegated to the external `oxideav-css` crate.
 
 | Layer | Status |
 |-------|--------|
@@ -76,25 +76,25 @@ playback engine. **No CSS yet** — Phase 3c via the external
 | VMGM_C_ADT / VTSM_C_ADT + VMGM_VOBU_ADMAP / VTSM_VOBU_ADMAP (menu cell-address tables + menu VOBU sector maps via `DvdDisc::parse_vmgm_c_adt` / `parse_vtsm_c_adt` / `parse_vmgm_vobu_admap` / `parse_vtsm_vobu_admap`) | landed |
 | VTS_VOBU_ADMAP (per-VOBU sector list + partition lookup) | landed |
 | VTS_TMAPTI (per-PGC time map + seconds → VOBU sector seek) | landed |
-| VOB demux (MPEG-PS pack + nav-pack + PES) | landed (Phase 3a) |
-| DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed (Phase 3a) |
-| LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed (Phase 3a) |
-| AC-3 sync-frame header decode (`syncinfo()` fscod / frmsizecod + `bsi()` bsid / bsmod / acmod / mix-level conditionals / lfeon → sample rate + frame size + nominal bitrate + channel layout) | landed (Phase 3a) |
-| User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed (Phase 3c support) |
-| VOBU_SRI search-table decode | landed (Phase 3a) |
-| NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed (Phase 3a) |
-| NAV-pack PCI NSML_AGLI (non-seamless angle jump table — 9 `nsml_agl_cN_dsta` cells with direction bit + absent / no-more-video sentinels + 1-based `angle()` accessor) | landed (Phase 3a) |
-| PCI_GI `hli_ss` → typed `HighlightStatus` enum (None / AllNew / UsePrevious / UsePreviousExceptCommands) + geometry-inheritance + own-commands classifiers | landed (Phase 3a) |
-| HLI_GI `btn_md` → typed `ButtonMode` view (`btngr_ns` group count + three 3-bit `btngrN_ty` codes) | landed (Phase 3a) |
-| NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI; DSI_GI `c_eltm` → typed `PgcTime` + ns) | landed (Phase 3a) |
-| MKV mux + chapter encoding wiring | landed (Phase 3b, `mkv-output` feature) |
-| VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed (Phase 3c precursor) |
-| `PgcCommandTable` typed-instruction iterators (`pre_instructions` / `post_instructions` / `cell_instructions` + 1-based `cell_instruction(index)`) | landed (Phase 3c bridge) |
+| VOB demux (MPEG-PS pack + nav-pack + PES) | landed |
+| DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed |
+| LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed |
+| AC-3 sync-frame header decode (`syncinfo()` fscod / frmsizecod + `bsi()` bsid / bsmod / acmod / mix-level conditionals / lfeon → sample rate + frame size + nominal bitrate + channel layout) | landed |
+| User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed |
+| VOBU_SRI search-table decode | landed |
+| NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed |
+| NAV-pack PCI NSML_AGLI (non-seamless angle jump table — 9 `nsml_agl_cN_dsta` cells with direction bit + absent / no-more-video sentinels + 1-based `angle()` accessor) | landed |
+| PCI_GI `hli_ss` → typed `HighlightStatus` enum (None / AllNew / UsePrevious / UsePreviousExceptCommands) + geometry-inheritance + own-commands classifiers | landed |
+| HLI_GI `btn_md` → typed `ButtonMode` view (`btngr_ns` group count + three 3-bit `btngrN_ty` codes) | landed |
+| NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI; DSI_GI `c_eltm` → typed `PgcTime` + ns) | landed |
+| MKV mux + chapter encoding wiring | landed |
+| VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed |
+| `PgcCommandTable` typed-instruction iterators (`pre_instructions` / `post_instructions` / `cell_instructions` + 1-based `cell_instruction(index)`) | landed |
 | Sub-Picture Unit (SPU) decode (SPUH + SP_DCSQT command stream + PXDtf/PXDbf 2-bit RLE) | landed |
 | SPU → RGBA compositor (palette + contrast resolve + BT.601 YCbCr→RGB + field interleave) | landed |
-| VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | landed (Phase 3c — Type 0..6, including compound SET+CMP+LINK) |
+| VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | landed |
 | Typed SPRM accessors — language slots + sentinel-typed integer slots (SPRM 0 / 1 / 3 / 12 / 13 / 16 / 17 / 18 / 19) | landed |
-| CSS authentication + descrambling | Phase 3c (external `oxideav-css` crate) |
+| CSS authentication + descrambling | external `oxideav-css` crate |
 
 ## Quick start
 
@@ -123,7 +123,7 @@ oxideav-dvd = { version = "0.0", default-features = false }
 The `DvdDisc`, `iso9660::*`, and `udf::*` parser surface stays
 available; only the `dvd://` source-registry plumbing disappears.
 
-## DVD → MKV (Phase 3b)
+## DVD → MKV
 
 Enable the **`mkv-output`** feature to convert a DVD title to a
 Matroska file:
@@ -147,10 +147,10 @@ The muxer preserves each PES packet's 90 kHz PTS, sizes the MKV
 `ChapterTimeEnd` computed from the PGC playback-time BCD field
 (30 fps for NTSC, 25 fps for PAL — per `mpucoder-pgc.html`).
 
-The feature is **default-off** so the parse-only surface above
-keeps compiling against any `oxideav-mkv` patch release on
-crates.io. Toggle it on once you've got `oxideav-mkv >= 0.0.8`
-(the release that landed `MkvMuxer::add_chapter`).
+The feature is **default-off** so the parse-only surface above keeps
+compiling without pulling in `oxideav-mkv`; it requires
+`oxideav-mkv >= 0.0.8` (the release that landed
+`MkvMuxer::add_chapter`).
 
 ## Decoding a Sub-Picture Unit
 
@@ -407,7 +407,7 @@ if let Some(admap) = &vts.vobu_admap {
 given a VOB-relative sector, return the 1-based VOBU number whose
 range covers it (using a binary partition over the entry list).
 
-## Disassembling a NavCommand (Phase 3c precursor)
+## Disassembling a NavCommand
 
 The `nav` module decodes each 8-byte PGC command word into a typed
 `NavInstruction` tree without executing anything — useful for disc
@@ -440,7 +440,7 @@ page's rejection. The `Register` enum maps an operand byte to
 `Gprm(0..=15)` / `Sprm(0..=23)` / `Invalid(_)` per the asterisk
 note on `mpucoder-vmi.html`.
 
-## Executing PGC commands (Phase 3c VM)
+## Executing PGC commands
 
 The `vm` module wraps the disassembler with an interpreter that
 owns the register file (16 GPRMs + 24 SPRMs with spec-defined
@@ -598,8 +598,8 @@ This crate was written entirely against:
   `0x00A4`, the pre/post/cell command table, program map, Cell
   Playback Information Table, Cell Position Information Table).
   Decoding each `NavCommand` into a typed `NavInstruction` tree
-  lives in the `nav` module; executing the decoded form is the
-  remaining Phase 3c VM work.
+  lives in the `nav` module; executing the decoded form lives in
+  the `vm` module.
 - `docs/container/dvd/application/mpucoder-vmi.html`,
   `mpucoder-vmi-sum.html`, `mpucoder-vmi-jmp.html`,
   `mpucoder-sprm.html` — the VM instruction set (the full opcode
@@ -626,7 +626,7 @@ This crate was written entirely against:
   (DVD subset), MPEG-PS stream-ID table, NAV-pack PCI / DSI
   packet layouts, DVD substream allocations, VOBU / cell / VOB
   semantics, and the Program Stream System Header used by the
-  Phase 3a VOB demuxer.
+  VOB demuxer.
 - `docs/container/dvd/application/mpucoder-lpcm.html` — the 7-byte
   LPCM audio-pack header layout (quantisation / sample-rate /
   channel-count fields, first-access-unit pointer, the X/Y
