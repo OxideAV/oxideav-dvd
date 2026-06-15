@@ -1290,13 +1290,128 @@ impl VtsPttSrpt {
 // PGC — Program Chain (header + cells)
 // ------------------------------------------------------------------
 
+/// Cell type — byte-0 bits 7..6 of the cell-category field.
+///
+/// Per mpucoder-pgc.html "cell playback information table entry",
+/// the top two bits classify a cell's position within an angle
+/// block. A single-angle title reports [`CellType::Normal`] for
+/// every cell; the other three variants delimit the cells that make
+/// up one angle's contiguous run inside a multi-angle block so a
+/// player can splice angles at block boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellType {
+    /// `00` — a normal (non-angle) cell.
+    Normal,
+    /// `01` — first cell of an angle block.
+    FirstOfAngleBlock,
+    /// `10` — a middle cell of an angle block.
+    MiddleOfAngleBlock,
+    /// `11` — last cell of an angle block.
+    LastOfAngleBlock,
+}
+
+impl CellType {
+    /// Decode the 2-bit value (already shifted into 0..=3).
+    fn from_bits(v: u8) -> Self {
+        match v & 0b11 {
+            0 => CellType::Normal,
+            1 => CellType::FirstOfAngleBlock,
+            2 => CellType::MiddleOfAngleBlock,
+            _ => CellType::LastOfAngleBlock,
+        }
+    }
+
+    /// `true` for any of the three angle-block positions (i.e. this
+    /// cell is part of a multi-angle block, not a plain cell).
+    #[inline]
+    pub fn is_angle_block(self) -> bool {
+        !matches!(self, CellType::Normal)
+    }
+}
+
+/// Cell block type — byte-0 bits 5..4 of the cell-category field.
+///
+/// Per mpucoder-pgc.html `00` marks a normal cell and `01` an
+/// angle-block cell; the remaining two codes are reserved by the
+/// spec and surfaced as [`CellBlockType::Reserved`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellBlockType {
+    /// `00` — normal (not part of a block).
+    Normal,
+    /// `01` — angle block.
+    AngleBlock,
+    /// `10` / `11` — reserved by the spec.
+    Reserved(u8),
+}
+
+impl CellBlockType {
+    /// Decode the 2-bit value (already shifted into 0..=3).
+    fn from_bits(v: u8) -> Self {
+        match v & 0b11 {
+            0 => CellBlockType::Normal,
+            1 => CellBlockType::AngleBlock,
+            x => CellBlockType::Reserved(x),
+        }
+    }
+}
+
+/// Decoded cell-category byte (byte 0 of a C_PBI entry).
+///
+/// Layout per mpucoder-pgc.html "cell playback information table
+/// entry", byte 0, MSB-first:
+///
+/// | Bits | Field                                  |
+/// |------|----------------------------------------|
+/// | 7..6 | cell type ([`CellType`])               |
+/// | 5..4 | block type ([`CellBlockType`])         |
+/// | 3    | `1` = seamless playback linked in PCI  |
+/// | 2    | `1` = interleaved                      |
+/// | 1    | `1` = STC discontinuity                |
+/// | 0    | `1` = seamless angle linked in DSI     |
+///
+/// These flags drive a player's angle/seamless-splice decisions:
+/// an interleaved angle block reads its constituent ILVUs out of an
+/// interleaved-unit layout, the seamless flags say whether the
+/// transition is gap-free, and the STC-discontinuity bit warns the
+/// demuxer to reset its system-clock reference at the cell boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellCategory {
+    /// Bits 7..6 — cell position within an angle block.
+    pub cell_type: CellType,
+    /// Bits 5..4 — normal vs angle block.
+    pub block_type: CellBlockType,
+    /// Bit 3 — seamless playback linked in PCI.
+    pub seamless_playback: bool,
+    /// Bit 2 — cell is part of an interleaved unit.
+    pub interleaved: bool,
+    /// Bit 1 — system-clock-reference discontinuity at this cell.
+    pub stc_discontinuity: bool,
+    /// Bit 0 — seamless angle change linked in DSI.
+    pub seamless_angle: bool,
+}
+
+impl CellCategory {
+    /// Decode the raw byte-0 cell-category value.
+    pub fn from_byte(b: u8) -> Self {
+        Self {
+            cell_type: CellType::from_bits(b >> 6),
+            block_type: CellBlockType::from_bits((b >> 4) & 0b11),
+            seamless_playback: (b & 0b0000_1000) != 0,
+            interleaved: (b & 0b0000_0100) != 0,
+            stc_discontinuity: (b & 0b0000_0010) != 0,
+            seamless_angle: (b & 0b0000_0001) != 0,
+        }
+    }
+}
+
 /// Per-cell playback information (16 bytes per entry in C_PBI).
 ///
 /// Field layout per mpucoder-pgc.html "cell playback information
 /// table entry":
 ///
 /// - byte 0: cell category bits (cell type, block type, seamless,
-///   interleaved, STC discontinuity, seamless-angle).
+///   interleaved, STC discontinuity, seamless-angle) — decode with
+///   [`CellPlaybackInfo::category`].
 /// - byte 1: restricted flag (`0x80` = trick-play disallowed).
 /// - byte 2: cell still time.
 /// - byte 3: cell command # (1..=128, 0 = no command).
@@ -1345,6 +1460,16 @@ impl CellPlaybackInfo {
             last_vobu_start_sector,
             last_vobu_end_sector,
         })
+    }
+
+    /// Decode the raw [`Self::category_byte0`] into the typed
+    /// [`CellCategory`] (cell type, block type, and the four
+    /// seamless / interleaved / discontinuity / seamless-angle
+    /// flags). The raw byte stays in [`Self::category_byte0`] for
+    /// callers that need it.
+    #[inline]
+    pub fn category(&self) -> CellCategory {
+        CellCategory::from_byte(self.category_byte0)
     }
 }
 
@@ -5020,5 +5145,99 @@ mod tests {
         assert_eq!(MenuType::from_nibble(0), MenuType::Unknown(0));
         // High nibble is masked off — only low 4 bits matter.
         assert_eq!(MenuType::from_nibble(0xF3), MenuType::Root);
+    }
+
+    #[test]
+    fn cell_category_normal_cell_all_clear() {
+        let cat = CellCategory::from_byte(0x00);
+        assert_eq!(cat.cell_type, CellType::Normal);
+        assert_eq!(cat.block_type, CellBlockType::Normal);
+        assert!(!cat.seamless_playback);
+        assert!(!cat.interleaved);
+        assert!(!cat.stc_discontinuity);
+        assert!(!cat.seamless_angle);
+        assert!(!cat.cell_type.is_angle_block());
+    }
+
+    #[test]
+    fn cell_category_decodes_cell_type_bits() {
+        // bits 7..6: 00=normal, 01=first, 10=middle, 11=last.
+        assert_eq!(CellCategory::from_byte(0x00).cell_type, CellType::Normal);
+        assert_eq!(
+            CellCategory::from_byte(0x40).cell_type,
+            CellType::FirstOfAngleBlock
+        );
+        assert_eq!(
+            CellCategory::from_byte(0x80).cell_type,
+            CellType::MiddleOfAngleBlock
+        );
+        assert_eq!(
+            CellCategory::from_byte(0xC0).cell_type,
+            CellType::LastOfAngleBlock
+        );
+        assert!(CellCategory::from_byte(0x40).cell_type.is_angle_block());
+    }
+
+    #[test]
+    fn cell_category_decodes_block_type_bits() {
+        // bits 5..4: 00=normal, 01=angle block, 10/11=reserved.
+        assert_eq!(
+            CellCategory::from_byte(0x00).block_type,
+            CellBlockType::Normal
+        );
+        assert_eq!(
+            CellCategory::from_byte(0x10).block_type,
+            CellBlockType::AngleBlock
+        );
+        assert_eq!(
+            CellCategory::from_byte(0x20).block_type,
+            CellBlockType::Reserved(2)
+        );
+        assert_eq!(
+            CellCategory::from_byte(0x30).block_type,
+            CellBlockType::Reserved(3)
+        );
+    }
+
+    #[test]
+    fn cell_category_decodes_low_nibble_flags() {
+        // bit 3 seamless playback, bit 2 interleaved, bit 1 STC
+        // discontinuity, bit 0 seamless angle.
+        assert!(CellCategory::from_byte(0x08).seamless_playback);
+        assert!(CellCategory::from_byte(0x04).interleaved);
+        assert!(CellCategory::from_byte(0x02).stc_discontinuity);
+        assert!(CellCategory::from_byte(0x01).seamless_angle);
+
+        // A fully-set low nibble lights all four flags at once.
+        let cat = CellCategory::from_byte(0x0F);
+        assert!(cat.seamless_playback);
+        assert!(cat.interleaved);
+        assert!(cat.stc_discontinuity);
+        assert!(cat.seamless_angle);
+    }
+
+    #[test]
+    fn cell_category_interleaved_angle_block_first_cell() {
+        // 0x55 = 0b0101_0101: first-of-angle-block (bits 7..6 = 01)
+        // + angle block (bits 5..4 = 01) + interleaved (bit 2)
+        // + seamless angle (bit 0).
+        let cat = CellCategory::from_byte(0x55);
+        assert_eq!(cat.cell_type, CellType::FirstOfAngleBlock);
+        assert_eq!(cat.block_type, CellBlockType::AngleBlock);
+        assert!(cat.interleaved);
+        assert!(cat.seamless_angle);
+        assert!(!cat.seamless_playback);
+        assert!(!cat.stc_discontinuity);
+    }
+
+    #[test]
+    fn cell_playback_info_category_accessor_matches_raw() {
+        let mut cell = make_cell(1000, 1999);
+        cell.category_byte0 = 0x8A; // middle angle + STC disc + ...
+        let cat = cell.category();
+        assert_eq!(cat, CellCategory::from_byte(0x8A));
+        assert_eq!(cat.cell_type, CellType::MiddleOfAngleBlock);
+        assert!(cat.stc_discontinuity);
+        assert!(cat.seamless_playback);
     }
 }

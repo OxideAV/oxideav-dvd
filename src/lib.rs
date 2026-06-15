@@ -107,13 +107,14 @@ pub use disc::{DvdDisc, DvdFile, DvdFileKind};
 pub use error::{Error, Result};
 pub use ifo::{
     menu_existence, AudioApplicationMode, AudioAttributes, AudioCodingMode, AudioLanguageType,
-    AudioQuantizationDrc, CellAddrEntry, CellPlaybackInfo, CellPositionInfo, DvdChapter, DvdTitle,
-    DvdTitleEntry, FrameRate, McExtensionEntry, MenuAttributes, MenuType, NavCommand, PaletteEntry,
-    Pgc, PgcCommandTable, PgcTime, Pgci, PgciLu, PgciLuSrp, PgciSrp, PgciUt, PgciUtSrp, PtlMait,
-    Ptt, PttTitle, SubpictureAttributes, SubpictureCodingMode, SubpictureLanguageType,
-    TitleAttributes, TmapEntry, TtSrpt, VideoAspectRatio, VideoAttributes, VideoCodingMode,
-    VideoResolution, VideoStandard, VmgIfo, VmgPtlMait, VmgVtsAtrt, VmgVtsAtrtEntry, VobuAdmap,
-    VtsCAdt, VtsIfo, VtsPttSrpt, VtsTmap, VtsTmapti, VtsiMat, DVD_SECTOR, VMG_MAGIC, VTS_MAGIC,
+    AudioQuantizationDrc, CellAddrEntry, CellBlockType, CellCategory, CellPlaybackInfo,
+    CellPositionInfo, CellType, DvdChapter, DvdTitle, DvdTitleEntry, FrameRate, McExtensionEntry,
+    MenuAttributes, MenuType, NavCommand, PaletteEntry, Pgc, PgcCommandTable, PgcTime, Pgci,
+    PgciLu, PgciLuSrp, PgciSrp, PgciUt, PgciUtSrp, PtlMait, Ptt, PttTitle, SubpictureAttributes,
+    SubpictureCodingMode, SubpictureLanguageType, TitleAttributes, TmapEntry, TtSrpt,
+    VideoAspectRatio, VideoAttributes, VideoCodingMode, VideoResolution, VideoStandard, VmgIfo,
+    VmgPtlMait, VmgVtsAtrt, VmgVtsAtrtEntry, VobuAdmap, VtsCAdt, VtsIfo, VtsPttSrpt, VtsTmap,
+    VtsTmapti, VtsiMat, DVD_SECTOR, VMG_MAGIC, VTS_MAGIC,
 };
 pub use iso9660::{
     DirectoryRecord, Iso9660Entry, Iso9660Volume, PathTableEntry, PrimaryVolumeDescriptor,

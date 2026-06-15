@@ -19,7 +19,11 @@ The crate handles the **physical + filesystem + disc-identification +
 IFO structural + VOB demux + navigation-VM** layers — enough to point a
 player at a DVD-Video disc image or block device, enumerate the
 title-set files, pull the title / chapter / program-chain / cell layout
-out of every IFO, demux each cell's VOBUs into raw MPEG-2 video + AC-3 /
+out of every IFO (including the typed `CellCategory` decode of each
+cell's byte-0 category field — cell type / block type plus the
+seamless / interleaved / STC-discontinuity / seamless-angle flags an
+angle-splice engine branches on), demux each cell's VOBUs into raw
+MPEG-2 video + AC-3 /
 DTS / LPCM audio + subpicture elementary streams keyed by track ID,
 answer time-based seek queries through the per-PGC `VTS_TMAPTI` time map
 + the title-set `VTS_VOBU_ADMAP` absolute-sector list, decode subpicture

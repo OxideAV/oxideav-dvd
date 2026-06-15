@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Typed cell-category decode (`ifo` module).** The PGC cell-playback
+  information table's byte-0 cell-category field is now decoded into a
+  typed `CellCategory` via `CellPlaybackInfo::category()`: the 2-bit
+  `CellType` (normal / first / middle / last of an angle block), the
+  2-bit `CellBlockType` (normal / angle block / reserved), and the four
+  low-nibble flags (seamless-playback-linked-in-PCI, interleaved,
+  STC-discontinuity, seamless-angle-linked-in-DSI). These drive a
+  player's angle-splice and seamless-transition decisions. Per
+  `docs/container/dvd/application/mpucoder-pgc.html` "cell playback
+  information table entry". `CellType::is_angle_block()` convenience
+  predicate added; raw `category_byte0` retained.
+
 ## [0.0.3](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.2...v0.0.3) - 2026-06-14
 
 ### Other
