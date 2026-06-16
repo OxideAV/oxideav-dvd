@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **DTS core frame-header decoder (`dts` module).** The first 10 bytes
+  of a DTS Coherent Acoustics core sync frame — the bytes the VOB
+  demuxer routes to `VobStreams::dts` from `private_stream_1` substream
+  `0x88..=0x8F` — are now decoded into a typed `DtsHeader`: the
+  `0x7FFE8001` sync word, `ftype` frame type, `short`, `cpf`, `nblks`
+  (→ `sample_block_count` / `sample_count`), `fsize` (→
+  `frame_size_bytes`), the `amode` channel arrangement (16 standard
+  layouts + user-defined, with `channel_count`), the `sfreq`
+  sampling-rate table (`sample_rate_hz`), the `rate` targeted-bit-rate
+  code (the two DVD-Video values 768 / 1536 kbps via
+  `targeted_bitrate_kbps`), and the five trailing flags `mix` / `dynf`
+  / `timef` / `auxf` / `hdcd`. Header-only and allocation-free — the
+  variable-length bit-stream remainder stays with the audio decoder.
+  Per `docs/container/dvd/application/stnsoft-dtshdr.html`.
+
 - **Typed cell-category decode (`ifo` module).** The PGC cell-playback
   information table's byte-0 cell-category field is now decoded into a
   typed `CellCategory` via `CellPlaybackInfo::category()`: the 2-bit

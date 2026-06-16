@@ -84,6 +84,7 @@ is delegated to the external `oxideav-css` crate.
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed |
 | LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed |
 | AC-3 sync-frame header decode (`syncinfo()` fscod / frmsizecod + `bsi()` bsid / bsmod / acmod / mix-level conditionals / lfeon → sample rate + frame size + nominal bitrate + channel layout) | landed |
+| DTS core frame-header decode (10-byte sync frame — ftype / short / cpf / nblks / fsize + amode channel arrangement + sfreq sample rate + rate targeted bitrate + mix/dynf/timef/auxf/hdcd flags) | landed |
 | User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed |
 | VOBU_SRI search-table decode | landed |
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed |
@@ -306,6 +307,49 @@ covers the deterministically-positioned `bsi()` prefix
 `dsurmod` conditionals + `lfeon`); the variable-length `bsi()` tail
 and the audio blocks stay with a downstream decoder, per
 `stnsoft-ac3hdr.html`.
+
+## Decoding a DTS core frame header
+
+The `dts` module pulls the 10-byte DTS Coherent Acoustics core
+frame header off the start of a DTS elementary stream — the raw
+bytes the demuxer routes to `VobStreams::dts` from
+`private_stream_1` substream `0x88..=0x8F`. It surfaces the format
+a player needs to size buffers, label the track, and seek to a
+frame boundary without pulling in a full DTS audio decoder:
+
+```rust,no_run
+use oxideav_dvd::{DtsHeader, DtsAudioMode, DtsSampleRate, DtsBitRate};
+
+// `frame` starts at the DTS sync word (0x7FFE8001).
+let frame: &[u8] = &[];
+let h = DtsHeader::parse(frame).unwrap();
+
+assert_eq!(h.sample_rate, DtsSampleRate::Hz48000);
+println!("{} Hz, {} channels",
+         h.sample_rate_hz().unwrap(),
+         h.channel_count().unwrap());
+
+// 5-channel arrangement at 768 kbps targeted.
+if h.audio_mode == DtsAudioMode::FiveChannel && h.bit_rate == DtsBitRate::Kbps768 {
+    println!("DTS 5.0 @ {} kbps", h.targeted_bitrate_kbps().unwrap());
+}
+
+// Seek to the next frame boundary; each frame carries `sample_count`
+// PCM samples per channel.
+println!("frame is {} bytes, {} samples/ch",
+         h.frame_size_bytes(), h.sample_count());
+```
+
+`frame_size_bytes()` returns `fsize + 1` (1006 bytes for a
+768 kbps DVD stream, 2013 for 1536 kbps); `sample_block_count()`
+returns `nblks + 1` (16 on DVD → `sample_count` = 512 samples).
+The `amode` table decodes the 16 standard channel arrangements
+(with user-defined codes `0x10..=0x3F` preserved and a `None`
+channel count), the `sfreq` table maps the nine valid sampling-rate
+codes (reserved codes return `DtsSampleRate::Invalid`), and `rate`
+recognises the two DVD-Video bit-rate codes. The variable-length
+remainder of the DTS bit stream after the `hdcd` flag stays with a
+downstream decoder, per `stnsoft-dtshdr.html`.
 
 ## Querying User Operation prohibitions
 
@@ -647,6 +691,13 @@ This crate was written entirely against:
   columns), and the `bsi()` field order (`bsid` / `bsmod` / `acmod`
   with the conditional `cmixlev` / `surmixlev` / `dsurmod` presence
   rules + `lfeon`) feeding the `ac3` module's `Ac3Header` decoder.
+- `docs/container/dvd/application/stnsoft-dtshdr.html` — the 10-byte
+  DTS Coherent Acoustics core frame-header layout: the `0x7FFE8001`
+  sync word, the bit allocation of the nine header fields plus the
+  five trailing flags (`mix` / `dynf` / `timef` / `auxf` / `hdcd`),
+  the `amode` audio-channel-arrangement table, the `sfreq`
+  sampling-rate table, and the two DVD-Video `rate` codes (768 /
+  1536 kbps) feeding the `dts` module's `DtsHeader` decoder.
 - `docs/container/dvd/application/mpucoder-uops.html` — the 25-row
   User Operation flag table (bit numbers + per-level applicability
   matrix + three-level OR-merge rule) feeding the `uops` module's
