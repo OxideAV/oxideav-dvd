@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Generic audio-substream header decoder (`vob` module).** Every
+  `private_stream_1` AC-3 / DTS / LPCM payload begins with the DVD-only
+  two-byte header that follows the substream-number byte: `FrmCnt` (the
+  number of audio frames beginning in the packet) and `FirstAccUnit`
+  (the pointer to the frame the PES PTS corresponds to). It is now
+  decoded into a typed `AudioSubstreamHeader` via
+  `AudioSubstreamHeader::parse`, exposing `frame_count`,
+  `first_access_unit`, the `substream()` / `track()` classifiers,
+  `has_no_first_access_unit()` (the `FirstAccUnit == 0` "none" case),
+  and `access_unit_offset()` — the payload-relative byte offset of the
+  PTS-aligned access unit, applying the reference page's
+  `3 + FirstAccUnit` arithmetic so the demuxer can locate the
+  sync-word-aligned frame the PTS belongs to (AC-3 frames span PES
+  packets, so it is rarely the first one in the payload). A new
+  `DvdSubstream::is_audio()` classifier marks the three substream kinds
+  this header prefixes. Per
+  `docs/container/dvd/application/stnsoft-ass-hdr.html`.
+
 - **DTS core frame-header decoder (`dts` module).** The first 10 bytes
   of a DTS Coherent Acoustics core sync frame — the bytes the VOB
   demuxer routes to `VobStreams::dts` from `private_stream_1` substream

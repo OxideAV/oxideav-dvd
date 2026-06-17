@@ -215,6 +215,135 @@ impl DvdSubstream {
             Self::Lpcm(b) => b - 0xA0,
         }
     }
+
+    /// `true` for the three audio substream kinds (AC-3 / DTS /
+    /// LPCM). Each is prefixed by the generic [`AudioSubstreamHeader`]
+    /// (FrmCnt + FirstAccUnit) per `stnsoft-ass-hdr.html`; subpicture
+    /// substreams are not.
+    pub fn is_audio(self) -> bool {
+        matches!(self, Self::Ac3(_) | Self::Dts(_) | Self::Lpcm(_))
+    }
+}
+
+/// Generic DVD audio-substream header — the two bytes that
+/// immediately follow the substream-number byte at the start of
+/// **every** private_stream_1 audio payload (AC-3 / DTS / LPCM),
+/// per `docs/container/dvd/application/stnsoft-ass-hdr.html`.
+///
+/// This header is a DVD-Video invention: it is part of neither the
+/// MPEG Program Stream nor the wrapped audio-codec bitstream. It
+/// tells the demuxer how many audio frames begin inside this PES
+/// packet (`frame_count`) and where the frame the enclosing PES
+/// PTS applies to starts (`first_access_unit`), so a player can
+/// align a packet's first byte-aligned sync word to the correct
+/// presentation time. AC-3 frames span PES packets, so the sync
+/// word the PTS refers to is rarely the first one in the payload —
+/// the `first_access_unit` pointer is what disambiguates it.
+///
+/// On-wire layout (offsets relative to the substream-number byte at
+/// payload offset 0):
+///
+/// | Off | Field              | Bytes | Meaning                                    |
+/// |-----|--------------------|-------|--------------------------------------------|
+/// | 0   | `sub_stream_id`    | 1     | substream number (`0x80..` / `0x88..` / `0xA0..`) |
+/// | 1   | `FrmCnt`           | 1     | number of frames beginning in this packet  |
+/// | 2-3 | `FirstAccUnit`     | 2     | offset to the PTS-aligned frame; `0` = none |
+///
+/// The pointer arithmetic on the reference page reads: "offset 0 is
+/// the last byte of FirstAccUnit, ie add the offset of byte 2 to
+/// get the AU's offset". Byte 2 of the header (the high byte of
+/// `FirstAccUnit`) sits at payload offset 2, and the worked AC-3
+/// example resolves the access-unit position to payload offset
+/// `3 + FirstAccUnit` (substream `0x80` at packet offset `0x1F`,
+/// `FrmCnt = 2` at `0x20`, `FirstAccUnit = 1` at `0x21..0x23`, AC-3
+/// sync `0B77` at `0x23 = 0x1F + 4 = 3 + 1`). [`Self::access_unit_offset`]
+/// applies that `3 + FirstAccUnit` rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioSubstreamHeader {
+    /// Substream-number byte (`0x80..=0x87` AC-3, `0x88..=0x8F` DTS,
+    /// `0xA0..=0xA7` LPCM) — mirrored from payload byte 0.
+    pub sub_stream_id: u8,
+    /// `FrmCnt` — number of audio frames whose first byte begins in
+    /// this PES packet's payload.
+    pub frame_count: u8,
+    /// `FirstAccUnit` — raw 16-bit pointer to the frame the
+    /// enclosing PES PTS corresponds to. `0` means "no first access
+    /// unit begins in this packet" (the PTS, if any, applies to a
+    /// frame carried over from an earlier packet).
+    pub first_access_unit: u16,
+}
+
+/// Length of the generic audio-substream header that prefixes every
+/// AC-3 / DTS / LPCM payload (substream byte + FrmCnt + FirstAccUnit).
+pub const AUDIO_SUBSTREAM_HEADER_LEN: usize = 4;
+
+impl AudioSubstreamHeader {
+    /// Decode the generic audio-substream header from the start of a
+    /// private_stream_1 audio payload (which begins at the substream
+    /// selector byte — i.e. [`PesPacket::payload`] for an AC-3 / DTS
+    /// / LPCM substream).
+    ///
+    /// Rejects a payload shorter than [`AUDIO_SUBSTREAM_HEADER_LEN`]
+    /// bytes or one whose first byte is not an audio substream
+    /// selector with [`Error::InvalidUdf`] — both indicate the
+    /// caller routed a non-audio payload here.
+    pub fn parse(payload: &[u8]) -> Result<Self> {
+        if payload.len() < AUDIO_SUBSTREAM_HEADER_LEN {
+            return Err(Error::InvalidUdf(
+                "audio substream header truncated (< 4 bytes)",
+            ));
+        }
+        let sub_stream_id = payload[0];
+        match DvdSubstream::from_first_byte(sub_stream_id) {
+            Some(s) if s.is_audio() => {}
+            _ => {
+                return Err(Error::InvalidUdf(
+                    "audio substream header: byte 0 is not an AC-3 / DTS / LPCM selector",
+                ))
+            }
+        }
+        let frame_count = payload[1];
+        let first_access_unit = u16::from_be_bytes([payload[2], payload[3]]);
+        Ok(Self {
+            sub_stream_id,
+            frame_count,
+            first_access_unit,
+        })
+    }
+
+    /// Classify the substream this header prefixes.
+    pub fn substream(&self) -> Option<DvdSubstream> {
+        DvdSubstream::from_first_byte(self.sub_stream_id)
+    }
+
+    /// Audio track ID `0..=7` (substream selector minus its base).
+    pub fn track(&self) -> Option<u8> {
+        self.substream().map(|s| s.track())
+    }
+
+    /// `true` when `FirstAccUnit == 0`, i.e. no audio frame's first
+    /// byte begins in this packet — the PTS (if present) belongs to
+    /// a frame that started in an earlier packet.
+    pub fn has_no_first_access_unit(&self) -> bool {
+        self.first_access_unit == 0
+    }
+
+    /// Payload-relative byte offset of the access unit the enclosing
+    /// PES PTS corresponds to, applying the reference page's
+    /// "`3 + FirstAccUnit`" arithmetic (the high byte of
+    /// `FirstAccUnit` sits at payload offset 2, and "offset 0 is the
+    /// last byte of FirstAccUnit").
+    ///
+    /// Returns `None` when [`Self::has_no_first_access_unit`] holds
+    /// (there is no PTS-aligned access unit in this packet to point
+    /// at).
+    pub fn access_unit_offset(&self) -> Option<usize> {
+        if self.has_no_first_access_unit() {
+            None
+        } else {
+            Some(AUDIO_SUBSTREAM_HEADER_LEN - 1 + self.first_access_unit as usize)
+        }
+    }
 }
 
 /// Parsed PES packet — header + raw payload slice (zero-copy into
@@ -2914,5 +3043,96 @@ mod tests {
         assert_eq!(nav.dsi.sml_agli.cells[0].dsta, 0x5000_0000);
         assert_eq!(nav.dsi.vobu_sri.sri_nvwv, 0x8000_0001);
         assert_eq!(nav.dsi.synci.a_synca[0], 0x7000);
+    }
+
+    // ----- AudioSubstreamHeader (stnsoft-ass-hdr.html) --------------
+
+    #[test]
+    fn audio_substream_header_ac3_worked_example() {
+        // Reproduces the AC-3 example on stnsoft-ass-hdr.html: the
+        // private_stream_1 payload begins with substream 0x80
+        // (audio stream 0), FrmCnt = 2, FirstAccUnit = 1, then the
+        // AC-3 sync word 0B77 at payload offset 4 (= 3 + 1).
+        let payload = [0x80, 0x02, 0x00, 0x01, 0x0B, 0x77];
+        let h = AudioSubstreamHeader::parse(&payload).expect("parses");
+        assert_eq!(h.sub_stream_id, 0x80);
+        assert_eq!(h.frame_count, 2);
+        assert_eq!(h.first_access_unit, 1);
+        assert_eq!(h.substream(), Some(DvdSubstream::Ac3(0x80)));
+        assert_eq!(h.track(), Some(0));
+        assert!(!h.has_no_first_access_unit());
+        // 3 + FirstAccUnit -> payload offset 4, where the sync word sits.
+        assert_eq!(h.access_unit_offset(), Some(4));
+        assert_eq!(&payload[h.access_unit_offset().unwrap()..], &[0x0B, 0x77]);
+    }
+
+    #[test]
+    fn audio_substream_header_dts_worked_example() {
+        // DTS example: substream 0x88 (audio stream 0), FrmCnt = 1,
+        // FirstAccUnit = 1, DTS sync 7FFE8001 at payload offset 4.
+        let payload = [0x88, 0x01, 0x00, 0x01, 0x7F, 0xFE, 0x80, 0x01];
+        let h = AudioSubstreamHeader::parse(&payload).expect("parses");
+        assert_eq!(h.substream(), Some(DvdSubstream::Dts(0x88)));
+        assert_eq!(h.frame_count, 1);
+        assert_eq!(h.access_unit_offset(), Some(4));
+        assert_eq!(
+            &payload[h.access_unit_offset().unwrap()..],
+            &[0x7F, 0xFE, 0x80, 0x01]
+        );
+    }
+
+    #[test]
+    fn audio_substream_header_lpcm_prefix_matches_lpcm_module() {
+        // The generic header overlays the first 4 bytes of an LPCM
+        // audio-pack header; FrmCnt and FirstAccUnit decode the same
+        // way the dedicated lpcm module reads bytes 1 and 2..4.
+        // LPCM example from stnsoft-ass-hdr.html: A0, 07, 0004, ...
+        let payload = [0xA0, 0x07, 0x00, 0x04, 0x00, 0x01, 0x80, 0x00, 0x00];
+        let h = AudioSubstreamHeader::parse(&payload).expect("parses");
+        assert_eq!(h.substream(), Some(DvdSubstream::Lpcm(0xA0)));
+        assert_eq!(h.frame_count, 7);
+        assert_eq!(h.first_access_unit, 4);
+        // AU offset = 3 + 4 = 7 (the worked example's "offset 026"
+        // = packet 0x1F + 7).
+        assert_eq!(h.access_unit_offset(), Some(7));
+        // Cross-check FrmCnt / FirstAccUnit against the LPCM decoder.
+        let lpcm = crate::lpcm::LpcmHeader::parse(&[0xA0, 0x07, 0x00, 0x04, 0x00, 0x01, 0x80])
+            .expect("lpcm parses");
+        assert_eq!(
+            u16::from(h.frame_count),
+            u16::from(lpcm.number_of_frame_headers)
+        );
+        assert_eq!(h.first_access_unit, lpcm.first_access_unit_pointer);
+    }
+
+    #[test]
+    fn audio_substream_header_no_first_access_unit() {
+        // FirstAccUnit == 0 -> no PTS-aligned frame begins here.
+        let payload = [0x81, 0x00, 0x00, 0x00];
+        let h = AudioSubstreamHeader::parse(&payload).expect("parses");
+        assert!(h.has_no_first_access_unit());
+        assert_eq!(h.access_unit_offset(), None);
+        assert_eq!(h.track(), Some(1));
+    }
+
+    #[test]
+    fn audio_substream_header_rejects_subpicture_and_short() {
+        // Subpicture substreams carry no FrmCnt/FirstAccUnit header.
+        let sp = [0x20, 0x00, 0x00, 0x00];
+        assert!(AudioSubstreamHeader::parse(&sp).is_err());
+        // Truncated payload.
+        let short = [0x80, 0x02, 0x00];
+        assert!(AudioSubstreamHeader::parse(&short).is_err());
+        // Unknown selector.
+        let bad = [0x10, 0x00, 0x00, 0x00];
+        assert!(AudioSubstreamHeader::parse(&bad).is_err());
+    }
+
+    #[test]
+    fn dvd_substream_is_audio_classifies() {
+        assert!(DvdSubstream::Ac3(0x80).is_audio());
+        assert!(DvdSubstream::Dts(0x88).is_audio());
+        assert!(DvdSubstream::Lpcm(0xA0).is_audio());
+        assert!(!DvdSubstream::Subpicture(0x20).is_audio());
     }
 }

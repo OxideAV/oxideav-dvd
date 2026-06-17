@@ -160,10 +160,11 @@ pub use vm::{
     SPRM_VIDEO_PREF, SPRM_VTS_TITLE,
 };
 pub use vob::{
-    demux_vobs, demux_vobs_path, looks_like_nav_pack, ButtonInfo, ButtonMode, CellId, DsiGi,
-    DsiPacket, DvdSubstream, ElementaryStream, HighlightInfo, HighlightStatus, NavPack, NsmlAgli,
-    NsmlAngleCell, PackHeader, PciPacket, PesPacket, SlColi, SlColiCell, SmlAgli, SmlAngleCell,
-    SmlAudioGap, SmlPbi, Synci, VobDemuxer, VobId, VobStreams, VobuSri,
+    demux_vobs, demux_vobs_path, looks_like_nav_pack, AudioSubstreamHeader, ButtonInfo, ButtonMode,
+    CellId, DsiGi, DsiPacket, DvdSubstream, ElementaryStream, HighlightInfo, HighlightStatus,
+    NavPack, NsmlAgli, NsmlAngleCell, PackHeader, PciPacket, PesPacket, SlColi, SlColiCell,
+    SmlAgli, SmlAngleCell, SmlAudioGap, SmlPbi, Synci, VobDemuxer, VobId, VobStreams, VobuSri,
+    AUDIO_SUBSTREAM_HEADER_LEN,
 };
 
 #[cfg(feature = "registry")]

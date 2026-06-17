@@ -82,6 +82,7 @@ is delegated to the external `oxideav-css` crate.
 | VTS_TMAPTI (per-PGC time map + seconds → VOBU sector seek) | landed |
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed |
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed |
+| Generic audio-substream header decode (`AudioSubstreamHeader` — FrmCnt + FirstAccUnit prefixing every AC-3 / DTS / LPCM payload; `access_unit_offset()` PTS-aligned-frame locator via the `3 + FirstAccUnit` rule) | landed |
 | LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed |
 | AC-3 sync-frame header decode (`syncinfo()` fscod / frmsizecod + `bsi()` bsid / bsmod / acmod / mix-level conditionals / lfeon → sample rate + frame size + nominal bitrate + channel layout) | landed |
 | DTS core frame-header decode (10-byte sync frame — ftype / short / cpf / nblks / fsize + amode channel arrangement + sfreq sample rate + rate targeted bitrate + mix/dynf/timef/auxf/hdcd flags) | landed |
@@ -675,6 +676,12 @@ This crate was written entirely against:
   packet layouts, DVD substream allocations, VOBU / cell / VOB
   semantics, and the Program Stream System Header used by the
   VOB demuxer.
+- `docs/container/dvd/application/stnsoft-ass-hdr.html` — the generic
+  DVD audio-substream header (`FrmCnt` + `FirstAccUnit`) that prefixes
+  every private_stream_1 AC-3 / DTS / LPCM payload after the substream
+  number, including the worked AC-3 / DTS / LPCM offset examples that
+  pin the `access_unit_offset()` = `3 + FirstAccUnit` arithmetic in the
+  `vob` module's `AudioSubstreamHeader` decoder.
 - `docs/container/dvd/application/mpucoder-lpcm.html` — the 7-byte
   LPCM audio-pack header layout (quantisation / sample-rate /
   channel-count fields, first-access-unit pointer, the X/Y
