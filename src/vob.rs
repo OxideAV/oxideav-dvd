@@ -41,7 +41,8 @@ use std::path::Path;
 
 use crate::disc::{DvdDisc, DvdFileKind};
 use crate::error::{Error, Result};
-use crate::ifo::{PgcTime, DVD_SECTOR};
+use crate::ifo::{NavCommand, PgcTime, DVD_SECTOR};
+use crate::nav::NavInstruction;
 
 // ------------------------------------------------------------------
 // MPEG-PS start codes (per mpucoder-mpeghdrs.html stream-ID table)
@@ -627,6 +628,29 @@ impl ButtonInfo {
             right: b[9] & 0x3F,
             command,
         }
+    }
+
+    /// Decode this button's 8-byte action command into a typed
+    /// [`NavInstruction`].
+    ///
+    /// `BTN_IT` bytes `0x0A..0x12` carry "one vm command to be executed
+    /// on action of this button" per `mpucoder-pci_pkt.html`. The word
+    /// uses the identical 8-byte VM encoding as a PGC pre/post/cell
+    /// command, so it is decoded through the same
+    /// [`NavCommand::decode`] disassembler the `nav` module exposes —
+    /// no separate button-command opcode table exists. A menu engine
+    /// that has resolved which button the user actioned can branch on
+    /// the returned instruction (e.g. a `LinkPGCN` / `JumpTT` /
+    /// `CallSS`) without re-reading the raw bytes.
+    ///
+    /// **Pure function** — wraps [`Self::command`] and delegates to the
+    /// non-executing decoder; executing the instruction is the `vm`
+    /// module's job.
+    pub fn command_instruction(&self) -> NavInstruction {
+        NavCommand {
+            bytes: self.command,
+        }
+        .decode()
     }
 }
 
@@ -2516,6 +2540,42 @@ mod tests {
         assert_eq!(b.left, 7);
         assert_eq!(b.right, 8);
         assert_eq!(b.command, [0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7]);
+    }
+
+    #[test]
+    fn button_command_instruction_decodes_via_nav() {
+        use crate::ifo::NavCommand;
+        use crate::nav::{JumpSSTarget, NavInstruction};
+
+        let mut sector = build_nav_sector(1, 0, 0);
+        add_one_button_hli(&mut sector);
+        // Overwrite the button's 8-byte action command (BTN_IT 0x0A..0x12,
+        // PCI 0x98..0xA0) with a JumpSS-to-First-Play word — the same
+        // encoding the README's `nav` example uses.
+        let cmd = [0x30u8, 0x06, 0, 0, 0, 0x00, 0, 0];
+        let off = pci(0x98);
+        sector[off..off + 8].copy_from_slice(&cmd);
+
+        let nav = NavPack::parse(&sector).unwrap();
+        let hli = nav.pci.highlight.expect("highlight present");
+        let button = &hli.buttons[0];
+
+        // Raw bytes preserved.
+        assert_eq!(button.command, cmd);
+        // Typed accessor decodes the action word through the shared
+        // NavCommand disassembler.
+        assert_eq!(
+            button.command_instruction(),
+            NavInstruction::JumpSs(JumpSSTarget::FirstPlay),
+        );
+        // Equivalent to decoding the raw word directly.
+        assert_eq!(
+            button.command_instruction(),
+            NavCommand {
+                bytes: button.command,
+            }
+            .decode(),
+        );
     }
 
     #[test]

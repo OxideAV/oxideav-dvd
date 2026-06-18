@@ -36,8 +36,11 @@ pointers + bracket pointers; `SYNCI` per-audio + per-subpicture
 sync pointers) that chapter-accurate seek and A/V sync need, plus the
 PCI **highlight information** (HLI_GI timing + the three SL_COLI
 selection/action colour-contrast schemes + the per-button BTN_IT
-table — geometry, D-pad adjacency and the raw action command) that a
-menu renderer needs to draw and route button input, plus the PCI
+table — geometry, D-pad adjacency and the action command, the latter
+also surfaced as a typed `NavInstruction` via
+`ButtonInfo::command_instruction()` through the shared `nav`
+disassembler) that a menu renderer needs to draw and route button
+input, plus the PCI
 **NSML_AGLI** non-seamless angle jump table (9 `nsml_agl_cN_dsta`
 cells, each carrying a direction bit + signed sector offset, with the
 `0x0000_0000` absent and `0x7FFF_FFFF` no-more-video sentinels) that a
@@ -88,7 +91,7 @@ is delegated to the external `oxideav-css` crate.
 | DTS core frame-header decode (10-byte sync frame — ftype / short / cpf / nblks / fsize + amode channel arrangement + sfreq sample rate + rate targeted bitrate + mix/dynf/timef/auxf/hdcd flags) | landed |
 | User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed |
 | VOBU_SRI search-table decode | landed |
-| NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons) | landed |
+| NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons; per-button `command_instruction()` → typed `NavInstruction` via the shared disassembler) | landed |
 | NAV-pack PCI NSML_AGLI (non-seamless angle jump table — 9 `nsml_agl_cN_dsta` cells with direction bit + absent / no-more-video sentinels + 1-based `angle()` accessor) | landed |
 | PCI_GI `hli_ss` → typed `HighlightStatus` enum (None / AllNew / UsePrevious / UsePreviousExceptCommands) + geometry-inheritance + own-commands classifiers | landed |
 | HLI_GI `btn_md` → typed `ButtonMode` view (`btngr_ns` group count + three 3-bit `btngrN_ty` codes) | landed |

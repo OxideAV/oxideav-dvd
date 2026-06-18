@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PCI button action-command disassembly (`vob` module).** Each
+  `BTN_IT` entry's 8-byte action command (bytes `0x0A..0x12`) now has a
+  typed `ButtonInfo::command_instruction()` accessor that decodes the
+  word into a `NavInstruction` through the same `NavCommand::decode`
+  disassembler the `nav` module exposes — the button command uses the
+  identical VM encoding as a PGC pre/post/cell command, so a menu engine
+  that has resolved which button the user actioned can branch on the
+  typed instruction (e.g. a `JumpSs` / `LinkPGCN`) without re-reading
+  the raw bytes or re-implementing the opcode table. The raw
+  `ButtonInfo::command` byte array is preserved alongside. Per
+  `docs/container/dvd/application/mpucoder-pci_pkt.html` (BTN_IT byte
+  `0x0a-0x11` = "one vm command to be executed on action of this
+  button") and `mpucoder-vmi.html`.
+
 - **Generic audio-substream header decoder (`vob` module).** Every
   `private_stream_1` AC-3 / DTS / LPCM payload begins with the DVD-only
   two-byte header that follows the substream-number byte: `FrmCnt` (the
