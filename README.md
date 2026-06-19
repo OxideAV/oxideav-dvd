@@ -90,6 +90,7 @@ is delegated to the external `oxideav-css` crate.
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed |
 | Generic audio-substream header decode (`AudioSubstreamHeader` — FrmCnt + FirstAccUnit prefixing every AC-3 / DTS / LPCM payload; `access_unit_offset()` PTS-aligned-frame locator via the `3 + FirstAccUnit` rule) | landed |
 | LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed |
+| 16-bit LPCM sample unpacking (`unpack_samples_16bit()` big-endian channel-interleaved `i16`→`i32`; `frame_stride_bytes()` + `sample_frame_count_16bit()`; 20/24-bit packing un-specified by docs) | landed |
 | AC-3 sync-frame header decode (`syncinfo()` fscod / frmsizecod + `bsi()` bsid / bsmod / acmod / mix-level conditionals / lfeon → sample rate + frame size + nominal bitrate + channel layout) | landed |
 | DTS core frame-header decode (10-byte sync frame — ftype / short / cpf / nblks / fsize + amode channel arrangement + sfreq sample rate + rate targeted bitrate + mix/dynf/timef/auxf/hdcd flags) | landed |
 | User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed |
@@ -261,8 +262,10 @@ assert_eq!(h.sample_frequency, LpcmSampleFrequency::Hz48000);
 assert_eq!(h.channel_count, 2);
 assert_eq!(h.bitrate_kbps(), Some(1_536));
 assert!(h.is_within_dvd_video_limit());
-// `samples` is the big-endian PCM tail, ready for sample unpacking.
-let _ = samples;
+// `samples` is the big-endian PCM tail; for the 16-bit case unpack it
+// into channel-interleaved signed values:
+let pcm = h.unpack_samples_16bit(samples).unwrap();
+let _ = pcm; // [L0, R0, L1, R1, …] as i32
 ```
 
 `LpcmHeader::bitrate_kbps()` returns the `channels × sample_rate ×
@@ -274,6 +277,13 @@ the result against the 6144 kbps DVD-Video ceiling per
 dynamic-range coefficient on `mpucoder-lpcm.html`
 (`2^(4 - (X + Y/30))` and `24.082 - 6.0206 X - 0.2007 Y`); applying
 the gain to the decoded samples stays with the audio decoder.
+`unpack_samples_16bit()` reads the PCM tail as big-endian
+channel-interleaved `i16` widened to `i32` (per the
+`mpucoder-lpcm.html` storage order); `frame_stride_bytes()` and
+`sample_frame_count_16bit()` size the buffer. The 20-bit / 24-bit
+sub-byte packing layout is not documented by the staged references,
+so the unpacker covers the 16-bit case and returns `None` for the
+wider widths.
 
 ## Decoding an AC-3 sync-frame header
 

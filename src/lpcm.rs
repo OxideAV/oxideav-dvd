@@ -17,11 +17,31 @@
 //! The header decode is bit-pure per the layout on
 //! `docs/container/dvd/application/mpucoder-lpcm.html` and the
 //! bitrate-feasibility table on
-//! `docs/container/dvd/application/stnsoft-LimPcmAud.html`. The
-//! actual PCM sample bytes (which follow the 7-byte header) are
-//! left as a raw `&[u8]` slice — the caller's audio decoder owns
-//! the per-sample unpacking (big-endian 16/20/24-bit packing,
-//! per-channel interleave) and the dynamic-range application.
+//! `docs/container/dvd/application/stnsoft-LimPcmAud.html`.
+//!
+//! For the **16-bit** quantisation case the raw PCM tail can be
+//! unpacked into channel-interleaved signed samples via
+//! [`LpcmHeader::unpack_samples_16bit`]: `mpucoder-lpcm.html` pins
+//! the storage as most-significant-byte-first
+//! ("first channel 0 (left) sample" leads the payload), interleaved
+//! by channel in ascending order, so each pair reads as a big-endian
+//! `i16`. The **20-bit and 24-bit** sub-byte grouping layout is *not*
+//! specified by the staged reference pages — the LimPcmAud table
+//! confirms those widths exist but neither page documents how the
+//! extra nibble / byte of grouped samples is arranged — so the
+//! unpacker is deliberately limited to 16-bit and returns `None`
+//! otherwise (see the "Docs gap" note below). The dynamic-range
+//! gain ([`LpcmHeader::linear_gain`] / [`LpcmHeader::gain_db`]) is
+//! exposed as a coefficient the caller applies during mix-down.
+//!
+//! ## Docs gap
+//!
+//! Neither `mpucoder-lpcm.html` nor `stnsoft-LimPcmAud.html`
+//! specifies the on-wire packing of 20-bit or 24-bit LPCM samples
+//! (the order in which the grouped low-order bits are stored across
+//! bytes). 16-bit packing is unambiguous (big-endian `i16`,
+//! channel-interleaved) and fully covered here; 20/24-bit sample
+//! reconstruction is blocked on a reference that pins the grouping.
 //!
 //! ## Clean-room references
 //!
@@ -284,6 +304,73 @@ impl LpcmHeader {
     /// same coefficient table on `mpucoder-lpcm.html`.)
     pub fn gain_db(self) -> f32 {
         24.082 - 6.0206 * self.dynamic_range_x as f32 - 0.2007 * self.dynamic_range_y as f32
+    }
+
+    /// Number of bytes one fully-interleaved sample frame (one sample
+    /// per channel) occupies, for the well-defined quantisation codes.
+    ///
+    /// A 16-bit stereo stream packs `2 channels × 2 bytes = 4` bytes
+    /// per frame; 24-bit 5.1 packs `6 × 3 = 18`. Returns `None` when
+    /// the quantisation code is [`LpcmQuantisation::Reserved`] (no
+    /// defined sample width). Per `mpucoder-lpcm.html`'s worked example
+    /// (48 kHz 16-bit stereo = 320 bytes / frame across 80 sample
+    /// frames).
+    pub fn frame_stride_bytes(self) -> Option<usize> {
+        let bits = self.quantisation.bits_per_sample()? as usize;
+        Some((bits / 8) * self.channel_count as usize)
+    }
+
+    /// Unpack the raw 16-bit PCM tail into channel-interleaved signed
+    /// samples.
+    ///
+    /// `pcm` is the byte slice that follows the 7-byte audio-pack
+    /// header (i.e. the second half of [`peel_lpcm_payload`]'s return).
+    /// Per `mpucoder-lpcm.html` the samples are stored most-significant-
+    /// byte-first ("first channel 0 (left) sample" begins the payload),
+    /// interleaved by channel in ascending channel order; this decoder
+    /// reads each pair as a big-endian `i16` widened to `i32`, so a
+    /// caller can mix channel counts uniformly.
+    ///
+    /// Returns `None` for any non-16-bit quantisation
+    /// ([`LpcmQuantisation::Bits20`] / [`LpcmQuantisation::Bits24`] /
+    /// [`LpcmQuantisation::Reserved`]) — the 20-bit and 24-bit sub-byte
+    /// grouping layout is **not specified** by the staged reference
+    /// pages (see the module-level docs-gap note), so this decoder
+    /// covers only the bit-pure 16-bit case.
+    ///
+    /// Any trailing bytes that do not complete a 16-bit sample (an
+    /// odd-length tail) are ignored — DVD LPCM packs whole samples, so
+    /// a remainder indicates a truncated payload the caller can detect
+    /// by comparing `pcm.len()` against `2 × returned.len()`.
+    pub fn unpack_samples_16bit(self, pcm: &[u8]) -> Option<Vec<i32>> {
+        if self.quantisation != LpcmQuantisation::Bits16 {
+            return None;
+        }
+        let mut out = Vec::with_capacity(pcm.len() / 2);
+        for chunk in pcm.chunks_exact(2) {
+            out.push(i16::from_be_bytes([chunk[0], chunk[1]]) as i32);
+        }
+        Some(out)
+    }
+
+    /// Number of complete sample frames (one sample per channel) the
+    /// 16-bit PCM tail `pcm` carries.
+    ///
+    /// Returns `None` for non-16-bit quantisation (same rationale as
+    /// [`Self::unpack_samples_16bit`]) and for a zero-channel header
+    /// (which the on-wire `channels - 1` encoding cannot produce, but
+    /// guards against a corrupt count). For 48 kHz 16-bit stereo with a
+    /// 320-byte tail this returns `80`, matching the
+    /// `mpucoder-lpcm.html` worked example.
+    pub fn sample_frame_count_16bit(self, pcm: &[u8]) -> Option<usize> {
+        if self.quantisation != LpcmQuantisation::Bits16 {
+            return None;
+        }
+        let stride = self.frame_stride_bytes()?;
+        if stride == 0 {
+            return None;
+        }
+        Some(pcm.len() / stride)
     }
 }
 
@@ -571,5 +658,89 @@ mod tests {
         let short = [0xA0, 0, 0, 0];
         let err = peel_lpcm_payload(&short).unwrap_err();
         matches!(err, Error::InvalidUdf(_));
+    }
+
+    /// Build a 16-bit stereo (or N-channel) header for the unpacker
+    /// tests: track 0, 48 kHz, unity dynamic range.
+    fn header_16bit(channels: u8) -> LpcmHeader {
+        let mut bytes = baseline_header();
+        // q=0 (16-bit), sr=0 (48k), channels = channels-1 in low 3 bits.
+        bytes[5] = (channels - 1) & 0b111;
+        LpcmHeader::parse(&bytes).unwrap()
+    }
+
+    #[test]
+    fn unpack_16bit_reads_big_endian_interleaved() {
+        let h = header_16bit(2);
+        // Two stereo frames: L0=0x0102, R0=0xFFFE (=-2), L1=0x7FFF, R1=0x8000.
+        let pcm = [0x01, 0x02, 0xFF, 0xFE, 0x7F, 0xFF, 0x80, 0x00];
+        let samples = h.unpack_samples_16bit(&pcm).unwrap();
+        assert_eq!(samples, vec![0x0102, -2, 0x7FFF, -0x8000]);
+    }
+
+    #[test]
+    fn unpack_16bit_ignores_incomplete_trailing_byte() {
+        let h = header_16bit(1);
+        // 5 bytes → 2 whole i16 samples + 1 leftover byte (ignored).
+        let pcm = [0x00, 0x10, 0x00, 0x20, 0xAA];
+        let samples = h.unpack_samples_16bit(&pcm).unwrap();
+        assert_eq!(samples, vec![0x0010, 0x0020]);
+        // The caller can detect truncation: 2 samples × 2 bytes = 4 < 5.
+        assert_ne!(pcm.len(), samples.len() * 2);
+    }
+
+    #[test]
+    fn unpack_16bit_rejects_non_16bit_quantisation() {
+        let mut bytes = baseline_header();
+        // q=1 (20-bit), stereo.
+        bytes[5] = 0b0100_0001;
+        let h20 = LpcmHeader::parse(&bytes).unwrap();
+        assert_eq!(h20.quantisation, LpcmQuantisation::Bits20);
+        assert_eq!(h20.unpack_samples_16bit(&[0u8; 8]), None);
+        assert_eq!(h20.sample_frame_count_16bit(&[0u8; 8]), None);
+
+        // q=2 (24-bit).
+        bytes[5] = 0b1000_0001;
+        let h24 = LpcmHeader::parse(&bytes).unwrap();
+        assert_eq!(h24.quantisation, LpcmQuantisation::Bits24);
+        assert_eq!(h24.unpack_samples_16bit(&[0u8; 9]), None);
+    }
+
+    #[test]
+    fn frame_stride_and_count_match_mpucoder_example() {
+        // mpucoder-lpcm.html worked example: 48 kHz 16-bit stereo, one
+        // 1.67 ms frame = 80 sample frames = 320 bytes.
+        let h = header_16bit(2);
+        assert_eq!(h.frame_stride_bytes(), Some(4)); // 2 ch × 2 bytes
+        let pcm = vec![0u8; 320];
+        assert_eq!(h.sample_frame_count_16bit(&pcm), Some(80));
+        // The flat sample vector holds channel_count × frame_count
+        // interleaved samples.
+        let samples = h.unpack_samples_16bit(&pcm).unwrap();
+        assert_eq!(samples.len(), 80 * 2);
+    }
+
+    #[test]
+    fn frame_stride_scales_with_channels_and_width() {
+        // 16-bit 5.1 (6 channels) → 12-byte stride.
+        let h6 = header_16bit(6);
+        assert_eq!(h6.frame_stride_bytes(), Some(12));
+
+        // 24-bit 6-channel stride is defined even though the sample
+        // unpacker isn't: 6 × 3 = 18 bytes per frame.
+        let mut bytes = baseline_header();
+        bytes[5] = 0b1000_0101; // q=2 (24-bit), channels = 5+1 = 6
+        let h24 = LpcmHeader::parse(&bytes).unwrap();
+        assert_eq!(h24.channel_count, 6);
+        assert_eq!(h24.frame_stride_bytes(), Some(18));
+    }
+
+    #[test]
+    fn frame_stride_none_for_reserved_quantisation() {
+        let mut bytes = baseline_header();
+        bytes[5] = 0b1100_0001; // q=3 (reserved)
+        let h = LpcmHeader::parse(&bytes).unwrap();
+        assert_eq!(h.quantisation, LpcmQuantisation::Reserved);
+        assert_eq!(h.frame_stride_bytes(), None);
     }
 }
