@@ -1184,6 +1184,28 @@ impl PciPacket {
         HighlightStatus::from_hli_ss(self.hli_ss)
     }
 
+    /// Decode the BCD `c_eltm` cell-elapsed-time field (PCI_GI 0x18)
+    /// into the typed [`PgcTime`] representation.
+    ///
+    /// Per `mpucoder-pci_pkt.html` the PCI_GI `c_eltm` is the same
+    /// 4-byte BCD `hh:mm:ss:ff` field — with the top two bits of the
+    /// frame byte encoding the frame rate (`11 = 30 fps`, `01 = 25
+    /// fps`) — that the DSI_GI half carries; this surfaces it through
+    /// the identical [`DsiGi::cell_elapsed_time`] decode so a player
+    /// can cross-check the PCI and DSI elapsed-time stamps of a VOBU.
+    #[inline]
+    pub fn cell_elapsed_time(&self) -> PgcTime {
+        PgcTime::from_bytes(self.c_eltm.to_be_bytes())
+    }
+
+    /// Cell elapsed time (PCI_GI 0x18) converted to absolute
+    /// nanoseconds via [`PgcTime::to_nanoseconds`] — the PCI-side
+    /// companion to [`DsiPacket::cell_elapsed_ns`].
+    #[inline]
+    pub fn cell_elapsed_ns(&self) -> u64 {
+        self.cell_elapsed_time().to_nanoseconds()
+    }
+
     /// Decode the `HLI_GI` + `SL_COLI` + `BTN_IT` sub-structure.
     ///
     /// Returns `Ok(None)` when the VOBU declares no buttons
@@ -2532,6 +2554,33 @@ mod tests {
         let nav = NavPack::parse(&sector).unwrap();
         assert!(nav.pci.has_vobu_isrc());
         assert_eq!(nav.pci.vobu_isrc_str(), Some("ABCD"));
+    }
+
+    #[test]
+    fn pci_gi_cell_elapsed_time_decodes_bcd() {
+        use crate::ifo::FrameRate;
+
+        // PCI_GI c_eltm lives at packet 0x18 (sector pci(0x18)). Same
+        // BCD hh:mm:ss:ff + frame-rate-bits layout as the DSI half.
+        // 00:01:23.10 @ 30 fps → frame byte 0b11_01_0000 = 0xD0.
+        let mut sector = build_nav_sector(1, 0, 0);
+        sector[pci(0x18)..pci(0x1C)].copy_from_slice(&[0x00, 0x01, 0x23, 0xD0]);
+
+        let nav = NavPack::parse(&sector).unwrap();
+        let t = nav.pci.cell_elapsed_time();
+        assert_eq!(t.hours, 0);
+        assert_eq!(t.minutes, 1);
+        assert_eq!(t.seconds, 23);
+        assert_eq!(t.frames, 10);
+        assert_eq!(t.frame_rate, FrameRate::Ntsc30);
+        assert_eq!(nav.pci.cell_elapsed_ns(), 83_333_333_333);
+
+        // PCI and DSI elapsed-time stamps decode through the same path,
+        // so equal raw c_eltm words yield equal typed times.
+        assert_eq!(
+            nav.pci.cell_elapsed_time(),
+            crate::ifo::PgcTime::from_bytes([0x00, 0x01, 0x23, 0xD0])
+        );
     }
 
     #[test]

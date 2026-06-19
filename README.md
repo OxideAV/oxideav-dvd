@@ -98,6 +98,7 @@ is delegated to the external `oxideav-css` crate.
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons; per-button `command_instruction()` → typed `NavInstruction` via the shared disassembler) | landed |
 | NAV-pack PCI NSML_AGLI (non-seamless angle jump table — 9 `nsml_agl_cN_dsta` cells with direction bit + absent / no-more-video sentinels + 1-based `angle()` accessor) | landed |
 | NAV-pack PCI `vobu_isrc` (32-byte ISRC royalty-management field; raw bytes + `has_vobu_isrc()` / trimmed-ASCII `vobu_isrc_str()`) | landed |
+| PCI_GI `c_eltm` → typed `PgcTime` + ns (`cell_elapsed_time()` / `cell_elapsed_ns()`, mirroring the DSI_GI half for PCI/DSI cross-check) | landed |
 | PCI_GI `hli_ss` → typed `HighlightStatus` enum (None / AllNew / UsePrevious / UsePreviousExceptCommands) + geometry-inheritance + own-commands classifiers | landed |
 | HLI_GI `btn_md` → typed `ButtonMode` view (`btngr_ns` group count + three 3-bit `btngrN_ty` codes) | landed |
 | NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI; DSI_GI `c_eltm` → typed `PgcTime` + ns) | landed |

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PCI_GI `c_eltm` typed accessors (`vob` module).** `PciPacket` now
+  exposes `cell_elapsed_time()` → typed `PgcTime` and `cell_elapsed_ns()`
+  for the PCI_GI 0x18 cell-elapsed-time field, mirroring the DSI_GI
+  accessors. Both nav-pack halves carry the identical 4-byte BCD
+  `hh:mm:ss:ff` field (top two frame-byte bits encode the frame rate,
+  `11 = 30 fps` / `01 = 25 fps`) per `mpucoder-pci_pkt.html`; surfacing
+  the PCI side lets a player cross-check the PCI and DSI elapsed-time
+  stamps of a VOBU through one decode path.
+
 - **16-bit LPCM sample unpacking (`lpcm` module).** Beyond the 7-byte
   audio-pack header, `LpcmHeader` now decodes the raw PCM tail for the
   16-bit quantisation case: `unpack_samples_16bit()` reads the payload
