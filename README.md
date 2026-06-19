@@ -44,7 +44,10 @@ input, plus the PCI
 **NSML_AGLI** non-seamless angle jump table (9 `nsml_agl_cN_dsta`
 cells, each carrying a direction bit + signed sector offset, with the
 `0x0000_0000` absent and `0x7FFF_FFFF` no-more-video sentinels) that a
-player re-seeks against on a non-seamless angle switch. A new
+player re-seeks against on a non-seamless angle switch, and the
+`PCI_GI` 32-byte `vobu_isrc` royalty-management field (raw bytes plus a
+trimmed-ASCII `vobu_isrc_str()` accessor; the field is all-zero on the
+vast majority of discs). A new
 **`nav` module** decodes each 8-byte
 `NavCommand` word into a typed `NavInstruction` tree —
 NOP / Goto / Break / SetTmpPML, the full `Link*` family (with
@@ -93,6 +96,7 @@ is delegated to the external `oxideav-css` crate.
 | VOBU_SRI search-table decode | landed |
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons; per-button `command_instruction()` → typed `NavInstruction` via the shared disassembler) | landed |
 | NAV-pack PCI NSML_AGLI (non-seamless angle jump table — 9 `nsml_agl_cN_dsta` cells with direction bit + absent / no-more-video sentinels + 1-based `angle()` accessor) | landed |
+| NAV-pack PCI `vobu_isrc` (32-byte ISRC royalty-management field; raw bytes + `has_vobu_isrc()` / trimmed-ASCII `vobu_isrc_str()`) | landed |
 | PCI_GI `hli_ss` → typed `HighlightStatus` enum (None / AllNew / UsePrevious / UsePreviousExceptCommands) + geometry-inheritance + own-commands classifiers | landed |
 | HLI_GI `btn_md` → typed `ButtonMode` view (`btngr_ns` group count + three 3-bit `btngrN_ty` codes) | landed |
 | NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI; DSI_GI `c_eltm` → typed `PgcTime` + ns) | landed |

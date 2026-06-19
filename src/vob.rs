@@ -1028,6 +1028,17 @@ pub struct PciPacket {
     pub vobu_se_e_ptm: u32,
     /// `PCI_GI 18` — `c_eltm`: cell elapsed time (BCD + frame-rate bits).
     pub c_eltm: u32,
+    /// `PCI_GI 1C` — `vobu_isrc`: the 32-byte International Standard
+    /// Recording Code field (royalty management) carried in every PCI
+    /// nav-pack. Stored as the raw 32 bytes; use
+    /// [`PciPacket::vobu_isrc_str`] for a trimmed-ASCII view and
+    /// [`PciPacket::has_vobu_isrc`] to test whether the field is
+    /// populated. Per `mpucoder-pci_pkt.html` the field is rarely
+    /// authored — most discs leave it all-zero — and the reference
+    /// page notes that no concrete examples exist for verification, so
+    /// the on-wire interpretation of a *populated* field beyond "32
+    /// raw bytes" is not specified here.
+    pub vobu_isrc: [u8; 32],
     /// `NSML_AGLI 00..24` — non-seamless angle jump table (9 cells).
     /// Every cell is [`NsmlAngleCell::ABSENT`] for a single-angle title.
     pub nsml_agli: NsmlAgli,
@@ -1039,6 +1050,8 @@ pub struct PciPacket {
 }
 
 impl PciPacket {
+    /// Packet-relative offset of `PCI_GI 1C` (`vobu_isrc`, 32 bytes).
+    const VOBU_ISRC: usize = 0x1C;
     /// Packet-relative offset of `HLI_GI 00` (`hli_ss`).
     const HLI_GI: usize = 0x60;
     /// Packet-relative offset of the first `SL_COLI` scheme.
@@ -1064,9 +1077,13 @@ impl PciPacket {
         }
         let hli_ss = read_u16_be(buf, Self::HLI_GI)?;
         // NSML_AGLI (0x3C..0x60) sits entirely below HLI_GI (0x60), so
-        // the length check above already guarantees these reads.
+        // the length check above already guarantees these reads. The
+        // `vobu_isrc` field at PCI_GI 0x1C..0x3C (32 B) likewise ends
+        // exactly at NSML_AGLI's start, well within the prefix.
         let nsml_agli = NsmlAgli::parse(buf)?;
         let highlight = Self::parse_highlight(buf)?;
+        let mut vobu_isrc = [0u8; 32];
+        vobu_isrc.copy_from_slice(&buf[Self::VOBU_ISRC..Self::VOBU_ISRC + 32]);
         Ok(Self {
             nv_pck_lbn: read_u32_be(buf, 0x00)?,
             vobu_cat: read_u16_be(buf, 0x04)?,
@@ -1075,10 +1092,49 @@ impl PciPacket {
             vobu_e_ptm: read_u32_be(buf, 0x10)?,
             vobu_se_e_ptm: read_u32_be(buf, 0x14)?,
             c_eltm: read_u32_be(buf, 0x18)?,
+            vobu_isrc,
             nsml_agli,
             hli_ss,
             highlight,
         })
+    }
+
+    /// `true` when the 32-byte `vobu_isrc` field carries any non-zero
+    /// byte. The overwhelming majority of authored discs leave the
+    /// field all-zero; a populated field signals a royalty-managed
+    /// recording per `mpucoder-pci_pkt.html`.
+    #[inline]
+    pub fn has_vobu_isrc(&self) -> bool {
+        self.vobu_isrc.iter().any(|&b| b != 0)
+    }
+
+    /// Trimmed-ASCII view of [`Self::vobu_isrc`].
+    ///
+    /// Returns `None` when the field is all-zero (no ISRC authored).
+    /// Otherwise the 32 raw bytes are interpreted as ASCII, dropping
+    /// trailing NUL / space padding; any byte outside printable ASCII
+    /// (`0x20..=0x7E`) makes the field un-decodable and yields `None`,
+    /// since the reference page documents no concrete on-wire form for
+    /// a populated field — callers needing the exact bytes read
+    /// [`Self::vobu_isrc`] directly.
+    pub fn vobu_isrc_str(&self) -> Option<&str> {
+        if !self.has_vobu_isrc() {
+            return None;
+        }
+        let trimmed = {
+            let end = self
+                .vobu_isrc
+                .iter()
+                .rposition(|&b| b != 0 && b != b' ')
+                .map(|p| p + 1)
+                .unwrap_or(0);
+            &self.vobu_isrc[..end]
+        };
+        if trimmed.iter().all(|&b| (0x20..=0x7E).contains(&b)) {
+            core::str::from_utf8(trimmed).ok()
+        } else {
+            None
+        }
     }
 
     /// Typed view over [`Self::vobu_uop_ctl`].
@@ -2432,6 +2488,66 @@ mod tests {
         // Exactly enough bytes for NSML_AGLI parses.
         let buf = [0u8; 0x60];
         assert!(NsmlAgli::parse(&buf).is_ok());
+    }
+
+    // ----- PCI vobu_isrc (PCI_GI 0x1C, 32 bytes) -------------------
+
+    #[test]
+    fn pci_default_vobu_isrc_is_empty() {
+        // The common case: an all-zero ISRC field is reported absent.
+        let sector = build_nav_sector(1, 0, 0);
+        let nav = NavPack::parse(&sector).unwrap();
+        assert_eq!(nav.pci.vobu_isrc, [0u8; 32]);
+        assert!(!nav.pci.has_vobu_isrc());
+        assert_eq!(nav.pci.vobu_isrc_str(), None);
+    }
+
+    #[test]
+    fn pci_parses_ascii_vobu_isrc() {
+        // A populated ISRC field: 12-char code, NUL-padded to 32 bytes.
+        // (ISRC format CC-XXX-YY-NNNNN; the on-wire form for a
+        // populated field is unspecified by the reference page, so this
+        // exercises the trimmed-ASCII accessor against a plausible
+        // ASCII payload only.)
+        let mut sector = build_nav_sector(1, 0, 0);
+        let code = b"USRC17607839";
+        sector[pci(0x1C)..pci(0x1C) + code.len()].copy_from_slice(code);
+
+        let nav = NavPack::parse(&sector).unwrap();
+        assert!(nav.pci.has_vobu_isrc());
+        assert_eq!(nav.pci.vobu_isrc_str(), Some("USRC17607839"));
+        // The raw field preserves the trailing NUL padding.
+        assert_eq!(&nav.pci.vobu_isrc[..12], code);
+        assert_eq!(nav.pci.vobu_isrc[12], 0);
+    }
+
+    #[test]
+    fn pci_vobu_isrc_str_trims_space_padding() {
+        // Trailing-space padding (rather than NUL) is also trimmed.
+        let mut sector = build_nav_sector(1, 0, 0);
+        let mut field = [b' '; 32];
+        field[..4].copy_from_slice(b"ABCD");
+        sector[pci(0x1C)..pci(0x1C) + 32].copy_from_slice(&field);
+
+        let nav = NavPack::parse(&sector).unwrap();
+        assert!(nav.pci.has_vobu_isrc());
+        assert_eq!(nav.pci.vobu_isrc_str(), Some("ABCD"));
+    }
+
+    #[test]
+    fn pci_vobu_isrc_str_rejects_non_ascii() {
+        // A populated field with a non-printable byte is not decodable
+        // as a string, but `has_vobu_isrc` still reports it present and
+        // the raw bytes remain available.
+        let mut sector = build_nav_sector(1, 0, 0);
+        sector[pci(0x1C)] = 0x01; // SOH — outside printable ASCII.
+        sector[pci(0x1D)] = b'X';
+
+        let nav = NavPack::parse(&sector).unwrap();
+        assert!(nav.pci.has_vobu_isrc());
+        assert_eq!(nav.pci.vobu_isrc_str(), None);
+        assert_eq!(nav.pci.vobu_isrc[0], 0x01);
+        assert_eq!(nav.pci.vobu_isrc[1], b'X');
     }
 
     /// Inject a single-button HLI block into a nav sector built by

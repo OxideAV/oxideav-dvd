@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PCI `vobu_isrc` field (`vob` module).** `PciPacket` now surfaces the
+  32-byte `vobu_isrc` (International Standard Recording Code) field at
+  `PCI_GI 0x1C`, previously skipped between `c_eltm` and the NSML_AGLI
+  angle table. The raw 32 bytes are exposed as `PciPacket::vobu_isrc`;
+  `has_vobu_isrc()` tests whether any byte is non-zero (the
+  overwhelming-majority all-zero case reports absent), and
+  `vobu_isrc_str()` returns a trimmed-ASCII view (dropping trailing
+  NUL / space padding, `None` for an all-zero or non-printable field).
+  Per `docs/container/dvd/application/mpucoder-pci_pkt.html` (`PCI_GI
+  0x1c vobu_isrc 32 — International Standard Recording Code (royalty
+  management)`); the page notes the field is rarely authored and that
+  no concrete examples exist for verification, so only the "32 raw
+  bytes" framing plus a best-effort ASCII view are provided.
+
 - **PCI button action-command disassembly (`vob` module).** Each
   `BTN_IT` entry's 8-byte action command (bytes `0x0A..0x12`) now has a
   typed `ButtonInfo::command_instruction()` accessor that decodes the
