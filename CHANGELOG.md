@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SML_PBI seamless-playback typed accessors (`vob` module).** The DSI
+  `SML_PBI` next-ILVU pointer pair now resolves into a typed `NextIlvu`
+  (`NonInterleaved` / `EndOfInterleaving` / `Next { start_sector,
+  size_sectors }`) via `SmlPbi::next_ilvu()`, naming the both-zero (PREU /
+  non-interleaved) and both-all-ones (end-of-interleaving) sentinels from
+  `mpucoder-dsi_pkt.html`. `SmlAudioGap` gains `has_first_gap` /
+  `has_second_gap` / `has_gap`, and `SmlPbi::audio_gaps_present()`
+  iterates the streams declaring a non-zero gap so a seamless engine
+  knows which audio tracks need silence insertion at a splice.
+  `is_interleaved()` reads the ILVU flag at the decision point.
+
 - **Typed SYNCI A/V-sync pointer decode (`vob` module).** The DSI
   `SYNCI` block's 8 audio (`a_synca`) and 32 subpicture (`sp_synca`)
   pointers now decode into a typed `SyncPointer`

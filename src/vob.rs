@@ -1385,6 +1385,51 @@ pub struct SmlAudioGap {
     pub gap_len2: u32,
 }
 
+impl SmlAudioGap {
+    /// `true` when this stream declares a first audio gap — a non-zero
+    /// gap duration at `gap_len1`. A seamless-playback engine inserts
+    /// silence of this length to keep audio aligned across an ILVU
+    /// splice (per `mpucoder-dsi_pkt.html` SML_PBI audio-gap table).
+    #[inline]
+    pub fn has_first_gap(&self) -> bool {
+        self.gap_len1 != 0
+    }
+
+    /// `true` when this stream declares a second audio gap.
+    #[inline]
+    pub fn has_second_gap(&self) -> bool {
+        self.gap_len2 != 0
+    }
+
+    /// `true` when this stream declares any audio gap at all.
+    #[inline]
+    pub fn has_gap(&self) -> bool {
+        self.has_first_gap() || self.has_second_gap()
+    }
+}
+
+/// Typed view of the SML_PBI `nxt_ilvu_sa` / `nxt_ilvu_sz` pointer pair.
+///
+/// Per `mpucoder-dsi_pkt.html` the next-ILVU pointer encodes one of
+/// three states a seamless-playback engine branches on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NextIlvu {
+    /// PREU or non-interleaved block: both `nxt_ilvu_sa` and
+    /// `nxt_ilvu_sz` are zero — there is no next ILVU to chain to.
+    NonInterleaved,
+    /// The last interleaved block: `nxt_ilvu_sa == 0xFFFF_FFFF` and
+    /// `nxt_ilvu_sz == 0xFFFF` mark the end of interleaving.
+    EndOfInterleaving,
+    /// A real chain pointer to the next ILVU block for this
+    /// angle/scene.
+    Next {
+        /// Relative sector offset to the next ILVU block.
+        start_sector: u32,
+        /// Size of the next ILVU block, in sectors.
+        size_sectors: u16,
+    },
+}
+
 /// SML_PBI — Seamless Playback Information.
 ///
 /// 148-byte block at packet offset `0x20..0xB4` carrying the
@@ -1455,6 +1500,53 @@ impl SmlPbi {
     /// angle/scene within an ILVU, or the last VOBU of a PREU run.
     pub fn unit_end(&self) -> bool {
         self.ilvu & 0x1000 != 0
+    }
+
+    /// Sentinel: `nxt_ilvu_sa` value marking the last interleaved block.
+    pub const NXT_ILVU_SA_END: u32 = 0xFFFF_FFFF;
+    /// Sentinel: `nxt_ilvu_sz` value marking the last interleaved block.
+    pub const NXT_ILVU_SZ_END: u16 = 0xFFFF;
+
+    /// Typed view of the `nxt_ilvu_sa` / `nxt_ilvu_sz` pair.
+    ///
+    /// Resolves the three documented states from `mpucoder-dsi_pkt.html`:
+    /// both-zero → [`NextIlvu::NonInterleaved`]; both-all-ones →
+    /// [`NextIlvu::EndOfInterleaving`]; otherwise a real
+    /// [`NextIlvu::Next`] chain pointer. A mixed pair (only one field at
+    /// its sentinel) is treated as a real pointer, surfacing the raw
+    /// values rather than guessing intent.
+    pub fn next_ilvu(&self) -> NextIlvu {
+        if self.nxt_ilvu_sa == 0 && self.nxt_ilvu_sz == 0 {
+            NextIlvu::NonInterleaved
+        } else if self.nxt_ilvu_sa == Self::NXT_ILVU_SA_END
+            && self.nxt_ilvu_sz == Self::NXT_ILVU_SZ_END
+        {
+            NextIlvu::EndOfInterleaving
+        } else {
+            NextIlvu::Next {
+                start_sector: self.nxt_ilvu_sa,
+                size_sectors: self.nxt_ilvu_sz,
+            }
+        }
+    }
+
+    /// `true` when this VOBU is part of an interleaved block (the ILVU
+    /// flag, bit 14, is set). Convenience over [`Self::is_ilvu`] read at
+    /// the seamless-playback decision point.
+    #[inline]
+    pub fn is_interleaved(&self) -> bool {
+        self.is_ilvu()
+    }
+
+    /// Iterator over the `(stream_index, &SmlAudioGap)` pairs that
+    /// declare a non-zero audio gap. A seamless-playback engine walks
+    /// this to know which audio streams need silence insertion at the
+    /// ILVU splice.
+    pub fn audio_gaps_present(&self) -> impl Iterator<Item = (usize, &SmlAudioGap)> {
+        self.audio_gaps
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.has_gap())
     }
 
     /// Parse SML_PBI given a slice starting at packet offset
@@ -3468,6 +3560,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Build a minimal SML_PBI buffer with the given next-ILVU pair and
+    /// audio-gap fields for stream 0; everything else zero.
+    fn build_sml_pbi(nxt_sa: u32, nxt_sz: u16, gap_len1_s0: u32) -> SmlPbi {
+        let mut buf = vec![0u8; SmlPbi::SIZE];
+        buf[0x06..0x0A].copy_from_slice(&nxt_sa.to_be_bytes()); // nxt_ilvu_sa
+        buf[0x0A..0x0C].copy_from_slice(&nxt_sz.to_be_bytes()); // nxt_ilvu_sz
+                                                                // stream-0 gap_len1 at SML_PBI 0x14 + 8.
+        buf[0x1C..0x20].copy_from_slice(&gap_len1_s0.to_be_bytes());
+        SmlPbi::parse(&buf).expect("SmlPbi parses")
+    }
+
+    #[test]
+    fn sml_pbi_next_ilvu_resolves_three_states() {
+        // Both zero → non-interleaved / PREU.
+        assert_eq!(build_sml_pbi(0, 0, 0).next_ilvu(), NextIlvu::NonInterleaved);
+        // Both all-ones → end of interleaving.
+        assert_eq!(
+            build_sml_pbi(0xFFFF_FFFF, 0xFFFF, 0).next_ilvu(),
+            NextIlvu::EndOfInterleaving
+        );
+        // Real chain pointer.
+        assert_eq!(
+            build_sml_pbi(0x0000_1234, 0x0040, 0).next_ilvu(),
+            NextIlvu::Next {
+                start_sector: 0x1234,
+                size_sectors: 0x0040,
+            }
+        );
+        // Mixed pair (only sa at sentinel) is surfaced as a real pointer,
+        // not silently coerced to a sentinel state.
+        assert_eq!(
+            build_sml_pbi(0xFFFF_FFFF, 0x0010, 0).next_ilvu(),
+            NextIlvu::Next {
+                start_sector: 0xFFFF_FFFF,
+                size_sectors: 0x0010,
+            }
+        );
+    }
+
+    #[test]
+    fn sml_pbi_audio_gap_helpers() {
+        // No gap on any stream.
+        let pbi = build_sml_pbi(0, 0, 0);
+        assert!(!pbi.audio_gaps[0].has_gap());
+        assert_eq!(pbi.audio_gaps_present().count(), 0);
+
+        // Stream 0 declares a first gap.
+        let pbi = build_sml_pbi(0, 0, 0x0000_2D00);
+        assert!(pbi.audio_gaps[0].has_first_gap());
+        assert!(!pbi.audio_gaps[0].has_second_gap());
+        assert!(pbi.audio_gaps[0].has_gap());
+        let present: Vec<usize> = pbi.audio_gaps_present().map(|(i, _)| i).collect();
+        assert_eq!(present, vec![0]);
     }
 
     #[test]
