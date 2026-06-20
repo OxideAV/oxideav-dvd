@@ -30,10 +30,15 @@ answer time-based seek queries through the per-PGC `VTS_TMAPTI` time map
 overlays to RGBA, and execute the PGC navigation command VM. The
 nav-pack decoder also surfaces the typed **DSI** sub-sections
 (`DSI_GI` general info; `SML_PBI` seamless-playback interleaved-unit
-flags + jump pointers + per-stream audio-gap table; `SML_AGLI` 9-cell
-seamless-angle table; `VOBU_SRI` 19-forward + 19-backward seek
-pointers + bracket pointers; `SYNCI` per-audio + per-subpicture
-sync pointers) that chapter-accurate seek and A/V sync need, plus the
+flags + a typed `next_ilvu()` chain pointer (non-interleaved /
+end-of-interleaving / next-ILVU) + audio-gap presence iteration;
+`SML_AGLI` 9-cell seamless-angle table; `VOBU_SRI` 19-forward +
+19-backward seek pointers + bracket pointers, with typed
+`SriPointer` sentinel decode and `seek_forward` / `seek_backward`
+nominal-second scrub resolvers over the 19-bucket span table; `SYNCI`
+per-audio + per-subpicture sync pointers, each typed into a
+`SyncPointer` (absent / no-more / inside-VOBU / offset+direction))
+that chapter-accurate seek and A/V sync need, plus the
 PCI **highlight information** (HLI_GI timing + the three SL_COLI
 selection/action colour-contrast schemes + the per-button BTN_IT
 table — geometry, D-pad adjacency and the action command, the latter
@@ -94,7 +99,9 @@ is delegated to the external `oxideav-css` crate.
 | AC-3 sync-frame header decode (`syncinfo()` fscod / frmsizecod + `bsi()` bsid / bsmod / acmod / mix-level conditionals / lfeon → sample rate + frame size + nominal bitrate + channel layout) | landed |
 | DTS core frame-header decode (10-byte sync frame — ftype / short / cpf / nblks / fsize + amode channel arrangement + sfreq sample rate + rate targeted bitrate + mix/dynf/timef/auxf/hdcd flags) | landed |
 | User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed |
-| VOBU_SRI search-table decode | landed |
+| VOBU_SRI search-table decode (typed `SriPointer` sentinel/offset + `seek_forward`/`seek_backward` non-overshoot scrub resolver over the 19-bucket `SPAN_SECONDS` table) | landed |
+| SYNCI A/V-sync pointers (typed `SyncPointer` per audio/subpicture stream — absent / no-more / inside-VOBU / offset+direction) | landed |
+| SML_PBI seamless playback (`next_ilvu()` typed chain pointer + audio-gap presence iteration) | landed |
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons; per-button `command_instruction()` → typed `NavInstruction` via the shared disassembler) | landed |
 | NAV-pack PCI NSML_AGLI (non-seamless angle jump table — 9 `nsml_agl_cN_dsta` cells with direction bit + absent / no-more-video sentinels + 1-based `angle()` accessor) | landed |
 | NAV-pack PCI `vobu_isrc` (32-byte ISRC royalty-management field; raw bytes + `has_vobu_isrc()` / trimmed-ASCII `vobu_isrc_str()`) | landed |
