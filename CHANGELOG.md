@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed SYNCI A/V-sync pointer decode (`vob` module).** The DSI
+  `SYNCI` block's 8 audio (`a_synca`) and 32 subpicture (`sp_synca`)
+  pointers now decode into a typed `SyncPointer`
+  (`Absent` / `NoMore` / `InsideVobu` / `Pointer { offset, direction }`)
+  via `Synci::audio(i)` / `Synci::subpicture(i)`. Each per-kind sentinel
+  from `mpucoder-dsi_pkt.html` is named as a constant — audio `0x0000` /
+  `0x3FFF`; subpicture `0x0000_0000` / `0x3FFF_FFFF` and the
+  subpicture-only `0x7FFF_FFFF` "data contained inside this VOBU" case —
+  so a renderer aligning tracks reads classified pointers instead of
+  testing magic values by hand.
+
 - **Typed VOBU_SRI fast-scrub seek API (`vob` module).** The DSI
   `VOBU_SRI` search table now exposes a typed scrub interface instead of
   raw `[u32; 19]` arrays. New `SriPointer` decodes one entry's valid-bit

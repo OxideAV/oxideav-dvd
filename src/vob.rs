@@ -1862,6 +1862,53 @@ impl VobuSri {
     }
 }
 
+/// A decoded SYNCI sync pointer (audio or subpicture).
+///
+/// Both the 8 audio (`a_synca`) and 32 subpicture (`sp_synca`) SYNCI
+/// entries encode "where, relative to this VOBU, does this stream's
+/// first packet live", but with per-kind sentinels documented in
+/// `mpucoder-dsi_pkt.html`. This enum is the typed classification a
+/// renderer branches on instead of testing magic values by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncPointer {
+    /// The stream does not exist for this VOBU (`0x0000` audio /
+    /// `0x0000_0000` subpicture).
+    Absent,
+    /// No more packets for this stream (`0x3FFF` audio /
+    /// `0x3FFF_FFFF` subpicture "no data for this VOBU").
+    NoMore,
+    /// Subpicture-only: the subpicture data is contained **inside** this
+    /// VOBU (`0x7FFF_FFFF`); no relative jump is needed. Never produced
+    /// for audio pointers.
+    InsideVobu,
+    /// A real relative offset to the stream's first packet.
+    Pointer {
+        /// Relative offset (direction bit stripped). For audio this is
+        /// the low 15 bits; for subpicture the low 31 bits.
+        offset: u32,
+        /// Jump direction (bit 15 audio / bit 31 subpicture).
+        direction: SriDirection,
+    },
+}
+
+impl SyncPointer {
+    /// `true` for a real [`SyncPointer::Pointer`] entry — the only
+    /// variant carrying a usable offset.
+    #[inline]
+    pub fn is_present(&self) -> bool {
+        matches!(self, SyncPointer::Pointer { .. })
+    }
+
+    /// The relative offset of a [`SyncPointer::Pointer`], else `None`.
+    #[inline]
+    pub fn offset(&self) -> Option<u32> {
+        match self {
+            SyncPointer::Pointer { offset, .. } => Some(*offset),
+            _ => None,
+        }
+    }
+}
+
 /// SYNCI — Sync Information.
 ///
 /// 144-byte block at packet offset `0x192..0x222` covering the
@@ -1908,6 +1955,63 @@ impl Synci {
             *slot = read_u32_be(buf, 0x10 + i * 4)?;
         }
         Ok(Self { a_synca, sp_synca })
+    }
+
+    /// Audio "absent" sentinel (`0x0000`).
+    pub const AUDIO_ABSENT: u16 = 0x0000;
+    /// Audio "no more audio for this stream" sentinel (`0x3FFF`).
+    pub const AUDIO_NO_MORE: u16 = 0x3FFF;
+    /// Subpicture "absent" sentinel (`0x0000_0000`).
+    pub const SP_ABSENT: u32 = 0x0000_0000;
+    /// Subpicture "no data for this VOBU" sentinel (`0x3FFF_FFFF`).
+    pub const SP_NO_MORE: u32 = 0x3FFF_FFFF;
+    /// Subpicture "data contained inside this VOBU" sentinel
+    /// (`0x7FFF_FFFF`).
+    pub const SP_INSIDE_VOBU: u32 = 0x7FFF_FFFF;
+
+    /// Typed decode of audio-stream `index` (`0..8`).
+    ///
+    /// Per `mpucoder-dsi_pkt.html` an audio pointer is `0x0000` (absent),
+    /// `0x3FFF` (no more audio) or a 15-bit relative offset with bit 15
+    /// as the direction. Returns `None` for an out-of-range index.
+    pub fn audio(&self, index: usize) -> Option<SyncPointer> {
+        let raw = *self.a_synca.get(index)?;
+        Some(match raw {
+            Self::AUDIO_ABSENT => SyncPointer::Absent,
+            Self::AUDIO_NO_MORE => SyncPointer::NoMore,
+            _ => SyncPointer::Pointer {
+                offset: u32::from(raw & !Self::AUDIO_DIRECTION_BIT),
+                direction: if raw & Self::AUDIO_DIRECTION_BIT != 0 {
+                    SriDirection::Backward
+                } else {
+                    SriDirection::Forward
+                },
+            },
+        })
+    }
+
+    /// Typed decode of subpicture-stream `index` (`0..32`).
+    ///
+    /// Per `mpucoder-dsi_pkt.html` a subpicture pointer is `0x0000_0000`
+    /// (absent), `0x3FFF_FFFF` (no data for this VOBU), `0x7FFF_FFFF`
+    /// (data contained inside this VOBU) or a 31-bit relative offset
+    /// with bit 31 as the direction. Returns `None` for an out-of-range
+    /// index.
+    pub fn subpicture(&self, index: usize) -> Option<SyncPointer> {
+        let raw = *self.sp_synca.get(index)?;
+        Some(match raw {
+            Self::SP_ABSENT => SyncPointer::Absent,
+            Self::SP_NO_MORE => SyncPointer::NoMore,
+            Self::SP_INSIDE_VOBU => SyncPointer::InsideVobu,
+            _ => SyncPointer::Pointer {
+                offset: raw & !Self::SP_DIRECTION_BIT,
+                direction: if raw & Self::SP_DIRECTION_BIT != 0 {
+                    SriDirection::Backward
+                } else {
+                    SriDirection::Forward
+                },
+            },
+        })
     }
 }
 
@@ -3539,6 +3643,81 @@ mod tests {
         // Direction-bit constants land where the spec requires.
         assert_eq!(Synci::AUDIO_DIRECTION_BIT, 0x8000);
         assert_eq!(Synci::SP_DIRECTION_BIT, 0x8000_0000);
+    }
+
+    #[test]
+    fn synci_audio_pointer_typed_decode() {
+        let sy = Synci {
+            a_synca: [
+                Synci::AUDIO_ABSENT,  // 0: absent
+                Synci::AUDIO_NO_MORE, // 1: no more audio
+                0x0123,               // 2: forward, offset 0x123
+                0x8123,               // 3: backward, offset 0x123
+                0x7FFF,               // 4: forward, max offset (not a sentinel)
+                0,
+                0,
+                0,
+            ],
+            sp_synca: [0u32; 32],
+        };
+        assert_eq!(sy.audio(0), Some(SyncPointer::Absent));
+        assert_eq!(sy.audio(1), Some(SyncPointer::NoMore));
+        assert_eq!(
+            sy.audio(2),
+            Some(SyncPointer::Pointer {
+                offset: 0x123,
+                direction: SriDirection::Forward
+            })
+        );
+        assert_eq!(
+            sy.audio(3),
+            Some(SyncPointer::Pointer {
+                offset: 0x123,
+                direction: SriDirection::Backward
+            })
+        );
+        // 0x7FFF strips the (clear) direction bit to 0x7FFF — still a
+        // real pointer, since audio has no "inside VOBU" sentinel.
+        assert_eq!(sy.audio(4).unwrap().offset(), Some(0x7FFF));
+        assert!(sy.audio(4).unwrap().is_present());
+        // Bounds.
+        assert_eq!(sy.audio(8), None);
+    }
+
+    #[test]
+    fn synci_subpicture_pointer_typed_decode() {
+        let mut sp = [0u32; 32];
+        sp[0] = Synci::SP_ABSENT;
+        sp[1] = Synci::SP_NO_MORE;
+        sp[2] = Synci::SP_INSIDE_VOBU;
+        sp[3] = 0x0000_4567; // forward, offset 0x4567
+        sp[4] = 0x8000_4567; // backward, offset 0x4567
+        let sy = Synci {
+            a_synca: [0u16; 8],
+            sp_synca: sp,
+        };
+        assert_eq!(sy.subpicture(0), Some(SyncPointer::Absent));
+        assert_eq!(sy.subpicture(1), Some(SyncPointer::NoMore));
+        assert_eq!(sy.subpicture(2), Some(SyncPointer::InsideVobu));
+        assert_eq!(
+            sy.subpicture(3),
+            Some(SyncPointer::Pointer {
+                offset: 0x4567,
+                direction: SriDirection::Forward
+            })
+        );
+        assert_eq!(
+            sy.subpicture(4),
+            Some(SyncPointer::Pointer {
+                offset: 0x4567,
+                direction: SriDirection::Backward
+            })
+        );
+        // InsideVobu carries no offset and is not "present" for jump.
+        assert_eq!(sy.subpicture(2).unwrap().offset(), None);
+        assert!(!sy.subpicture(2).unwrap().is_present());
+        // Bounds.
+        assert_eq!(sy.subpicture(32), None);
     }
 
     #[test]
