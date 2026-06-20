@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed VOBU_SRI fast-scrub seek API (`vob` module).** The DSI
+  `VOBU_SRI` search table now exposes a typed scrub interface instead of
+  raw `[u32; 19]` arrays. New `SriPointer` decodes one entry's valid-bit
+  (31), intermediate-VOBUs-bit (30) and 30-bit relative sector offset,
+  treating every documented "no VOBU" sentinel as invalid — including
+  `0xBFFF_FFFF` (`SriPointer::NO_VIDEO_VOBU`), whose bit 31 is *set* yet
+  marks the `sri_nvwv` / `sri_pvwv` video-bracket as empty (the bit-31
+  test alone is insufficient there). `VobuSri` gains `next_video` /
+  `prev_video` / `next_vobu` / `prev_vobu` typed bracket pointers,
+  `forward_span` / `backward_span` index accessors, the
+  `SPAN_SECONDS` table mapping the 19 entries to their nominal scrub
+  buckets (`120 … 0.5 s`, per `mpucoder-dsi_pkt.html`), and
+  `seek_forward` / `seek_backward` resolvers that pick the largest valid
+  span not exceeding the requested seconds (falling back to the finest
+  valid span so a scrub always makes progress).
+
 - **PCI_GI `c_eltm` typed accessors (`vob` module).** `PciPacket` now
   exposes `cell_elapsed_time()` → typed `PgcTime` and `cell_elapsed_ns()`
   for the PCI_GI 0x18 cell-elapsed-time field, mirroring the DSI_GI

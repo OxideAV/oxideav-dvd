@@ -1540,6 +1540,95 @@ impl SmlAgli {
     }
 }
 
+/// Direction of a resolved VOBU_SRI jump pointer.
+///
+/// The bracket pointers (`sri_nvwv` / `sri_nv`) and the 19 forward-span
+/// entries jump toward later VOBUs ([`SriDirection::Forward`]); their
+/// `sri_pvwv` / `sri_pv` / backward-span counterparts jump toward
+/// earlier VOBUs ([`SriDirection::Backward`]). For the span entries the
+/// direction is fixed by which half of the table the entry lives in, so
+/// this enum is informational; for completeness it matches the layout
+/// documented in `mpucoder-dsi_pkt.html`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SriDirection {
+    /// Jump toward a later VOBU (increasing logical block number).
+    Forward,
+    /// Jump toward an earlier VOBU (decreasing logical block number).
+    Backward,
+}
+
+/// A decoded VOBU_SRI jump pointer.
+///
+/// Every 4-byte VOBU_SRI entry packs a 30-bit relative VOBU offset (in
+/// sectors) plus a "valid pointer" flag (bit 31) and — for the 19
+/// forward / backward span entries only — an "intervening VOBUs"
+/// flag (bit 30). This is the typed result of decoding one such entry
+/// with the direction implied by its table position.
+///
+/// A pointer is only meaningful when [`Self::is_valid`]; the various
+/// "no VOBU" sentinels documented in `mpucoder-dsi_pkt.html`
+/// (`0x3FFF_FFFF`, `0xBFFF_FFFF`) all clear bit 31, so they decode to
+/// `is_valid() == false` and a `None` offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SriPointer {
+    /// The raw 4-byte entry as stored in the [`VobuSri`] table.
+    pub raw: u32,
+    /// Direction implied by the entry's position in the table.
+    pub direction: SriDirection,
+}
+
+impl SriPointer {
+    /// Sentinel for the span / `sri_nv` / `sri_pv` entries: "no VOBU
+    /// within the cell for this span" / "no following/preceding VOBU".
+    /// Bit 31 is **clear** so the bit-31 test alone already rejects it.
+    pub const NO_VOBU: u32 = 0x3FFF_FFFF;
+    /// Sentinel for the `sri_nvwv` / `sri_pvwv` bracket pointers: "no
+    /// following/preceding VOBU contains video". Unlike [`Self::NO_VOBU`]
+    /// this sentinel has bit 31 **set**, so it must be matched
+    /// explicitly rather than via the valid-bit test.
+    pub const NO_VIDEO_VOBU: u32 = 0xBFFF_FFFF;
+
+    /// `true` when this entry references a real VOBU.
+    ///
+    /// An entry is valid when bit 31 (the "valid pointer" flag) is set
+    /// **and** the raw word is not one of the documented "no VOBU"
+    /// sentinels. Per `mpucoder-dsi_pkt.html` the span / `sri_nv` /
+    /// `sri_pv` sentinel ([`Self::NO_VOBU`], `0x3FFF_FFFF`) clears
+    /// bit 31, but the video-bracket sentinel ([`Self::NO_VIDEO_VOBU`],
+    /// `0xBFFF_FFFF`) keeps bit 31 set — so the bit-31 test alone is not
+    /// sufficient and this method excludes it explicitly.
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        self.raw & VobuSri::VALID_BIT != 0
+            && self.raw != Self::NO_VOBU
+            && self.raw != Self::NO_VIDEO_VOBU
+    }
+
+    /// `true` when bit 30 is set — "one or more VOBUs are present
+    /// between this reference and the reference closer to the current
+    /// VOBU".
+    ///
+    /// Only the 19 forward / backward span entries define this bit; the
+    /// bracket pointers (`sri_nvwv` / `sri_pvwv` / `sri_nv` / `sri_pv`)
+    /// leave it clear. A scrub engine uses it to know that a finer-grained
+    /// span pointer exists between this jump target and the current VOBU.
+    #[inline]
+    pub fn has_intermediate_vobus(&self) -> bool {
+        self.raw & VobuSri::INTERMEDIATE_BIT != 0
+    }
+
+    /// The 30-bit relative VOBU offset in sectors, or `None` when the
+    /// pointer is invalid (a sentinel / absent entry).
+    #[inline]
+    pub fn offset_sectors(&self) -> Option<u32> {
+        if self.is_valid() {
+            Some(self.raw & VobuSri::OFFSET_MASK)
+        } else {
+            None
+        }
+    }
+}
+
 /// VOBU_SRI — VOBU Search Information.
 ///
 /// 168-byte block at packet offset `0xEA..0x192`. The fast-seek
@@ -1629,6 +1718,147 @@ impl VobuSri {
             backward,
             sri_pvwv,
         })
+    }
+
+    /// Nominal time span, in seconds, of each of the 19 forward /
+    /// backward span entries, **in table order** (index 0 = the entry
+    /// nearest in the table; index 18 = the farthest).
+    ///
+    /// Per `mpucoder-dsi_pkt.html` the 19 span pointers reference VOBUs
+    /// at these nominal distances from the current VOBU:
+    /// `120, 60, 30, 10, 7.5, 7.0, 6.5, 6.0, 5.5, 5.0, 4.5, 4.0, 3.5,
+    /// 3.0, 2.5, 2.0, 1.5, 1.0, 0.5` seconds. The reference page warns
+    /// these labels are "the nominal VOBU span, which will be correct
+    /// for .5-second VOBUs only" — they are the scrub-distance buckets
+    /// the table was authored against, not an exact duration guarantee.
+    ///
+    /// Both the forward (`forward`) and backward (`backward`) tables use
+    /// this same span ordering, in their respective directions.
+    pub const SPAN_SECONDS: [f32; 19] = [
+        120.0, 60.0, 30.0, 10.0, 7.5, 7.0, 6.5, 6.0, 5.5, 5.0, 4.5, 4.0, 3.5, 3.0, 2.5, 2.0, 1.5,
+        1.0, 0.5,
+    ];
+
+    /// Typed "next VOBU with video" bracket pointer (`sri_nvwv`).
+    #[inline]
+    pub fn next_video(&self) -> SriPointer {
+        SriPointer {
+            raw: self.sri_nvwv,
+            direction: SriDirection::Forward,
+        }
+    }
+
+    /// Typed "previous VOBU with video" bracket pointer (`sri_pvwv`).
+    #[inline]
+    pub fn prev_video(&self) -> SriPointer {
+        SriPointer {
+            raw: self.sri_pvwv,
+            direction: SriDirection::Backward,
+        }
+    }
+
+    /// Typed "next VOBU with possible video" bracket pointer (`sri_nv`).
+    #[inline]
+    pub fn next_vobu(&self) -> SriPointer {
+        SriPointer {
+            raw: self.sri_nv,
+            direction: SriDirection::Forward,
+        }
+    }
+
+    /// Typed "previous VOBU with possible video" bracket pointer
+    /// (`sri_pv`).
+    #[inline]
+    pub fn prev_vobu(&self) -> SriPointer {
+        SriPointer {
+            raw: self.sri_pv,
+            direction: SriDirection::Backward,
+        }
+    }
+
+    /// Typed forward-span pointer at table `index` (`0..19`).
+    ///
+    /// Index 0 is the 120-second bucket, index 18 the 0.5-second
+    /// bucket, matching [`Self::SPAN_SECONDS`]. Returns `None` for an
+    /// out-of-range index.
+    #[inline]
+    pub fn forward_span(&self, index: usize) -> Option<SriPointer> {
+        self.forward.get(index).map(|&raw| SriPointer {
+            raw,
+            direction: SriDirection::Forward,
+        })
+    }
+
+    /// Typed backward-span pointer at table `index` (`0..19`).
+    ///
+    /// Index 0 is the 120-second bucket, index 18 the 0.5-second
+    /// bucket, matching [`Self::SPAN_SECONDS`]. Returns `None` for an
+    /// out-of-range index.
+    #[inline]
+    pub fn backward_span(&self, index: usize) -> Option<SriPointer> {
+        self.backward.get(index).map(|&raw| SriPointer {
+            raw,
+            direction: SriDirection::Backward,
+        })
+    }
+
+    /// Resolve a fast-forward scrub of approximately `seconds` into the
+    /// best available VOBU_SRI forward-span pointer.
+    ///
+    /// Picks the **valid** span entry whose nominal
+    /// [`Self::SPAN_SECONDS`] bucket is the largest that does not exceed
+    /// the requested `seconds` (a "don't overshoot" policy a player uses
+    /// so a +30 s jump never lands past the requested point). When no
+    /// span at-or-below the request is valid, falls back to the smallest
+    /// valid span (the finest available step) so a scrub still makes
+    /// forward progress; returns `None` only when **no** forward span
+    /// pointer is valid.
+    ///
+    /// The returned pointer's [`SriPointer::offset_sectors`] is the
+    /// relative sector jump; [`SriPointer::has_intermediate_vobus`]
+    /// tells the caller whether finer steps exist between here and the
+    /// target.
+    pub fn seek_forward(&self, seconds: f32) -> Option<SriPointer> {
+        Self::resolve_span(&self.forward, SriDirection::Forward, seconds)
+    }
+
+    /// Resolve a fast-rewind scrub of approximately `seconds` into the
+    /// best available VOBU_SRI backward-span pointer.
+    ///
+    /// Mirror of [`Self::seek_forward`] over the backward table.
+    pub fn seek_backward(&self, seconds: f32) -> Option<SriPointer> {
+        Self::resolve_span(&self.backward, SriDirection::Backward, seconds)
+    }
+
+    /// Shared span-resolution policy for [`Self::seek_forward`] /
+    /// [`Self::seek_backward`].
+    fn resolve_span(
+        table: &[u32; 19],
+        direction: SriDirection,
+        seconds: f32,
+    ) -> Option<SriPointer> {
+        // `SPAN_SECONDS` is in descending order (index 0 = 120 s,
+        // index 18 = 0.5 s). Scan from the coarsest bucket; the first
+        // valid entry whose nominal span does not exceed the request is
+        // the largest jump that won't overshoot.
+        let mut best_below: Option<SriPointer> = None;
+        let mut finest_valid: Option<SriPointer> = None;
+        for (i, &span) in Self::SPAN_SECONDS.iter().enumerate() {
+            let ptr = SriPointer {
+                raw: table[i],
+                direction,
+            };
+            if !ptr.is_valid() {
+                continue;
+            }
+            // Track the smallest-span valid pointer as the fallback
+            // (later indices are smaller spans).
+            finest_valid = Some(ptr);
+            if span <= seconds && best_below.is_none() {
+                best_below = Some(ptr);
+            }
+        }
+        best_below.or(finest_valid)
     }
 }
 
@@ -3176,6 +3406,123 @@ mod tests {
         assert_eq!(VobuSri::OFFSET_MASK, 0x3FFF_FFFF);
         assert!(sri.sri_nvwv & VobuSri::VALID_BIT != 0);
         assert_eq!(sri.sri_nvwv & VobuSri::OFFSET_MASK, 1);
+    }
+
+    #[test]
+    fn sri_pointer_decodes_valid_intermediate_and_offset() {
+        // Valid + intermediate + 30-bit offset 0x123.
+        let p = SriPointer {
+            raw: VobuSri::VALID_BIT | VobuSri::INTERMEDIATE_BIT | 0x123,
+            direction: SriDirection::Forward,
+        };
+        assert!(p.is_valid());
+        assert!(p.has_intermediate_vobus());
+        assert_eq!(p.offset_sectors(), Some(0x123));
+
+        // Valid, no intermediate flag.
+        let p = SriPointer {
+            raw: VobuSri::VALID_BIT | 0x10,
+            direction: SriDirection::Forward,
+        };
+        assert!(p.is_valid());
+        assert!(!p.has_intermediate_vobus());
+        assert_eq!(p.offset_sectors(), Some(0x10));
+
+        // The three documented "no VOBU" sentinels all clear bit 31, so
+        // they decode as invalid with no offset.
+        for sentinel in [0x3FFF_FFFFu32, 0xBFFF_FFFF, 0x0000_0000] {
+            let p = SriPointer {
+                raw: sentinel,
+                direction: SriDirection::Forward,
+            };
+            assert!(!p.is_valid(), "sentinel {sentinel:#010x} must be invalid");
+            assert_eq!(p.offset_sectors(), None);
+        }
+    }
+
+    #[test]
+    fn sri_span_seconds_table_matches_spec() {
+        // 19 nominal scrub buckets per mpucoder-dsi_pkt.html, descending.
+        assert_eq!(VobuSri::SPAN_SECONDS.len(), 19);
+        assert_eq!(VobuSri::SPAN_SECONDS[0], 120.0);
+        assert_eq!(VobuSri::SPAN_SECONDS[18], 0.5);
+        // Strictly descending — no bucket repeats or inverts.
+        for w in VobuSri::SPAN_SECONDS.windows(2) {
+            assert!(w[0] > w[1], "spans must descend: {} !> {}", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn sri_typed_bracket_pointers_carry_direction() {
+        let buf = build_dsi_body();
+        let sri = DsiPacket::parse(&buf).expect("DSI body parses").vobu_sri;
+        // Fixture brackets are all valid (bit 31 set) with small offsets.
+        assert_eq!(sri.next_video().direction, SriDirection::Forward);
+        assert_eq!(sri.next_video().offset_sectors(), Some(1));
+        assert_eq!(sri.next_vobu().offset_sectors(), Some(2));
+        assert_eq!(sri.prev_vobu().offset_sectors(), Some(3));
+        assert_eq!(sri.prev_video().direction, SriDirection::Backward);
+        assert_eq!(sri.prev_video().offset_sectors(), Some(4));
+        // Span getters are bounds-checked.
+        assert!(sri.forward_span(18).is_some());
+        assert!(sri.forward_span(19).is_none());
+        assert!(sri.backward_span(0).is_some());
+    }
+
+    #[test]
+    fn sri_seek_forward_picks_largest_non_overshooting_valid_span() {
+        // Build a VOBU_SRI where only three forward spans are valid:
+        //   index 1 = 60 s (offset 60), index 3 = 10 s (offset 10),
+        //   index 18 = 0.5 s (offset 5). All others invalid.
+        let mut sri = empty_vobu_sri();
+        sri.forward[1] = VobuSri::VALID_BIT | 60; // 60 s bucket
+        sri.forward[3] = VobuSri::VALID_BIT | 10; // 10 s bucket
+        sri.forward[18] = VobuSri::VALID_BIT | 5; // 0.5 s bucket
+
+        // Request 30 s: 60 overshoots, so 10 s (index 3) is the largest
+        // valid bucket at-or-below 30.
+        let p = sri.seek_forward(30.0).expect("a valid span exists");
+        assert_eq!(p.offset_sectors(), Some(10));
+        assert_eq!(p.direction, SriDirection::Forward);
+
+        // Request 200 s: 60 s (index 1) is the coarsest valid bucket and
+        // does not overshoot.
+        assert_eq!(sri.seek_forward(200.0).unwrap().offset_sectors(), Some(60));
+
+        // Request 0.25 s: every bucket overshoots, so fall back to the
+        // finest valid span (0.5 s, offset 5) for forward progress.
+        assert_eq!(sri.seek_forward(0.25).unwrap().offset_sectors(), Some(5));
+    }
+
+    #[test]
+    fn sri_seek_backward_mirrors_forward_policy() {
+        let mut sri = empty_vobu_sri();
+        sri.backward[0] = VobuSri::VALID_BIT | 120; // 120 s bucket
+        sri.backward[16] = VobuSri::VALID_BIT | 2; // 1.5 s bucket
+
+        let p = sri.seek_backward(10.0).expect("a valid span exists");
+        // 120 overshoots 10; 1.5 s (offset 2) is the only at-or-below.
+        assert_eq!(p.offset_sectors(), Some(2));
+        assert_eq!(p.direction, SriDirection::Backward);
+    }
+
+    #[test]
+    fn sri_seek_returns_none_when_no_span_is_valid() {
+        let sri = empty_vobu_sri();
+        assert!(sri.seek_forward(5.0).is_none());
+        assert!(sri.seek_backward(5.0).is_none());
+    }
+
+    /// A VOBU_SRI with every entry zeroed (all pointers invalid).
+    fn empty_vobu_sri() -> VobuSri {
+        VobuSri {
+            sri_nvwv: 0,
+            forward: [0u32; 19],
+            sri_nv: 0,
+            sri_pv: 0,
+            backward: [0u32; 19],
+            sri_pvwv: 0,
+        }
     }
 
     #[test]
