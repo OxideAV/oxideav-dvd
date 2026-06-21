@@ -1047,6 +1047,20 @@ pub struct PciPacket {
     /// Decoded highlight / button overlay for this VOBU. `None` when
     /// the VOBU declares no buttons (`btn_ns == 0`).
     pub highlight: Option<HighlightInfo>,
+    /// `RECI` — the Recording-Information region (royalty management)
+    /// that tails the PCI packet at packet offset `0x316`, immediately
+    /// after the full 36-entry `BTN_IT` table. Captured as the raw
+    /// bytes that fill the remainder of the fixed-length PCI packet.
+    ///
+    /// Per `mpucoder-pci_pkt.html` the reference page lists `RECI` with
+    /// size `??` and footnotes that "there are a few references to ISRC
+    /// and RECI, but no details, and no examples could be found for
+    /// verification" — so the *internal* layout of a populated RECI body
+    /// is undocumented. This crate therefore surfaces it verbatim, the
+    /// same way [`PciPacket::vobu_isrc`] surfaces its raw field, and does
+    /// not attempt to decode it. Use [`PciPacket::has_reci`] to test
+    /// whether the region carries any non-zero byte.
+    pub reci: Vec<u8>,
 }
 
 impl PciPacket {
@@ -1062,6 +1076,22 @@ impl PciPacket {
     const BTN_IT_SIZE: usize = 18;
     /// Maximum buttons a VOBU may declare.
     const MAX_BUTTONS: usize = 36;
+    /// Packet-relative offset of `RECI 00` (Recording Information).
+    ///
+    /// Per `mpucoder-pci_pkt.html` `RECI` sits at packet offset `0x316`
+    /// — exactly after the full 36-entry `BTN_IT` table
+    /// (`0x8E + 36 × 18 = 0x316`).
+    const RECI: usize = 0x316;
+    /// Total PCI-packet length, counted from the substream-ID byte at
+    /// sector offset `0x2C` (the `0x03D4` length field that follows the
+    /// `0x000001BF` Private Stream 2 header on `mpucoder-pci_pkt.html`).
+    const PCI_PACKET_LEN: usize = 0x3D4;
+    /// Length of the PCI body handed to [`Self::parse`], measured from
+    /// `PCI_GI 00` (sector `0x2D`) to the end of the fixed-length packet
+    /// at sector `0x400`. The length field at sector `0x2A` counts the
+    /// `0x3D4` bytes from sector `0x2C` (the substream-ID byte), so the
+    /// body that begins one byte later spans `0x3D4 - 1 = 0x3D3` bytes.
+    const PCI_BODY_LEN: usize = Self::PCI_PACKET_LEN - 1;
 
     /// Parse a PCI packet body. `buf` is the payload that follows
     /// the `0x000001BF` + length + substream-ID prefix — that is,
@@ -1084,6 +1114,19 @@ impl PciPacket {
         let highlight = Self::parse_highlight(buf)?;
         let mut vobu_isrc = [0u8; 32];
         vobu_isrc.copy_from_slice(&buf[Self::VOBU_ISRC..Self::VOBU_ISRC + 32]);
+        // RECI fills the PCI packet from offset 0x316 to the end of the
+        // fixed-length body (0x3D3). `buf` is `&sector[0x2D..]` and may
+        // run past the packet (to the sector end), so clamp the upper
+        // bound to the documented body length. A short buffer that does
+        // not reach RECI yields an empty region rather than an error —
+        // the field is optional royalty metadata, not a structural part
+        // a player must read, and most discs leave it all-zero.
+        let reci_end = Self::PCI_BODY_LEN.min(buf.len());
+        let reci = if reci_end > Self::RECI {
+            buf[Self::RECI..reci_end].to_vec()
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             nv_pck_lbn: read_u32_be(buf, 0x00)?,
             vobu_cat: read_u16_be(buf, 0x04)?,
@@ -1096,7 +1139,22 @@ impl PciPacket {
             nsml_agli,
             hli_ss,
             highlight,
+            reci,
         })
+    }
+
+    /// `true` when the `RECI` Recording-Information region carries any
+    /// non-zero byte.
+    ///
+    /// Like [`Self::has_vobu_isrc`], the overwhelming majority of
+    /// authored discs leave the region all-zero; a populated region
+    /// signals royalty-managed recording information whose internal
+    /// layout `mpucoder-pci_pkt.html` does not document. Returns `false`
+    /// for an empty region (a PCI body too short to reach offset
+    /// `0x316`).
+    #[inline]
+    pub fn has_reci(&self) -> bool {
+        self.reci.iter().any(|&b| b != 0)
     }
 
     /// `true` when the 32-byte `vobu_isrc` field carries any non-zero
@@ -2980,6 +3038,71 @@ mod tests {
         let nav = NavPack::parse(&sector).unwrap();
         assert!(nav.pci.has_vobu_isrc());
         assert_eq!(nav.pci.vobu_isrc_str(), Some("ABCD"));
+    }
+
+    // ----- PCI RECI (Recording Information, packet 0x316) ----------
+
+    #[test]
+    fn pci_default_reci_is_empty() {
+        // The common case: a blank RECI region reads back as all-zero
+        // and is reported absent.
+        let sector = build_nav_sector(1, 0, 0);
+        let nav = NavPack::parse(&sector).unwrap();
+        // RECI spans packet 0x316..0x3D3 → 189 bytes captured verbatim.
+        assert_eq!(nav.pci.reci.len(), 0x3D3 - 0x316);
+        assert!(nav.pci.reci.iter().all(|&b| b == 0));
+        assert!(!nav.pci.has_reci());
+    }
+
+    #[test]
+    fn pci_captures_reci_region_verbatim() {
+        // Populate the RECI region (sector 0x343..0x400) with a
+        // recognisable pattern; the body is surfaced byte-for-byte
+        // because mpucoder-pci_pkt.html documents no internal layout.
+        let mut sector = build_nav_sector(1, 0, 0);
+        // First, middle, and last bytes of the 189-byte region.
+        sector[pci(0x316)] = 0xAA;
+        sector[pci(0x316) + 0x5E] = 0x5C;
+        sector[pci(0x3D3) - 1] = 0xFF; // last RECI byte (sector 0x3FF)
+
+        let nav = NavPack::parse(&sector).unwrap();
+        assert!(nav.pci.has_reci());
+        assert_eq!(nav.pci.reci.len(), 189);
+        assert_eq!(nav.pci.reci[0], 0xAA);
+        assert_eq!(nav.pci.reci[0x5E], 0x5C);
+        assert_eq!(nav.pci.reci[188], 0xFF);
+    }
+
+    #[test]
+    fn pci_reci_ends_before_dsi_packet() {
+        // The captured RECI must stop at the PCI body end (sector
+        // 0x400) and never read into the DSI start code that follows.
+        let mut sector = build_nav_sector(1, 0, 0);
+        // Sector 0x400 is the DSI `0x000001BF` start code; it must not
+        // leak into RECI. Mark the byte just before it (last RECI byte).
+        sector[0x3FF] = 0x77;
+        let nav = NavPack::parse(&sector).unwrap();
+        assert_eq!(*nav.pci.reci.last().unwrap(), 0x77);
+        // The DSI start code (sector 0x400 == 0x00) is excluded: the
+        // region length is exactly 189, not 190+.
+        assert_eq!(nav.pci.reci.len(), 189);
+    }
+
+    #[test]
+    fn pci_reci_empty_when_body_too_short_to_reach_offset() {
+        // A PCI body that ends before offset 0x316 yields an empty RECI
+        // rather than an error — the field is optional royalty metadata.
+        let mut buf = vec![0u8; 0x100];
+        // Fill the bytes PciPacket::parse structurally requires so the
+        // short-buffer guards pass (HLI_GI prefix at 0x60..0x62).
+        // btn_ns at HLI_GI+0x11 stays 0 → no highlight; NSML_AGLI fits.
+        let pci = PciPacket::parse(&buf).unwrap();
+        assert!(pci.reci.is_empty());
+        assert!(!pci.has_reci());
+        // A body reaching exactly to 0x316 but no further is still empty.
+        buf.resize(0x316, 0);
+        let pci = PciPacket::parse(&buf).unwrap();
+        assert!(pci.reci.is_empty());
     }
 
     #[test]

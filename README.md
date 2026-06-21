@@ -52,7 +52,12 @@ cells, each carrying a direction bit + signed sector offset, with the
 player re-seeks against on a non-seamless angle switch, and the
 `PCI_GI` 32-byte `vobu_isrc` royalty-management field (raw bytes plus a
 trimmed-ASCII `vobu_isrc_str()` accessor; the field is all-zero on the
-vast majority of discs). A new
+vast majority of discs), and the trailing `RECI` Recording-Information
+region (packet offset `0x316`, the 189 bytes filling the fixed-length
+PCI packet after the `BTN_IT` table) surfaced verbatim as
+`PciPacket::reci` with a `has_reci()` test — its internal layout is
+undocumented per `mpucoder-pci_pkt.html`, so it is captured raw rather
+than decoded. A new
 **`nav` module** decodes each 8-byte
 `NavCommand` word into a typed `NavInstruction` tree —
 NOP / Goto / Break / SetTmpPML, the full `Link*` family (with

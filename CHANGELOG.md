@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PCI `RECI` Recording-Information region (`vob` module).** `PciPacket`
+  now captures the `RECI` (Recording Information, royalty management)
+  region that tails the PCI packet at packet offset `0x316` — directly
+  after the full 36-entry `BTN_IT` table. Per
+  `docs/container/dvd/application/mpucoder-pci_pkt.html` the page lists
+  `RECI` with size `??` and footnotes that no details or examples exist
+  for verification, so the region's *internal* layout is undocumented:
+  the 189 bytes that fill the remainder of the fixed-length
+  `0x3D4`-byte PCI packet (sector `0x343..0x400`) are surfaced verbatim
+  as `PciPacket::reci`, the same way `vobu_isrc` exposes its raw field.
+  `has_reci()` tests whether any byte is non-zero (the common authored
+  case leaves it all-zero). A PCI body too short to reach offset `0x316`
+  yields an empty region rather than an error.
+
 - **SML_PBI seamless-playback typed accessors (`vob` module).** The DSI
   `SML_PBI` next-ILVU pointer pair now resolves into a typed `NextIlvu`
   (`NonInterleaved` / `EndOfInterleaving` / `Next { start_sector,
