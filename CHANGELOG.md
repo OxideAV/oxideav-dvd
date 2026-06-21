@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **LPCM sample-width ratio + corrected per-frame stride (`lpcm`
+  module).** `LpcmQuantisation::bytes_per_sample()` (and the forwarding
+  `LpcmHeader::bytes_per_sample()`) now report the per-sample byte count
+  as a reduced `(numerator, denominator)` ratio — 16-bit `2/1`, 24-bit
+  `3/1`, and 20-bit `5/2` (two-and-a-half bytes). `frame_stride_bytes()`
+  is corrected to return `None` for 20-bit: a 20-bit sample is 2.5 bytes
+  wide and never lands on a byte boundary, so there is no integer
+  per-sample-frame byte stride (the prior `bits/8 × channels` form
+  silently dropped the half-byte). 16-bit and 24-bit keep an integer
+  stride for every channel count. The byte-aligned width facts come
+  straight from the `mpucoder-lpcm.html` / `stnsoft-LimPcmAud.html`
+  16/20/24-bit tables; the 20/24-bit *intra-group bit-packing* order
+  remains an undocumented docs-gap and is not implied by the ratio.
+  3 new tests (ratio table, 20-bit `None` across 1..=8 ch, 16/24-bit
+  integer stride across 1..=8 ch).
+
 - **PCI `RECI` Recording-Information region (`vob` module).** `PciPacket`
   now captures the `RECI` (Recording Information, royalty management)
   region that tails the PCI packet at packet offset `0x316` — directly
@@ -76,14 +92,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as channel-interleaved big-endian `i16` widened to `i32` (per
   `mpucoder-lpcm.html`, "first channel 0 (left) sample" leads the
   payload, MSB-first, interleaved in ascending channel order),
-  `frame_stride_bytes()` returns the per-sample-frame byte width
-  (`bits/8 × channels`), and `sample_frame_count_16bit()` counts whole
-  sample frames in a tail — for 48 kHz 16-bit stereo a 320-byte tail
-  yields 80 frames, matching the reference page's worked example. The
-  20-bit and 24-bit sub-byte grouping layout is **not** documented by
-  the staged reference pages, so the unpacker returns `None` for those
-  widths (`frame_stride_bytes()` still resolves the 20/24-bit stride
-  for buffer-sizing) — see the module-level docs-gap note. 8 new tests.
+  `frame_stride_bytes()` returns the per-sample-frame byte width, and
+  `sample_frame_count_16bit()` counts whole sample frames in a tail —
+  for 48 kHz 16-bit stereo a 320-byte tail yields 80 frames, matching
+  the reference page's worked example. The 20-bit and 24-bit sub-byte
+  grouping layout is **not** documented by the staged reference pages,
+  so the unpacker returns `None` for those widths — see the
+  module-level docs-gap note. 8 new tests.
 
 - **PCI `vobu_isrc` field (`vob` module).** `PciPacket` now surfaces the
   32-byte `vobu_isrc` (International Standard Recording Code) field at
@@ -157,6 +172,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/container/dvd/application/mpucoder-pgc.html` "cell playback
   information table entry". `CellType::is_angle_block()` convenience
   predicate added; raw `category_byte0` retained.
+
+### Changed
+
+- **LPCM `frame_stride_bytes()` now returns `None` for 20-bit
+  (`lpcm` module).** It previously computed `bits/8 × channels`, which
+  truncated the 20-bit `2.5`-byte sample width to `2`; callers sizing
+  20-bit buffers off the stride got a too-small frame. The accessor now
+  surfaces the absence of an integer per-sample-frame stride explicitly;
+  use the new `bytes_per_sample()` for the exact `5/2` ratio. 16-bit and
+  24-bit behaviour is unchanged.
 
 ## [0.0.3](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.2...v0.0.3) - 2026-06-14
 

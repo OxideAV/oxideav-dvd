@@ -99,6 +99,36 @@ impl LpcmQuantisation {
             Self::Reserved => None,
         }
     }
+
+    /// Bytes occupied by one sample, as a reduced `(numerator,
+    /// denominator)` ratio. `None` for [`Self::Reserved`].
+    ///
+    /// 16-bit packs two whole bytes per sample (`2/1`), 24-bit three
+    /// (`3/1`), but 20-bit packs *two-and-a-half* bytes (`5/2`) — the
+    /// fractional byte is why a 20-bit sample has no integer per-sample
+    /// width and must be expressed as a ratio. This is a width fact the
+    /// `mpucoder-lpcm.html` / `stnsoft-LimPcmAud.html` tables state
+    /// directly (16 / 20 / 24 bits per sample); the *byte order* in
+    /// which the grouped low-order bits of a 20/24-bit sample are stored
+    /// across bytes is a separate, undocumented question (see the
+    /// module-level docs-gap note) and is **not** implied by this ratio.
+    pub fn bytes_per_sample(self) -> Option<(u32, u32)> {
+        // bits / 8, reduced. 16→2/1, 20→5/2, 24→3/1.
+        let bits = self.bits_per_sample()? as u32;
+        let g = gcd(bits, 8);
+        Some((bits / g, 8 / g))
+    }
+}
+
+/// Greatest common divisor (binary-free Euclid) for the byte-ratio
+/// reduction in [`LpcmQuantisation::bytes_per_sample`].
+const fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
 }
 
 /// Sample frequency carried in bits 5..=4 of byte 5.
@@ -306,18 +336,43 @@ impl LpcmHeader {
         24.082 - 6.0206 * self.dynamic_range_x as f32 - 0.2007 * self.dynamic_range_y as f32
     }
 
+    /// Bytes occupied by one sample, as a reduced `(numerator,
+    /// denominator)` ratio — forwards
+    /// [`LpcmQuantisation::bytes_per_sample`]. 16-bit is `2/1`, 24-bit
+    /// `3/1`, 20-bit `5/2` (two-and-a-half bytes). `None` for the
+    /// reserved quantisation code.
+    pub fn bytes_per_sample(self) -> Option<(u32, u32)> {
+        self.quantisation.bytes_per_sample()
+    }
+
     /// Number of bytes one fully-interleaved sample frame (one sample
-    /// per channel) occupies, for the well-defined quantisation codes.
+    /// per channel) occupies — `Some(n)` only when that count is a whole
+    /// number of bytes.
     ///
-    /// A 16-bit stereo stream packs `2 channels × 2 bytes = 4` bytes
-    /// per frame; 24-bit 5.1 packs `6 × 3 = 18`. Returns `None` when
-    /// the quantisation code is [`LpcmQuantisation::Reserved`] (no
-    /// defined sample width). Per `mpucoder-lpcm.html`'s worked example
-    /// (48 kHz 16-bit stereo = 320 bytes / frame across 80 sample
-    /// frames).
+    /// A 16-bit stereo frame packs `2 channels × 2 bytes = 4` bytes;
+    /// 24-bit 5.1 packs `6 × 3 = 18`. The **20-bit** width is `2.5`
+    /// bytes per sample, so a single sample never lands on a byte
+    /// boundary; there is no integer per-sample byte stride and this
+    /// accessor returns `None` for every 20-bit header regardless of
+    /// channel count (use [`Self::bytes_per_sample`] for the exact
+    /// `5/2` ratio). `None` is likewise returned for the reserved
+    /// quantisation code. Per `mpucoder-lpcm.html`'s worked example,
+    /// 48 kHz 16-bit stereo = 4 bytes / sample frame (320 bytes across
+    /// 80 frames).
+    ///
+    /// The 20/24-bit *intra-group bit-packing* — the order in which a
+    /// 20- or 24-bit sample's grouped low-order bits are laid across the
+    /// payload bytes — is **not** documented by the staged reference
+    /// pages (see the module-level docs-gap note); this accessor reports
+    /// only the byte-aligned width fact those pages do state.
     pub fn frame_stride_bytes(self) -> Option<usize> {
-        let bits = self.quantisation.bits_per_sample()? as usize;
-        Some((bits / 8) * self.channel_count as usize)
+        let (num, den) = self.bytes_per_sample()?;
+        // A whole-byte per-sample width requires den == 1 (16- and
+        // 24-bit). 20-bit (den == 2) has no integer per-sample stride.
+        if den != 1 {
+            return None;
+        }
+        Some(num as usize * self.channel_count as usize)
     }
 
     /// Unpack the raw 16-bit PCM tail into channel-interleaved signed
@@ -742,5 +797,55 @@ mod tests {
         let h = LpcmHeader::parse(&bytes).unwrap();
         assert_eq!(h.quantisation, LpcmQuantisation::Reserved);
         assert_eq!(h.frame_stride_bytes(), None);
+    }
+
+    #[test]
+    fn bytes_per_sample_ratio_per_quantisation() {
+        // 16-bit → 2/1, 20-bit → 5/2 (two-and-a-half bytes), 24-bit → 3/1.
+        assert_eq!(LpcmQuantisation::Bits16.bytes_per_sample(), Some((2, 1)));
+        assert_eq!(LpcmQuantisation::Bits20.bytes_per_sample(), Some((5, 2)));
+        assert_eq!(LpcmQuantisation::Bits24.bytes_per_sample(), Some((3, 1)));
+        assert_eq!(LpcmQuantisation::Reserved.bytes_per_sample(), None);
+
+        // The header accessor forwards the same ratio.
+        let mut bytes = baseline_header();
+        bytes[5] = 0b0100_0001; // q=1 (20-bit), stereo
+        let h20 = LpcmHeader::parse(&bytes).unwrap();
+        assert_eq!(h20.bytes_per_sample(), Some((5, 2)));
+    }
+
+    #[test]
+    fn frame_stride_none_for_20bit_no_integer_per_sample_width() {
+        // 20-bit packs 2.5 bytes/sample — no integer per-sample stride —
+        // so frame_stride_bytes() is None for every channel count, while
+        // bytes_per_sample() still reports the exact 5/2 ratio.
+        for ch in 1u8..=8 {
+            let mut bytes = baseline_header();
+            bytes[5] = 0b0100_0000 | ((ch - 1) & 0b111); // q=1 (20-bit)
+            let h = LpcmHeader::parse(&bytes).unwrap();
+            assert_eq!(h.quantisation, LpcmQuantisation::Bits20);
+            assert_eq!(h.channel_count, ch);
+            assert_eq!(
+                h.frame_stride_bytes(),
+                None,
+                "20-bit {ch}ch must have no integer per-frame stride",
+            );
+            assert_eq!(h.bytes_per_sample(), Some((5, 2)));
+        }
+    }
+
+    #[test]
+    fn frame_stride_integer_for_16_and_24bit() {
+        // 16-bit and 24-bit both land on whole-byte sample widths, so the
+        // per-frame stride stays defined for all channel counts.
+        for ch in 1u8..=8 {
+            let h16 = header_16bit(ch);
+            assert_eq!(h16.frame_stride_bytes(), Some(2 * ch as usize));
+
+            let mut bytes = baseline_header();
+            bytes[5] = 0b1000_0000 | ((ch - 1) & 0b111); // q=2 (24-bit)
+            let h24 = LpcmHeader::parse(&bytes).unwrap();
+            assert_eq!(h24.frame_stride_bytes(), Some(3 * ch as usize));
+        }
     }
 }
