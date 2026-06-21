@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.3...v0.0.4) - 2026-06-21
+
+### Other
+
+- LPCM bytes_per_sample ratio + correct 20-bit frame-stride to None
+- capture PCI RECI recording-information region (raw bytes + has_reci)
+- document typed DSI nav-pack accessors (VOBU_SRI/SYNCI/SML_PBI)
+- SML_PBI seamless-playback typed accessors (NextIlvu + audio gaps)
+- typed SYNCI A/V-sync pointer decode (SyncPointer)
+- typed VOBU_SRI fast-scrub seek API (SriPointer + span resolvers)
+- *(vob)* typed PCI_GI c_eltm cell-elapsed-time accessors
+- *(lpcm)* unpack 16-bit LPCM samples (big-endian channel-interleaved)
+- *(vob)* decode PCI_GI vobu_isrc (32-byte ISRC royalty field)
+- typed PCI button action-command decode (BTN_IT command_instruction)
+- generic audio-substream header decode (FrmCnt + FirstAccUnit)
+- DTS core frame-header decoder (sync + 9 fields + 5 flags)
+- typed CellCategory decode for PGC cell-playback byte-0
+- refresh to current status, drop per-round changelog cruft
+
 ### Added
 
 - **PCI RECI region capture (`vob` module).** `PciPacket` now surfaces
