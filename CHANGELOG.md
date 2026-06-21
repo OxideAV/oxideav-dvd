@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PCI RECI region capture (`vob` module).** `PciPacket` now surfaces
+  the 189-byte `RECI` (Recording Information) region at packet-relative
+  offset `0x316` (sector offset `0x343`) via a `reci:
+  Option<[u8; RECI_LEN]>` field plus a `has_reci()` presence test. The
+  offset comes from `mpucoder-pci_pkt.html`'s PCI table and the `189`
+  length is derived from the documented Private-Stream-2 packet length
+  `0x03D4` (exclusive packet end at packet-relative `0x3D3`, immediately
+  after the 36-entry `BTN_IT` table ends at `0x316`). The reference page
+  documents no internal body layout for the field ("no details, and no
+  examples could be found for verification"), so — exactly as
+  `vobu_isrc` is handled — only the raw bytes and the presence test are
+  exposed; no structured decode is attempted. The field is `None` for
+  the common `HLI_GI`-prefix demux slice that ends before the region.
+
+- **LPCM per-sample width ratio + corrected 20-bit stride (`lpcm`
+  module).** `LpcmHeader::bytes_per_sample()` returns the exact
+  per-sample byte width as a `(num, den)` ratio (`16 → (2,1)`,
+  `20 → (5,2)`, `24 → (3,1)`). `frame_stride_bytes()` now returns `None`
+  for 20-bit — a 20-bit sample is 2.5 bytes, so a single sample frame
+  has no integer byte stride — instead of the previous misleading
+  truncated `2 × channels` value; it remains defined for the
+  byte-aligned 16- and 24-bit widths. The intra-group packing that
+  re-aligns 20-bit samples to whole bytes stays an explicit docs gap.
+
 - **SML_PBI seamless-playback typed accessors (`vob` module).** The DSI
   `SML_PBI` next-ILVU pointer pair now resolves into a typed `NextIlvu`
   (`NonInterleaved` / `EndOfInterleaving` / `Next { start_sector,

@@ -52,7 +52,11 @@ cells, each carrying a direction bit + signed sector offset, with the
 player re-seeks against on a non-seamless angle switch, and the
 `PCI_GI` 32-byte `vobu_isrc` royalty-management field (raw bytes plus a
 trimmed-ASCII `vobu_isrc_str()` accessor; the field is all-zero on the
-vast majority of discs). A new
+vast majority of discs), and the tail-of-packet 189-byte `RECI`
+recording-information region (raw bytes + `has_reci()`; offset `0x316`
+from the PCI table, length derived from the documented `0x03D4`
+Private-Stream-2 packet length — the body layout is undocumented, so it
+is surfaced verbatim like `vobu_isrc`). A new
 **`nav` module** decodes each 8-byte
 `NavCommand` word into a typed `NavInstruction` tree —
 NOP / Goto / Break / SetTmpPML, the full `Link*` family (with
@@ -95,7 +99,7 @@ is delegated to the external `oxideav-css` crate.
 | DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed |
 | Generic audio-substream header decode (`AudioSubstreamHeader` — FrmCnt + FirstAccUnit prefixing every AC-3 / DTS / LPCM payload; `access_unit_offset()` PTS-aligned-frame locator via the `3 + FirstAccUnit` rule) | landed |
 | LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed |
-| 16-bit LPCM sample unpacking (`unpack_samples_16bit()` big-endian channel-interleaved `i16`→`i32`; `frame_stride_bytes()` + `sample_frame_count_16bit()`; 20/24-bit packing un-specified by docs) | landed |
+| 16-bit LPCM sample unpacking (`unpack_samples_16bit()` big-endian channel-interleaved `i16`→`i32`; `frame_stride_bytes()` 16/24-bit only + `sample_frame_count_16bit()`; `bytes_per_sample()` ratio for all widths; 20-bit stride declines (2.5 B/sample), 20/24-bit *packing* un-specified by docs) | landed |
 | AC-3 sync-frame header decode (`syncinfo()` fscod / frmsizecod + `bsi()` bsid / bsmod / acmod / mix-level conditionals / lfeon → sample rate + frame size + nominal bitrate + channel layout) | landed |
 | DTS core frame-header decode (10-byte sync frame — ftype / short / cpf / nblks / fsize + amode channel arrangement + sfreq sample rate + rate targeted bitrate + mix/dynf/timef/auxf/hdcd flags) | landed |
 | User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed |
@@ -105,6 +109,7 @@ is delegated to the external `oxideav-css` crate.
 | NAV-pack PCI highlight (HLI_GI + SL_COLI + BTN_IT buttons; per-button `command_instruction()` → typed `NavInstruction` via the shared disassembler) | landed |
 | NAV-pack PCI NSML_AGLI (non-seamless angle jump table — 9 `nsml_agl_cN_dsta` cells with direction bit + absent / no-more-video sentinels + 1-based `angle()` accessor) | landed |
 | NAV-pack PCI `vobu_isrc` (32-byte ISRC royalty-management field; raw bytes + `has_vobu_isrc()` / trimmed-ASCII `vobu_isrc_str()`) | landed |
+| NAV-pack PCI `RECI` recording-information region (189-byte tail-of-packet block at `0x316`; raw bytes + `has_reci()` — undocumented body, surfaced verbatim) | landed (raw; body layout = docs gap) |
 | PCI_GI `c_eltm` → typed `PgcTime` + ns (`cell_elapsed_time()` / `cell_elapsed_ns()`, mirroring the DSI_GI half for PCI/DSI cross-check) | landed |
 | PCI_GI `hli_ss` → typed `HighlightStatus` enum (None / AllNew / UsePrevious / UsePreviousExceptCommands) + geometry-inheritance + own-commands classifiers | landed |
 | HLI_GI `btn_md` → typed `ButtonMode` view (`btngr_ns` group count + three 3-bit `btngrN_ty` codes) | landed |
@@ -288,10 +293,15 @@ the gain to the decoded samples stays with the audio decoder.
 `unpack_samples_16bit()` reads the PCM tail as big-endian
 channel-interleaved `i16` widened to `i32` (per the
 `mpucoder-lpcm.html` storage order); `frame_stride_bytes()` and
-`sample_frame_count_16bit()` size the buffer. The 20-bit / 24-bit
-sub-byte packing layout is not documented by the staged references,
-so the unpacker covers the 16-bit case and returns `None` for the
-wider widths.
+`sample_frame_count_16bit()` size the buffer. `bytes_per_sample()`
+exposes the exact per-sample width as a ratio for every code
+(`16 → (2,1)`, `20 → (5,2)`, `24 → (3,1)`); `frame_stride_bytes()`
+returns the integer per-frame stride for the byte-aligned 16- and
+24-bit widths but declines for 20-bit, whose 2.5-byte sample has no
+integer per-frame stride. The 20-bit / 24-bit sub-byte *packing*
+layout (the intra-group bit ordering) is not documented by the staged
+references, so the sample unpacker covers the 16-bit case and returns
+`None` for the wider widths.
 
 ## Decoding an AC-3 sync-frame header
 
