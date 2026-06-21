@@ -43,6 +43,14 @@
 //! channel-interleaved) and fully covered here; 20/24-bit sample
 //! reconstruction is blocked on a reference that pins the grouping.
 //!
+//! The unambiguous *width* facts are still surfaced:
+//! [`LpcmHeader::bytes_per_sample`] gives the exact per-sample byte
+//! width as a ratio (`2/1`, `5/2`, `3/1`), and
+//! [`LpcmHeader::frame_stride_bytes`] returns the integer per-frame
+//! stride for the byte-aligned 16- and 24-bit widths but declines for
+//! 20-bit (2.5 bytes/sample has no integer per-frame stride; the group
+//! footprint that re-aligns it is the undocumented part).
+//!
 //! ## Clean-room references
 //!
 //! - `docs/container/dvd/application/mpucoder-lpcm.html` — 7-byte
@@ -307,17 +315,52 @@ impl LpcmHeader {
     }
 
     /// Number of bytes one fully-interleaved sample frame (one sample
-    /// per channel) occupies, for the well-defined quantisation codes.
+    /// per channel) occupies, for the **byte-aligned** quantisation codes.
     ///
     /// A 16-bit stereo stream packs `2 channels × 2 bytes = 4` bytes
-    /// per frame; 24-bit 5.1 packs `6 × 3 = 18`. Returns `None` when
-    /// the quantisation code is [`LpcmQuantisation::Reserved`] (no
-    /// defined sample width). Per `mpucoder-lpcm.html`'s worked example
-    /// (48 kHz 16-bit stereo = 320 bytes / frame across 80 sample
-    /// frames).
+    /// per frame; 24-bit 5.1 packs `6 × 3 = 18`. Per `mpucoder-lpcm.html`'s
+    /// worked example, 48 kHz 16-bit stereo is 320 bytes / frame across 80
+    /// sample frames.
+    ///
+    /// Returns `None` for:
+    /// - [`LpcmQuantisation::Reserved`] — no defined sample width;
+    /// - [`LpcmQuantisation::Bits20`] — a 20-bit sample is 2.5 bytes, so a
+    ///   single sample frame has **no integer byte stride**. DVD-Video
+    ///   stores 20-bit LPCM in groups whose *group* footprint is byte-
+    ///   aligned, but the staged reference pages document neither the
+    ///   group size nor the intra-group bit ordering (see the module-level
+    ///   docs-gap note), so this accessor declines rather than returning a
+    ///   misleading truncated `2 × channels` value.
+    ///
+    /// Use [`Self::bytes_per_sample`] for the per-sample width (which is
+    /// fractional for 20-bit) when a caller needs to reason about the
+    /// group footprint itself.
     pub fn frame_stride_bytes(self) -> Option<usize> {
-        let bits = self.quantisation.bits_per_sample()? as usize;
-        Some((bits / 8) * self.channel_count as usize)
+        match self.quantisation {
+            LpcmQuantisation::Bits16 => Some(2 * self.channel_count as usize),
+            LpcmQuantisation::Bits24 => Some(3 * self.channel_count as usize),
+            // 20-bit: 2.5 bytes/sample — no integer per-frame stride.
+            LpcmQuantisation::Bits20 | LpcmQuantisation::Reserved => None,
+        }
+    }
+
+    /// Bytes occupied by a single sample, as a rational `(num, den)` pair.
+    ///
+    /// `16 → (2, 1)`, `20 → (5, 2)` (2.5 bytes), `24 → (3, 1)`; `None` for
+    /// [`LpcmQuantisation::Reserved`]. The 20-bit case is the reason
+    /// [`Self::frame_stride_bytes`] declines for that width: a single
+    /// sample is not a whole number of bytes, so DVD-Video only byte-
+    /// aligns at the group boundary. The intra-group packing that turns
+    /// the fractional samples into whole bytes is the documented gap; this
+    /// accessor exposes only the unambiguous per-sample bit width as a
+    /// ratio so callers can compute exact group footprints without it.
+    pub fn bytes_per_sample(self) -> Option<(u32, u32)> {
+        match self.quantisation {
+            LpcmQuantisation::Bits16 => Some((2, 1)),
+            LpcmQuantisation::Bits20 => Some((5, 2)),
+            LpcmQuantisation::Bits24 => Some((3, 1)),
+            LpcmQuantisation::Reserved => None,
+        }
     }
 
     /// Unpack the raw 16-bit PCM tail into channel-interleaved signed
@@ -733,6 +776,44 @@ mod tests {
         let h24 = LpcmHeader::parse(&bytes).unwrap();
         assert_eq!(h24.channel_count, 6);
         assert_eq!(h24.frame_stride_bytes(), Some(18));
+    }
+
+    #[test]
+    fn frame_stride_none_for_20bit_fractional_width() {
+        // A 20-bit sample is 2.5 bytes, so a single sample frame has no
+        // integer byte stride; the accessor declines rather than
+        // returning a truncated `2 × channels` value.
+        let mut bytes = baseline_header();
+        bytes[5] = 0b0100_0001; // q=1 (20-bit), stereo
+        let h20 = LpcmHeader::parse(&bytes).unwrap();
+        assert_eq!(h20.quantisation, LpcmQuantisation::Bits20);
+        assert_eq!(h20.frame_stride_bytes(), None);
+    }
+
+    #[test]
+    fn bytes_per_sample_ratio_per_width() {
+        let mut bytes = baseline_header();
+
+        bytes[5] = 0b0000_0001; // 16-bit, stereo
+        assert_eq!(
+            LpcmHeader::parse(&bytes).unwrap().bytes_per_sample(),
+            Some((2, 1))
+        );
+
+        bytes[5] = 0b0100_0001; // 20-bit
+        assert_eq!(
+            LpcmHeader::parse(&bytes).unwrap().bytes_per_sample(),
+            Some((5, 2)) // 2.5 bytes
+        );
+
+        bytes[5] = 0b1000_0001; // 24-bit
+        assert_eq!(
+            LpcmHeader::parse(&bytes).unwrap().bytes_per_sample(),
+            Some((3, 1))
+        );
+
+        bytes[5] = 0b1100_0001; // reserved
+        assert_eq!(LpcmHeader::parse(&bytes).unwrap().bytes_per_sample(), None);
     }
 
     #[test]
