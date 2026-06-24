@@ -113,7 +113,7 @@ pub use ifo::{
     CellPlaybackInfo, CellPositionInfo, CellType, DvdChapter, DvdTitle, DvdTitleEntry, FrameRate,
     McExtensionEntry, MenuAttributes, MenuType, NavCommand, PaletteEntry, Pgc, PgcCommandTable,
     PgcTime, Pgci, PgciLu, PgciLuSrp, PgciSrp, PgciUt, PgciUtSrp, PlaybackMode, PtlMait, Ptt,
-    PttTitle, SubpictureAttributes, SubpictureCodingMode, SubpictureLanguageType,
+    PttTitle, StillTime, SubpictureAttributes, SubpictureCodingMode, SubpictureLanguageType,
     SubpictureStreamControl, TitleAttributes, TmapEntry, TtSrpt, VideoAspectRatio, VideoAttributes,
     VideoCodingMode, VideoResolution, VideoStandard, VmgIfo, VmgPtlMait, VmgVtsAtrt,
     VmgVtsAtrtEntry, VobuAdmap, VtsCAdt, VtsIfo, VtsPttSrpt, VtsTmap, VtsTmapti, VtsiMat,

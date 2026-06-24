@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PGC program-map navigation + typed still time (`ifo` module).**
+  `Pgc` gains program→cell navigation over the (previously parsed but
+  inert) program map: `program_entry_cell(n)` returns the 1-based entry
+  cell for program *n*, and `program_cell_range(n)` returns the
+  inclusive `[first, last]` cell span a program owns (its entry cell up
+  to one before the next program's, the final program running through
+  `number_of_cells`) — the lookup a player needs to resolve a
+  chapter/program jump to a cell range. A new typed `StillTime`
+  (`None` / `Seconds(u8)` / `Infinite`) decodes the DVD still-time byte
+  with the `0` = none / `255` = infinite sentinels named per
+  mpucoder-pgc.html; surfaced as `Pgc::still()` (PGC header `0x00A2`)
+  and `CellPlaybackInfo::still()` (C_PBI byte 2). 3 new tests
+  (still-time decode, PGC/cell still round-trip, 3-program cell-range
+  navigation).
+
 - **PGC stream-control tables + typed playback mode (`ifo` module).**
   `Pgc` now decodes the two per-PGC stream-control tables the prior
   parser skipped over: `PGC_AST_CTL` (8 × 2-byte audio-stream control

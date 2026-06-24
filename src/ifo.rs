@@ -1471,6 +1471,14 @@ impl CellPlaybackInfo {
     pub fn category(&self) -> CellCategory {
         CellCategory::from_byte(self.category_byte0)
     }
+
+    /// Typed view over the cell still-time byte ([`Self::still_time`]):
+    /// `None` / `Seconds(n)` / `Infinite` per mpucoder-pgc.html (the
+    /// `255` value freezes the last frame until a user operation).
+    #[inline]
+    pub fn still(&self) -> StillTime {
+        StillTime::from_byte(self.still_time)
+    }
 }
 
 /// Per-cell position information (4 bytes per entry in C_POS).
@@ -1794,6 +1802,53 @@ impl SubpictureStreamControl {
     }
 }
 
+/// Typed view over a DVD "still time" byte.
+///
+/// DVD-Video uses a single byte for both the PGC still time (PGC
+/// header offset `0x00A2`) and the per-cell still time (C_PBI byte 2):
+/// `0` means no still (play straight through), `255` means an infinite
+/// still that only a user operation can release, and any value in
+/// between is that many seconds of freeze on the last frame. This
+/// typed view names the two sentinels per mpucoder-pgc.html so a
+/// player branches on the meaning rather than the magic `0xFF`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StillTime {
+    /// `0` — no still; playback continues immediately.
+    None,
+    /// `1..=254` — freeze on the last frame for this many seconds.
+    Seconds(u8),
+    /// `255` — freeze indefinitely until a user operation releases it.
+    Infinite,
+}
+
+impl StillTime {
+    /// Decode a raw still-time byte.
+    pub fn from_byte(b: u8) -> Self {
+        match b {
+            0 => StillTime::None,
+            255 => StillTime::Infinite,
+            n => StillTime::Seconds(n),
+        }
+    }
+
+    /// `true` for the `255` infinite-still sentinel.
+    #[inline]
+    pub fn is_infinite(self) -> bool {
+        matches!(self, StillTime::Infinite)
+    }
+
+    /// Seconds to freeze, or `None` for the infinite still (a caller
+    /// that wants a finite duration must special-case [`Self::is_infinite`]).
+    #[inline]
+    pub fn seconds(self) -> Option<u8> {
+        match self {
+            StillTime::None => Some(0),
+            StillTime::Seconds(n) => Some(n),
+            StillTime::Infinite => None,
+        }
+    }
+}
+
 /// Typed view over the PGC "PG playback mode" byte (offset `0x00A3`).
 ///
 /// Per mpucoder-pgc.html the byte is `0` for plain sequential
@@ -2110,6 +2165,48 @@ impl Pgc {
             .copied()
             .enumerate()
             .filter(|(_, c)| c.available)
+    }
+
+    /// Typed view over the PGC still-time byte ([`Self::still_time`]).
+    #[inline]
+    pub fn still(&self) -> StillTime {
+        StillTime::from_byte(self.still_time)
+    }
+
+    /// The 1-based entry-cell number for program `program_1based`
+    /// (`1..=number_of_programs`), or `None` when the program index is
+    /// out of range or the program map was elided.
+    ///
+    /// Each program-map entry is the cell at which that program begins
+    /// (Program and Cell numbers are 1-based per mpucoder-pgc.html).
+    #[inline]
+    pub fn program_entry_cell(&self, program_1based: u8) -> Option<u8> {
+        if program_1based == 0 {
+            return None;
+        }
+        self.program_map
+            .get(usize::from(program_1based - 1))
+            .copied()
+    }
+
+    /// The inclusive 1-based cell range `[first, last]` that belongs to
+    /// program `program_1based`.
+    ///
+    /// A program owns every cell from its own entry cell up to (but not
+    /// including) the next program's entry cell; the final program runs
+    /// through [`Self::number_of_cells`]. Returns `None` for an
+    /// out-of-range program or an elided program map.
+    pub fn program_cell_range(&self, program_1based: u8) -> Option<(u8, u8)> {
+        let first = self.program_entry_cell(program_1based)?;
+        let last = match self.program_entry_cell(program_1based + 1) {
+            // The next program's entry cell is one past this program's
+            // last cell; guard the all-1 boundary so we never underflow.
+            Some(next) if next > first => next - 1,
+            // No next program (or a malformed non-increasing map): this
+            // program runs to the final cell.
+            _ => self.number_of_cells,
+        };
+        Some((first, last))
     }
 }
 
@@ -4175,6 +4272,76 @@ mod tests {
             pgc.playback_mode(),
             PlaybackMode::Shuffle { program_count: 4 }
         );
+    }
+
+    #[test]
+    fn still_time_decode() {
+        assert_eq!(StillTime::from_byte(0), StillTime::None);
+        assert_eq!(StillTime::from_byte(10), StillTime::Seconds(10));
+        assert_eq!(StillTime::from_byte(254), StillTime::Seconds(254));
+        assert_eq!(StillTime::from_byte(255), StillTime::Infinite);
+        assert!(StillTime::from_byte(255).is_infinite());
+        assert!(!StillTime::from_byte(3).is_infinite());
+        assert_eq!(StillTime::from_byte(0).seconds(), Some(0));
+        assert_eq!(StillTime::from_byte(7).seconds(), Some(7));
+        assert_eq!(StillTime::from_byte(255).seconds(), None);
+    }
+
+    #[test]
+    fn pgc_still_and_cell_still_typed() {
+        let mut cell = make_cell(1000, 1999);
+        cell.still_time = 255;
+        let positions = [CellPositionInfo {
+            vob_id: 1,
+            cell_id: 1,
+        }];
+        let mut b = build_pgc_with_cells(&[cell], &positions);
+        b[0x00A2] = 5; // PGC still = 5 s
+        let pgc = Pgc::parse(&b).unwrap();
+        assert_eq!(pgc.still(), StillTime::Seconds(5));
+        assert_eq!(pgc.cells[0].still(), StillTime::Infinite);
+    }
+
+    #[test]
+    fn program_map_cell_navigation() {
+        // 5 cells split across 3 programs: prog1 → cells 1..=2,
+        // prog2 → cell 3, prog3 → cells 4..=5. Build the PGC body
+        // manually (build_pgc_with_cells fixes program count at 1).
+        let header_size = 0xEC;
+        let prog_count = 3u8;
+        let prog_map_size = (usize::from(prog_count) + 1) & !1; // 4
+        let cpbi_size = 5 * 24;
+        let cpos_size = 5 * 4;
+        let mut b = vec![0u8; header_size + prog_map_size + cpbi_size + cpos_size];
+        b[0x0002] = prog_count;
+        b[0x0003] = 5; // number_of_cells
+        b[0x0004..0x0008].copy_from_slice(&[0x00, 0x05, 0x00, 0xE0]);
+        let off_pmap = header_size as u16;
+        let off_cpbi = (header_size + prog_map_size) as u16;
+        let off_cpos = (header_size + prog_map_size + cpbi_size) as u16;
+        b[0x00E6..0x00E8].copy_from_slice(&off_pmap.to_be_bytes());
+        b[0x00E8..0x00EA].copy_from_slice(&off_cpbi.to_be_bytes());
+        b[0x00EA..0x00EC].copy_from_slice(&off_cpos.to_be_bytes());
+        // program_map = [1, 3, 4]
+        b[header_size] = 1; // program 1 starts at cell 1
+        b[header_size + 1] = 3; // program 2 starts at cell 3
+        b[header_size + 2] = 4; // program 3 starts at cell 4
+
+        let pgc = Pgc::parse(&b).unwrap();
+        assert_eq!(pgc.number_of_programs, 3);
+        assert_eq!(pgc.number_of_cells, 5);
+        assert_eq!(pgc.program_map, vec![1, 3, 4]);
+
+        assert_eq!(pgc.program_entry_cell(1), Some(1));
+        assert_eq!(pgc.program_entry_cell(2), Some(3));
+        assert_eq!(pgc.program_entry_cell(3), Some(4));
+        assert_eq!(pgc.program_entry_cell(4), None);
+        assert_eq!(pgc.program_entry_cell(0), None);
+
+        assert_eq!(pgc.program_cell_range(1), Some((1, 2)));
+        assert_eq!(pgc.program_cell_range(2), Some((3, 3)));
+        assert_eq!(pgc.program_cell_range(3), Some((4, 5)));
+        assert_eq!(pgc.program_cell_range(4), None);
     }
 
     // -------------------------------------------------------------
