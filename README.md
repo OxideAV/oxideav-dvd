@@ -22,7 +22,15 @@ title-set files, pull the title / chapter / program-chain / cell layout
 out of every IFO (including the typed `CellCategory` decode of each
 cell's byte-0 category field — cell type / block type plus the
 seamless / interleaved / STC-discontinuity / seamless-angle flags an
-angle-splice engine branches on), demux each cell's VOBUs into raw
+angle-splice engine branches on; the per-PGC `PGC_AST_CTL` /
+`PGC_SPST_CTL` stream-control tables that map a *logical* audio /
+sub-picture stream onto the *physical* substream a demuxer routes on,
+with a `SubpictureStreamControl::resolve(SubpictureDisplay)` 4:3 / wide
+/ letterbox / pan&scan picker; the program-map navigation
+(`program_entry_cell` / `program_cell_range`) that resolves a
+chapter/program jump to its cell span; and the typed `PlaybackMode`
+sequential/random/shuffle + `StillTime` None/Seconds/Infinite views),
+demux each cell's VOBUs into raw
 MPEG-2 video + AC-3 /
 DTS / LPCM audio + subpicture elementary streams keyed by track ID,
 answer time-based seek queries through the per-PGC `VTS_TMAPTI` time map
@@ -92,6 +100,8 @@ is delegated to the external `oxideav-css` crate.
 | FP_PGC (First-Play PGC — disc-insertion startup routing via `DvdDisc::parse_fp_pgc`; byte-addressed per VMGI_MAT `0x0084`, body parsed by `Pgc::parse`) | landed |
 | TT_SRPT (title list) + VTS_PTT_SRPT (chapter list) | landed |
 | VTS_PGCI + PGC (program chains + cells + colour-LUT + command table) | landed |
+| PGC stream-control tables (PGC_AST_CTL 8× audio + PGC_SPST_CTL 32× sub-picture logical→physical maps + `resolve(SubpictureDisplay)` 4:3/wide/letterbox/pan&scan picker) | landed |
+| PGC program-map navigation (`program_entry_cell` / `program_cell_range`) + typed `PlaybackMode` (sequential/random/shuffle) + `StillTime` (None/Seconds/Infinite) on PGC + cell | landed |
 | VTS_C_ADT (cell-to-VOB-sector lookup) | landed |
 | VMGM_C_ADT / VTSM_C_ADT + VMGM_VOBU_ADMAP / VTSM_VOBU_ADMAP (menu cell-address tables + menu VOBU sector maps via `DvdDisc::parse_vmgm_c_adt` / `parse_vtsm_c_adt` / `parse_vmgm_vobu_admap` / `parse_vtsm_vobu_admap`) | landed |
 | VTS_VOBU_ADMAP (per-VOBU sector list + partition lookup) | landed |
