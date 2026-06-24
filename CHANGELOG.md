@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PGC stream-control tables + typed playback mode (`ifo` module).**
+  `Pgc` now decodes the two per-PGC stream-control tables the prior
+  parser skipped over: `PGC_AST_CTL` (8 × 2-byte audio-stream control
+  slots at offset `0x000C`) and `PGC_SPST_CTL` (32 × 4-byte
+  sub-picture-stream control slots at `0x001C`). Each `PGC_AST_CTL`
+  slot maps a *logical* audio stream onto its physical MPEG-audio /
+  private_stream_1 substream number (`AudioStreamControl` —
+  `available` + 3-bit `stream_number`); each `PGC_SPST_CTL` slot maps a
+  logical sub-picture stream onto four per-display-mode physical
+  sub-stream numbers (`SubpictureStreamControl` — `available` +
+  5-bit `stream_4x3` / `stream_wide` / `stream_letterbox` /
+  `stream_pan_scan`), so a player resolves the right subtitle
+  sub-stream once it knows its aspect/display mode. New accessors:
+  `Pgc::audio_stream(n)` / `subpicture_stream(n)` indexed lookups,
+  `available_audio_streams()` / `available_subpicture_streams()`
+  iterators over the slots the title actually carries, and a typed
+  `Pgc::playback_mode()` decoding the `0x00A3` PG-playback-mode byte
+  into `PlaybackMode::{Sequential, Random { program_count },
+  Shuffle { program_count }}` (bit 7 = random/shuffle, bits 6..0 =
+  program count). Bit layouts straight from `mpucoder-pgc.html`.
+  4 new tests (AST entry, SPST entry, playback-mode decode, full
+  round-trip through `Pgc::parse`).
+
 - **LPCM sample-width ratio + corrected per-frame stride (`lpcm`
   module).** `LpcmQuantisation::bytes_per_sample()` (and the forwarding
   `LpcmHeader::bytes_per_sample()`) now report the per-sample byte count

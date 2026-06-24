@@ -1706,6 +1706,138 @@ impl PgcCommandTable {
     }
 }
 
+/// One PGC audio-stream-control entry (PGC_AST_CTL).
+///
+/// `PGC_AST_CTL` is an 8-entry × 2-byte table at PGC offset `0x000C`
+/// (one slot per logical DVD audio stream `0..=7`). Per
+/// mpucoder-pgc.html each entry's byte 0 is laid out MSB-first:
+///
+/// | Bits | Field                                              |
+/// |------|----------------------------------------------------|
+/// | 7    | `1` = stream available                             |
+/// | 6..3 | reserved                                           |
+/// | 2..0 | stream number (MPEG audio) / substream number      |
+///
+/// (byte 1 is entirely reserved.) The `stream_number` maps the
+/// *logical* audio stream index (this entry's table position) onto
+/// the *physical* MPEG-audio stream number or private_stream_1
+/// substream number a demuxer routes on — the same 3-bit selector
+/// SPRM 1 stores. An unavailable slot (`available == false`) is one
+/// the title does not provide; its `stream_number` is meaningless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioStreamControl {
+    /// Bit 7 — the title carries audio for this logical stream.
+    pub available: bool,
+    /// Bits 2..0 — physical MPEG-audio stream / private_stream_1
+    /// substream number this logical stream resolves to.
+    pub stream_number: u8,
+}
+
+impl AudioStreamControl {
+    /// Decode one 2-byte PGC_AST_CTL entry. Only byte 0 carries
+    /// data; byte 1 is reserved and ignored.
+    fn from_bytes(b: [u8; 2]) -> Self {
+        Self {
+            available: (b[0] & 0x80) != 0,
+            stream_number: b[0] & 0b0000_0111,
+        }
+    }
+}
+
+/// One PGC sub-picture-stream-control entry (PGC_SPST_CTL).
+///
+/// `PGC_SPST_CTL` is a 32-entry × 4-byte table at PGC offset `0x001C`
+/// (one slot per logical DVD sub-picture stream `0..=31`). Per
+/// mpucoder-pgc.html byte 0 carries the availability flag plus the
+/// 4:3 stream number; bytes 1..3 carry the per-display-mode stream
+/// numbers, each MSB-first:
+///
+/// | Byte | Bits | Field                          |
+/// |------|------|--------------------------------|
+/// | 0    | 7    | `1` = stream available         |
+/// | 0    | 6..5 | reserved                       |
+/// | 0    | 4..0 | stream number for 4:3          |
+/// | 1    | 4..0 | stream number for wide         |
+/// | 2    | 4..0 | stream number for letterbox    |
+/// | 3    | 4..0 | stream number for pan&scan     |
+///
+/// A single logical sub-picture stream can therefore resolve to a
+/// *different* physical sub-stream depending on how the player is
+/// displaying a 16:9 title on a 4:3 (or 16:9) screen — the four
+/// 5-bit fields are the four `0..=31` physical sub-stream numbers a
+/// player picks between once it knows its aspect/display mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubpictureStreamControl {
+    /// Bit 7 of byte 0 — the title carries this logical stream.
+    pub available: bool,
+    /// Byte 0 bits 4..0 — physical sub-stream for a 4:3 display.
+    pub stream_4x3: u8,
+    /// Byte 1 bits 4..0 — physical sub-stream for a wide (16:9)
+    /// display.
+    pub stream_wide: u8,
+    /// Byte 2 bits 4..0 — physical sub-stream for letterbox output.
+    pub stream_letterbox: u8,
+    /// Byte 3 bits 4..0 — physical sub-stream for pan&scan output.
+    pub stream_pan_scan: u8,
+}
+
+impl SubpictureStreamControl {
+    /// Decode one 4-byte PGC_SPST_CTL entry.
+    fn from_bytes(b: [u8; 4]) -> Self {
+        Self {
+            available: (b[0] & 0x80) != 0,
+            stream_4x3: b[0] & 0b0001_1111,
+            stream_wide: b[1] & 0b0001_1111,
+            stream_letterbox: b[2] & 0b0001_1111,
+            stream_pan_scan: b[3] & 0b0001_1111,
+        }
+    }
+}
+
+/// Typed view over the PGC "PG playback mode" byte (offset `0x00A3`).
+///
+/// Per mpucoder-pgc.html the byte is `0` for plain sequential
+/// program playback; any non-zero value selects a non-linear mode
+/// where bit 7 distinguishes random (`0`) from shuffle (`1`) and
+/// bits 6..0 carry the number of programs to play before the PGC
+/// ends. "Random" replays programs with possible repeats; "shuffle"
+/// plays each program once in a shuffled order — both stop after the
+/// program count is reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackMode {
+    /// Raw `0x00` — play every program once, in order.
+    Sequential,
+    /// Bit 7 clear — play `program_count` programs at random (with
+    /// possible repeats).
+    Random {
+        /// Bits 6..0 — number of programs to play before ending.
+        program_count: u8,
+    },
+    /// Bit 7 set — play `program_count` programs in shuffled order
+    /// (each at most once).
+    Shuffle {
+        /// Bits 6..0 — number of programs to play before ending.
+        program_count: u8,
+    },
+}
+
+impl PlaybackMode {
+    /// Decode the raw `0x00A3` PG-playback-mode byte.
+    pub fn from_byte(b: u8) -> Self {
+        if b == 0 {
+            PlaybackMode::Sequential
+        } else if (b & 0x80) != 0 {
+            PlaybackMode::Shuffle {
+                program_count: b & 0x7F,
+            }
+        } else {
+            PlaybackMode::Random {
+                program_count: b & 0x7F,
+            }
+        }
+    }
+}
+
 /// Parsed PGC header + cell tables.
 ///
 /// Layout per mpucoder-pgc.html:
@@ -1741,6 +1873,16 @@ pub struct Pgc {
     /// Playback mode (0 = sequential; non-zero encodes
     /// random/shuffle + program count, see spec).
     pub playback_mode: u8,
+    /// PGC_AST_CTL — 8 logical-audio-stream control slots
+    /// (offset `0x000C`). Slot *i* maps logical audio stream *i*
+    /// onto a physical stream/substream number; see
+    /// [`AudioStreamControl`].
+    pub audio_stream_control: [AudioStreamControl; 8],
+    /// PGC_SPST_CTL — 32 logical-sub-picture-stream control slots
+    /// (offset `0x001C`). Slot *i* maps logical sub-picture stream
+    /// *i* onto per-display-mode physical sub-stream numbers; see
+    /// [`SubpictureStreamControl`].
+    pub subpicture_stream_control: [SubpictureStreamControl; 32],
     /// Subpicture/highlight colour-LUT — 16 `(Y, Cr, Cb)` entries
     /// from PGC offset `0x00A4` per mpucoder-pgc.html.
     pub palette: [PaletteEntry; 16],
@@ -1782,6 +1924,35 @@ impl Pgc {
         let goup_pgcn = read_u16(buf, 0x00A0)?;
         let still_time = read_u8(buf, 0x00A2)?;
         let playback_mode = read_u8(buf, 0x00A3)?;
+
+        // PGC_AST_CTL: 8 × 2-byte audio-stream control entries at
+        // 0x000C, and PGC_SPST_CTL: 32 × 4-byte sub-picture-stream
+        // control entries at 0x001C. Both sit inside the fixed PGC
+        // header the 0xEC length check above already covers.
+        let mut audio_stream_control = [AudioStreamControl {
+            available: false,
+            stream_number: 0,
+        }; 8];
+        for (i, slot) in audio_stream_control.iter_mut().enumerate() {
+            let base = 0x000C + i * 2;
+            *slot = AudioStreamControl::from_bytes([buf[base], buf[base + 1]]);
+        }
+        let mut subpicture_stream_control = [SubpictureStreamControl {
+            available: false,
+            stream_4x3: 0,
+            stream_wide: 0,
+            stream_letterbox: 0,
+            stream_pan_scan: 0,
+        }; 32];
+        for (i, slot) in subpicture_stream_control.iter_mut().enumerate() {
+            let base = 0x001C + i * 4;
+            *slot = SubpictureStreamControl::from_bytes([
+                buf[base],
+                buf[base + 1],
+                buf[base + 2],
+                buf[base + 3],
+            ]);
+        }
 
         // Palette (subpicture colour-LUT): 16 × 4-byte (0, Y, Cr, Cb)
         // entries at PGC offset 0x00A4. This is part of the fixed
@@ -1853,6 +2024,8 @@ impl Pgc {
             goup_pgcn,
             still_time,
             playback_mode,
+            audio_stream_control,
+            subpicture_stream_control,
             palette,
             offset_commands,
             offset_program_map,
@@ -1885,6 +2058,58 @@ impl Pgc {
     #[inline]
     pub fn is_user_op_allowed(&self, op: crate::uops::UserOp) -> bool {
         self.uop_mask().is_allowed(op)
+    }
+
+    /// Typed view over the PG-playback-mode byte ([`Self::playback_mode`]).
+    ///
+    /// Decodes the sequential / random / shuffle distinction and the
+    /// 7-bit program count per mpucoder-pgc.html.
+    #[inline]
+    pub fn playback_mode(&self) -> PlaybackMode {
+        PlaybackMode::from_byte(self.playback_mode)
+    }
+
+    /// The PGC_AST_CTL slot for logical audio stream `n` (`0..=7`),
+    /// or `None` when `n` is out of range.
+    ///
+    /// Returns the typed [`AudioStreamControl`] that maps the logical
+    /// stream onto its physical MPEG-audio / private_stream_1
+    /// substream number.
+    #[inline]
+    pub fn audio_stream(&self, n: usize) -> Option<AudioStreamControl> {
+        self.audio_stream_control.get(n).copied()
+    }
+
+    /// Iterate the logical audio streams the title actually provides,
+    /// yielding `(logical_index, control)` for each `available` slot.
+    pub fn available_audio_streams(
+        &self,
+    ) -> impl Iterator<Item = (usize, AudioStreamControl)> + '_ {
+        self.audio_stream_control
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, c)| c.available)
+    }
+
+    /// The PGC_SPST_CTL slot for logical sub-picture stream `n`
+    /// (`0..=31`), or `None` when `n` is out of range.
+    #[inline]
+    pub fn subpicture_stream(&self, n: usize) -> Option<SubpictureStreamControl> {
+        self.subpicture_stream_control.get(n).copied()
+    }
+
+    /// Iterate the logical sub-picture streams the title actually
+    /// provides, yielding `(logical_index, control)` for each
+    /// `available` slot.
+    pub fn available_subpicture_streams(
+        &self,
+    ) -> impl Iterator<Item = (usize, SubpictureStreamControl)> + '_ {
+        self.subpicture_stream_control
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, c)| c.available)
     }
 }
 
@@ -3838,6 +4063,118 @@ mod tests {
         assert!(pgc.commands.is_none());
         // Palette defaults to all-zero when bytes are zero.
         assert_eq!(pgc.palette[7], PaletteEntry::default());
+    }
+
+    // -------------------------------------------------------------
+    // PGC_AST_CTL / PGC_SPST_CTL stream-control + playback mode
+    // -------------------------------------------------------------
+
+    #[test]
+    fn ast_ctl_entry_decode() {
+        // bit7 set + stream number 5 (0b101) in bits 2..0; bits 6..3
+        // reserved (set them to verify they're masked out).
+        let e = AudioStreamControl::from_bytes([0b1111_1101, 0xFF]);
+        assert!(e.available);
+        assert_eq!(e.stream_number, 5);
+        // unavailable slot
+        let e0 = AudioStreamControl::from_bytes([0x00, 0x00]);
+        assert!(!e0.available);
+        assert_eq!(e0.stream_number, 0);
+    }
+
+    #[test]
+    fn spst_ctl_entry_decode() {
+        // available; 4:3=3, wide=7, letterbox=12, pan&scan=31 with all
+        // reserved upper bits set to confirm the 5-bit mask.
+        let e = SubpictureStreamControl::from_bytes([
+            0b1110_0011, // avail + reserved 6..5 + 4:3 = 3
+            0b1110_0111, // reserved 7..5 + wide = 7
+            0b1110_1100, // reserved + letterbox = 12
+            0b1111_1111, // reserved + pan&scan = 31
+        ]);
+        assert!(e.available);
+        assert_eq!(e.stream_4x3, 3);
+        assert_eq!(e.stream_wide, 7);
+        assert_eq!(e.stream_letterbox, 12);
+        assert_eq!(e.stream_pan_scan, 31);
+    }
+
+    #[test]
+    fn playback_mode_decode() {
+        assert_eq!(PlaybackMode::from_byte(0), PlaybackMode::Sequential);
+        assert_eq!(
+            PlaybackMode::from_byte(0x05),
+            PlaybackMode::Random { program_count: 5 }
+        );
+        assert_eq!(
+            PlaybackMode::from_byte(0x83),
+            PlaybackMode::Shuffle { program_count: 3 }
+        );
+        // bit7 set with count 0 is still shuffle (non-zero byte)
+        assert_eq!(
+            PlaybackMode::from_byte(0x80),
+            PlaybackMode::Shuffle { program_count: 0 }
+        );
+    }
+
+    #[test]
+    fn pgc_parses_stream_control_tables() {
+        let cells = [make_cell(1000, 1999)];
+        let positions = [CellPositionInfo {
+            vob_id: 1,
+            cell_id: 1,
+        }];
+        let mut b = build_pgc_with_cells(&cells, &positions);
+
+        // PGC_AST_CTL at 0x000C: 8 × 2 bytes. Mark stream 0 available
+        // → substream 2; stream 1 available → substream 6; leave the
+        // rest unavailable.
+        b[0x000C] = 0x80 | 2; // entry 0 byte 0
+        b[0x000C + 2] = 0x80 | 6; // entry 1 byte 0
+
+        // PGC_SPST_CTL at 0x001C: 32 × 4 bytes. Mark logical sub-pic 0
+        // available with per-mode physical numbers 0/1/2/3.
+        b[0x001C] = 0x80; // avail + 4:3 = 0
+        b[0x001C + 1] = 1; // wide = 1
+        b[0x001C + 2] = 2; // letterbox = 2
+        b[0x001C + 3] = 3; // pan&scan = 3
+
+        // PG playback mode byte at 0x00A3: shuffle of 4 programs.
+        b[0x00A3] = 0x80 | 4;
+
+        let pgc = Pgc::parse(&b).unwrap();
+
+        let a0 = pgc.audio_stream(0).unwrap();
+        assert!(a0.available);
+        assert_eq!(a0.stream_number, 2);
+        let a1 = pgc.audio_stream(1).unwrap();
+        assert!(a1.available);
+        assert_eq!(a1.stream_number, 6);
+        assert!(!pgc.audio_stream(2).unwrap().available);
+        assert!(pgc.audio_stream(8).is_none());
+
+        let avail_audio: Vec<_> = pgc.available_audio_streams().collect();
+        assert_eq!(avail_audio.len(), 2);
+        assert_eq!(avail_audio[0].0, 0);
+        assert_eq!(avail_audio[1].0, 1);
+
+        let s0 = pgc.subpicture_stream(0).unwrap();
+        assert!(s0.available);
+        assert_eq!(s0.stream_4x3, 0);
+        assert_eq!(s0.stream_wide, 1);
+        assert_eq!(s0.stream_letterbox, 2);
+        assert_eq!(s0.stream_pan_scan, 3);
+        assert!(!pgc.subpicture_stream(1).unwrap().available);
+        assert!(pgc.subpicture_stream(32).is_none());
+
+        let avail_sub: Vec<_> = pgc.available_subpicture_streams().collect();
+        assert_eq!(avail_sub.len(), 1);
+        assert_eq!(avail_sub[0].0, 0);
+
+        assert_eq!(
+            pgc.playback_mode(),
+            PlaybackMode::Shuffle { program_count: 4 }
+        );
     }
 
     // -------------------------------------------------------------
