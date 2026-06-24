@@ -1800,6 +1800,43 @@ impl SubpictureStreamControl {
             stream_pan_scan: b[3] & 0b0001_1111,
         }
     }
+
+    /// Resolve the physical sub-stream number for the player's current
+    /// presentation mode, or `None` when the slot is unavailable.
+    ///
+    /// A 4:3 title only ever uses the `4:3` field; a 16:9 title picks
+    /// between `wide` / `letterbox` / `pan&scan` according to how the
+    /// player is mapping the wide picture onto the output device. This
+    /// is the lookup a demuxer performs to turn the *logical*
+    /// sub-picture stream the VM selected (SPRM 2) into the *physical*
+    /// private_stream_1 sub-stream `0x20 | n` it routes on.
+    #[inline]
+    pub fn resolve(&self, mode: SubpictureDisplay) -> Option<u8> {
+        if !self.available {
+            return None;
+        }
+        Some(match mode {
+            SubpictureDisplay::Ratio4x3 => self.stream_4x3,
+            SubpictureDisplay::Wide => self.stream_wide,
+            SubpictureDisplay::Letterbox => self.stream_letterbox,
+            SubpictureDisplay::PanScan => self.stream_pan_scan,
+        })
+    }
+}
+
+/// The four presentation modes a [`SubpictureStreamControl`] entry
+/// carries a distinct physical sub-stream number for, per
+/// mpucoder-pgc.html.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubpictureDisplay {
+    /// A 4:3 display (the only mode a 4:3 title uses).
+    Ratio4x3,
+    /// A 16:9 wide display showing the full anamorphic picture.
+    Wide,
+    /// A 16:9 title letterboxed into a 4:3 frame.
+    Letterbox,
+    /// A 16:9 title pan-and-scanned into a 4:3 frame.
+    PanScan,
 }
 
 /// Typed view over a DVD "still time" byte.
@@ -4194,6 +4231,29 @@ mod tests {
         assert_eq!(e.stream_wide, 7);
         assert_eq!(e.stream_letterbox, 12);
         assert_eq!(e.stream_pan_scan, 31);
+    }
+
+    #[test]
+    fn spst_ctl_resolve_by_display_mode() {
+        let e = SubpictureStreamControl {
+            available: true,
+            stream_4x3: 1,
+            stream_wide: 2,
+            stream_letterbox: 3,
+            stream_pan_scan: 4,
+        };
+        assert_eq!(e.resolve(SubpictureDisplay::Ratio4x3), Some(1));
+        assert_eq!(e.resolve(SubpictureDisplay::Wide), Some(2));
+        assert_eq!(e.resolve(SubpictureDisplay::Letterbox), Some(3));
+        assert_eq!(e.resolve(SubpictureDisplay::PanScan), Some(4));
+
+        // An unavailable slot resolves to None for every mode.
+        let na = SubpictureStreamControl {
+            available: false,
+            ..e
+        };
+        assert_eq!(na.resolve(SubpictureDisplay::Wide), None);
+        assert_eq!(na.resolve(SubpictureDisplay::Ratio4x3), None);
     }
 
     #[test]

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PGC_SPST_CTL display-mode sub-stream resolver (`ifo` module).**
+  `SubpictureStreamControl::resolve(SubpictureDisplay)` turns the four
+  per-display-mode physical sub-stream numbers into the single one the
+  player's current presentation uses — the lookup that maps the
+  *logical* sub-picture stream the VM selected (SPRM 2) onto the
+  *physical* private_stream_1 sub-stream a demuxer routes on. The new
+  `SubpictureDisplay` enum (`Ratio4x3` / `Wide` / `Letterbox` /
+  `PanScan`) names the four cases from mpucoder-pgc.html; an
+  unavailable slot resolves to `None` for every mode. 1 new test.
+
 - **PGC program-map navigation + typed still time (`ifo` module).**
   `Pgc` gains program→cell navigation over the (previously parsed but
   inert) program map: `program_entry_cell(n)` returns the 1-based entry
