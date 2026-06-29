@@ -124,6 +124,9 @@ is delegated to the external `oxideav-css` crate.
 | PCI_GI `hli_ss` → typed `HighlightStatus` enum (None / AllNew / UsePrevious / UsePreviousExceptCommands) + geometry-inheritance + own-commands classifiers | landed |
 | HLI_GI `btn_md` → typed `ButtonMode` view (`btngr_ns` group count + three 3-bit `btngrN_ty` codes) | landed |
 | NAV-pack DSI typed sub-sections (DSI_GI + SML_PBI + SML_AGLI + VOBU_SRI + SYNCI; DSI_GI `c_eltm` → typed `PgcTime` + ns) | landed |
+| Program Stream System Header typed decode (`SystemHeader` — rate/audio/video bound + fixed/CSPS/audio-lock/video-lock/packet-rate flags + 4 `StreamBound` P-STD buffer entries with `buffer_bytes()`; surfaced on `NavPack::system_header`) | landed |
+| MPEG-2 video header decode (`mpeg` module — `SequenceHeader` size/aspect/frame-rate/bit-rate/VBV + `SequenceExtension` profile/level/chroma/size-ext + `SequenceDisplayExtension` colour-description/display-size + `GopHeader` SMPTE TC/closed/broken + `PictureHeader` TR/coding-type/VBV-delay + `PictureCodingExtension` f_codes/picture-structure/coding-flags) | landed |
+| MPEG video elementary-stream scanner (`iter_start_codes` + `scan_video_sequence` → `VideoSequenceInfo` track summary; `VobStreams::video_sequence_info()` demux→summary) | landed |
 | MKV mux + chapter encoding wiring | landed |
 | VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed |
 | `PgcCommandTable` typed-instruction iterators (`pre_instructions` / `post_instructions` / `cell_instructions` + 1-based `cell_instruction(index)`) | landed |
@@ -461,6 +464,53 @@ println!("cell elapsed = {:02}:{:02}:{:02}.{:02} ({} ns)",
 type, returning the rational `(frames × 1e9) / fps` conversion
 without needing the `mkv-output` feature.
 
+## Summarising the MPEG-2 video stream
+
+The `mpeg` module decodes the ISO/IEC 13818-2 elementary-stream
+video headers that ride inside a DVD VOB's video PES (start-code
+`0x000001E0`) — enough to label a track and find GOP entry points,
+without decoding any macroblocks. After demuxing, hand the video
+buffer to the scanner:
+
+```rust,no_run
+use oxideav_dvd::{scan_video_sequence, AspectRatioCode, PictureCodingType};
+
+let video: &[u8] = &[]; // VobStreams::video bytes
+let info = scan_video_sequence(video);
+
+if let Some((w, h)) = info.coded_size() {
+    println!("{w}×{h}, MPEG-{}", if info.is_mpeg2() { 2 } else { 1 });
+}
+if let Some((num, den)) = info.frame_rate() {
+    println!("{:.3} fps", num as f64 / den as f64);
+}
+if let Some(seq) = info.sequence {
+    assert!(matches!(
+        seq.aspect_ratio,
+        AspectRatioCode::Ratio4x3 | AspectRatioCode::Ratio16x9
+    ));
+}
+if let Some(pic) = info.first_picture {
+    // The first picture of a closed GOP is an I-frame — a seek
+    // target a player can decode cold.
+    assert_eq!(pic.coding_type, PictureCodingType::Intra);
+}
+```
+
+`VideoSequenceInfo` carries the first `SequenceHeader`,
+`SequenceExtension` (its presence is what makes the stream MPEG-2),
+`SequenceDisplayExtension`, first `GopHeader`, and first
+`PictureHeader`. The individual `SequenceHeader::parse` /
+`SequenceExtension::parse` / `SequenceDisplayExtension::parse` /
+`GopHeader::parse` / `PictureHeader::parse` /
+`PictureCodingExtension::parse` entry points decode each header in
+isolation; `iter_start_codes` exposes the raw `00 00 01 xx` walk for
+a caller that wants to drive the layers itself. The
+`VobStreams::video_sequence_info()` shortcut runs the scanner over a
+just-demuxed title. All field layouts come from
+`mpucoder-mpeghdrs.html` cross-checked against the DVD MPEG
+constraints in `mpucoder-dvdmpeg.html`.
+
 ## Time-based seek (`VTS_TMAPTI` + `VTS_VOBU_ADMAP`)
 
 Once a `VtsIfo` is parsed, the `time_map` field carries one time map
@@ -714,8 +764,15 @@ This crate was written entirely against:
   `stnsoft-sys_hdr.html` — VOB MPEG-PS pack header, PES header
   (DVD subset), MPEG-PS stream-ID table, NAV-pack PCI / DSI
   packet layouts, DVD substream allocations, VOBU / cell / VOB
-  semantics, and the Program Stream System Header used by the
-  VOB demuxer.
+  semantics, and the Program Stream System Header. `mpeghdrs` +
+  `dvdmpeg` further feed the `mpeg` module's MPEG-2 video
+  elementary-stream header decoders (Sequence Header / Sequence
+  Extension / Sequence Display Extension / GOP header / Picture
+  Header / Picture Coding Extension) and the
+  `scan_video_sequence` walker; `sys_hdr` feeds the typed
+  `vob::SystemHeader` (`rate_bound` / `audio_bound` / `video_bound`
+  / the lock + restriction flags + the four DVD `StreamBound`
+  P-STD buffer entries).
 - `docs/container/dvd/application/stnsoft-ass-hdr.html` — the generic
   DVD audio-substream header (`FrmCnt` + `FirstAccUnit`) that prefixes
   every private_stream_1 AC-3 / DTS / LPCM payload after the substream
