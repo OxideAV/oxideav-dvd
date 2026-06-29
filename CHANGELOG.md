@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MPEG-2 video sequence-header decode (`mpeg` module).** A new
+  `mpeg` module decodes the ISO/IEC 13818-2 elementary-stream video
+  headers that ride inside a DVD VOB's video PES (start-code
+  `0x000001E0`), per `mpucoder-mpeghdrs.html`. `SequenceHeader::parse`
+  (start code `00 00 01 B3`) decodes the coded picture size, the 4-bit
+  `aspect_ratio` (`AspectRatioCode` — forbidden / 1:1 / 4:3 / 16:9 /
+  2.21:1 / reserved) and `frame_rate` (`FrameRateCode` with exact
+  `as_ratio()` / `as_fps()` for the eight defined rates including the
+  three DVD-authored 24000/1001, 25, 30000/1001 codes), the 18-bit
+  bit-rate value (`bit_rate_bps()` with the `0x3FFFF` VBR escape →
+  `None`), the 10-bit VBV buffer size (`vbv_buffer_bits()`), the
+  constrained-parameters flag, and the two quantiser-matrix load
+  flags. `SequenceExtension::parse` (start code `00 00 01 B5`,
+  extension-id `0001`) decodes the MPEG-2 marker that distinguishes
+  MPEG-2 from MPEG-1: profile/level (`profile()` / `level()`),
+  progressive-sequence flag, chroma format, the 2-bit horizontal /
+  vertical size extensions, the 12-bit bit-rate extension, the
+  VBV-extension byte, low-delay flag, and the frame-rate extension
+  numerator/denominator. `SequenceHeader::full_horizontal_size` /
+  `full_vertical_size` / `bit_rate_bps_with_extension` recombine the
+  base header's low bits with the extension's high bits. 9 new tests.
+
 - **PGC_SPST_CTL display-mode sub-stream resolver (`ifo` module).**
   `SubpictureStreamControl::resolve(SubpictureDisplay)` turns the four
   per-display-mode physical sub-stream numbers into the single one the

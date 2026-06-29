@@ -90,6 +90,7 @@ pub mod error;
 pub mod ifo;
 pub mod iso9660;
 pub mod lpcm;
+pub mod mpeg;
 pub mod nav;
 pub mod source;
 pub mod spu;
@@ -127,6 +128,7 @@ pub use lpcm::{
     peel_lpcm_payload, LpcmHeader, LpcmQuantisation, LpcmSampleFrequency,
     DVD_LPCM_MAX_BITRATE_KBPS, LPCM_HEADER_LEN,
 };
+pub use mpeg::{AspectRatioCode, FrameRateCode, SequenceExtension, SequenceHeader};
 pub use nav::{
     CallSSTarget, CmpOp, JumpSSTarget, LinkSubset, NavInstruction, Operand, Register, SetOp,
 };
