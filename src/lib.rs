@@ -170,8 +170,8 @@ pub use vob::{
     demux_vobs, demux_vobs_path, looks_like_nav_pack, AudioSubstreamHeader, ButtonInfo, ButtonMode,
     CellId, DsiGi, DsiPacket, DvdSubstream, ElementaryStream, HighlightInfo, HighlightStatus,
     NavPack, NsmlAgli, NsmlAngleCell, PackHeader, PciPacket, PesPacket, SlColi, SlColiCell,
-    SmlAgli, SmlAngleCell, SmlAudioGap, SmlPbi, Synci, VobDemuxer, VobId, VobStreams, VobuSri,
-    AUDIO_SUBSTREAM_HEADER_LEN,
+    SmlAgli, SmlAngleCell, SmlAudioGap, SmlPbi, StreamBound, Synci, SystemHeader, VobDemuxer,
+    VobId, VobStreams, VobuSri, AUDIO_SUBSTREAM_HEADER_LEN,
 };
 
 #[cfg(feature = "registry")]

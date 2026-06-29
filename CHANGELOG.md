@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Program Stream System Header typed decode (`vob` module).** The
+  `00 00 01 BB` MPEG-PS System Header that sits between the pack
+  header and the PCI packet in every NAV pack — previously only
+  validated by marker presence — is now fully decoded into a typed
+  `SystemHeader` per `stnsoft-sys_hdr.html`: `rate_bound` (22 bits,
+  25200 on DVD), `audio_bound`, the `fixed` / `CSPS` /
+  `system_audio_lock` / `system_video_lock` / `packet_rate_restriction`
+  flags, `video_bound`, and the trailing `StreamBound` entries (the
+  four mandatory DVD bounds for video `0xB9` / audio `0xB8` /
+  private-stream-1 `0xBD` / private-stream-2 `0xBF`, each with a
+  `buffer_bytes()` resolving the ×128/×1024 P-STD buffer scale).
+  `NavPack` gains a `system_header` field surfacing the decode for
+  every parsed nav-pack sector. 4 new tests.
+
 - **MPEG-2 Picture Header + Picture Coding Extension decode (`mpeg`
   module).** `PictureHeader::parse` (start code `00 00 01 00`)
   decodes the 10-bit `temporal_reference`, the 3-bit

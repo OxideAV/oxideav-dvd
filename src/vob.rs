@@ -176,6 +176,151 @@ impl PackHeader {
 }
 
 // ------------------------------------------------------------------
+// Program Stream System Header (stnsoft-sys_hdr.html, 00 00 01 BB)
+// ------------------------------------------------------------------
+
+/// One `stream_bound` entry of a [`SystemHeader`] (stnsoft-sys_hdr.html).
+///
+/// Each 3-byte entry binds a P-STD buffer size to a stream. On a DVD
+/// nav-pack the header always carries exactly four of these:
+/// `0xB9` (all video), `0xB8` (all MPEG audio), `0xBD`
+/// (private_stream_1), `0xBF` (private_stream_2 / nav packs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamBound {
+    /// `stream_id` the bound applies to (`0xB8` = all audio,
+    /// `0xB9` = all video, else a specific PES stream id `>= 0xBC`).
+    pub stream_id: u8,
+    /// `P-STD_buffer_bound_scale` — false = ×128, true = ×1024.
+    pub buffer_bound_scale: bool,
+    /// 13-bit `P-STD_buffer_size_bound`.
+    pub buffer_size_bound: u16,
+}
+
+impl StreamBound {
+    /// The decoded buffer-size bound in bytes (`buffer_size_bound`
+    /// × 128 or × 1024 per `buffer_bound_scale`).
+    pub fn buffer_bytes(self) -> u32 {
+        let mult: u32 = if self.buffer_bound_scale { 1024 } else { 128 };
+        self.buffer_size_bound as u32 * mult
+    }
+}
+
+/// Decoded MPEG-PS Program Stream System Header
+/// (`stnsoft-sys_hdr.html`). On a DVD-Video disc this is the fixed
+/// 18-byte header that follows the pack header in every NAV pack.
+///
+/// Fixed-portion layout after the `00 00 01 BB` start code:
+/// - `header_length` — 16 bits
+/// - marker `1`, `rate_bound` — 22 bits, marker `1`
+/// - `audio_bound` — 6 bits, `fixed_flag` — 1, `CSPS_flag` — 1
+/// - `system_audio_lock_flag` — 1, `system_video_lock_flag` — 1,
+///   marker `1`, `video_bound` — 5 bits
+/// - `packet_rate_restriction_flag` — 1, `reserved_byte` — 7 bits
+///
+/// followed by `header_length - 6` bytes of `stream_bound` entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemHeader {
+    /// 22-bit `rate_bound` (≥ max `program_mux_rate`; 25200 on DVD).
+    pub rate_bound: u32,
+    /// 6-bit `audio_bound` (max audio streams, 0..=8 on DVD).
+    pub audio_bound: u8,
+    /// `fixed_flag` (false on DVD — VBR).
+    pub fixed_flag: bool,
+    /// `CSPS_flag` (false on DVD).
+    pub csps_flag: bool,
+    /// `system_audio_lock_flag` (true on DVD).
+    pub system_audio_lock: bool,
+    /// `system_video_lock_flag` (true on DVD).
+    pub system_video_lock: bool,
+    /// 5-bit `video_bound` (max video streams; always 1 on DVD).
+    pub video_bound: u8,
+    /// `packet_rate_restriction_flag` (false on DVD).
+    pub packet_rate_restriction: bool,
+    /// The trailing `stream_bound` entries (4 on a DVD nav-pack).
+    pub stream_bounds: Vec<StreamBound>,
+}
+
+impl SystemHeader {
+    /// Parse a system header. `buf` begins at the `00 00 01 BB`
+    /// start code.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 4 || buf[0..3] != [0x00, 0x00, 0x01] || buf[3] != SC_SYSTEM_HEADER {
+            return Err(Error::InvalidUdf("system header: missing 00 00 01 BB"));
+        }
+        if buf.len() < 12 {
+            return Err(Error::InvalidUdf("system header: shorter than 12 bytes"));
+        }
+        let header_length = ((buf[4] as usize) << 8) | (buf[5] as usize);
+        // The full header is 6 (start code + length) + header_length.
+        let total = 6 + header_length;
+        if buf.len() < total {
+            return Err(Error::InvalidUdf(
+                "system header: header_length exceeds buffer",
+            ));
+        }
+        // Byte 6: marker(1) rate_bound[21..15](7)
+        if (buf[6] >> 7) & 1 != 1 {
+            return Err(Error::InvalidUdf("system header: leading marker != 1"));
+        }
+        // rate_bound: 22 bits — byte6 low 7, byte7 (8), byte8 high 7.
+        let rate_bound =
+            (((buf[6] & 0x7F) as u32) << 15) | ((buf[7] as u32) << 7) | ((buf[8] >> 1) as u32);
+        // marker bit at byte8 bit0.
+        if buf[8] & 1 != 1 {
+            return Err(Error::InvalidUdf("system header: rate_bound marker != 1"));
+        }
+        // Byte 9: audio_bound(6) fixed_flag(1) CSPS_flag(1)
+        let audio_bound = buf[9] >> 2;
+        let fixed_flag = (buf[9] >> 1) & 1 == 1;
+        let csps_flag = buf[9] & 1 == 1;
+        // Byte 10: sys_audio_lock(1) sys_video_lock(1) marker(1) video_bound(5)
+        let system_audio_lock = (buf[10] >> 7) & 1 == 1;
+        let system_video_lock = (buf[10] >> 6) & 1 == 1;
+        if (buf[10] >> 5) & 1 != 1 {
+            return Err(Error::InvalidUdf("system header: video_bound marker != 1"));
+        }
+        let video_bound = buf[10] & 0x1F;
+        // Byte 11: packet_rate_restriction(1) reserved(7)
+        let packet_rate_restriction = (buf[11] >> 7) & 1 == 1;
+
+        // stream_bound entries follow at byte 12; each is 3 bytes and
+        // begins with a byte whose MSB is set.
+        let mut stream_bounds = Vec::new();
+        let mut cursor = 12;
+        while cursor + 3 <= total && (buf[cursor] & 0x80) != 0 {
+            let stream_id = buf[cursor];
+            // byte+1: '11'(2) buffer_bound_scale(1) buffer_size_bound[12..8](5)
+            if (buf[cursor + 1] >> 6) != 0b11 {
+                return Err(Error::InvalidUdf(
+                    "system header: stream_bound '11' marker missing",
+                ));
+            }
+            let buffer_bound_scale = (buf[cursor + 1] >> 5) & 1 == 1;
+            let buffer_size_bound =
+                (((buf[cursor + 1] & 0x1F) as u16) << 8) | (buf[cursor + 2] as u16);
+            stream_bounds.push(StreamBound {
+                stream_id,
+                buffer_bound_scale,
+                buffer_size_bound,
+            });
+            cursor += 3;
+        }
+
+        Ok(Self {
+            rate_bound,
+            audio_bound,
+            fixed_flag,
+            csps_flag,
+            system_audio_lock,
+            system_video_lock,
+            video_bound,
+            packet_rate_restriction,
+            stream_bounds,
+        })
+    }
+}
+
+// ------------------------------------------------------------------
 // PES Packet (mpucoder-pes-hdr.html, ISO 13818-1 §2.4.3.6)
 // ------------------------------------------------------------------
 
@@ -2268,6 +2413,9 @@ impl DsiPacket {
 pub struct NavPack {
     pub pci: PciPacket,
     pub dsi: DsiPacket,
+    /// The decoded Program Stream System Header that sits between the
+    /// pack header and the PCI packet (per `stnsoft-sys_hdr.html`).
+    pub system_header: SystemHeader,
 }
 
 impl NavPack {
@@ -2291,6 +2439,7 @@ impl NavPack {
                 "nav-pack: 0x000001BB system header missing at offset 0x0E",
             ));
         }
+        let system_header = SystemHeader::parse(&sector[0x0E..])?;
         // 3) PCI packet at sector offset 0x26 per mpucoder-pci_pkt.html.
         if sector[0x26..0x2A] != [0x00, 0x00, 0x01, SC_PRIVATE_STREAM_2] {
             return Err(Error::InvalidUdf(
@@ -2317,7 +2466,11 @@ impl NavPack {
         }
         let dsi = DsiPacket::parse(&sector[0x407..])?;
 
-        Ok(Self { pci, dsi })
+        Ok(Self {
+            pci,
+            dsi,
+            system_header,
+        })
     }
 }
 
@@ -2711,14 +2864,36 @@ mod tests {
     }
 
     fn build_system_header() -> Vec<u8> {
-        // 12 fixed bytes + 12 stream_bound bytes = 24 byte payload;
-        // start code (4) + length field (2) puts the on-wire size
-        // at 24 bytes for the header part (length = 18).
-        // Easier: pack a length-of-18 header per stnsoft-sys_hdr.html.
+        // A spec-valid DVD-Video system header per stnsoft-sys_hdr.html:
+        // header_length = 18 (6 fixed bytes after the length field +
+        // 12 bytes = 4 stream_bound entries).
         let mut v = vec![0x00, 0x00, 0x01, SC_SYSTEM_HEADER, 0x00, 0x12];
-        // 18 bytes of body — actual content irrelevant to the
-        // demuxer, just preserve the length byte counts.
-        v.extend(std::iter::repeat(0u8).take(18));
+        // rate_bound = 25200 (22 bits), wrapped in marker bits.
+        let rate_bound: u32 = 25_200;
+        // byte6: marker(1) rate_bound[21..15]
+        v.push(0x80 | ((rate_bound >> 15) as u8 & 0x7F));
+        // byte7: rate_bound[14..7]
+        v.push((rate_bound >> 7) as u8);
+        // byte8: rate_bound[6..0](7) marker(1)
+        v.push((((rate_bound & 0x7F) as u8) << 1) | 1);
+        // byte9: audio_bound(6)=1 fixed_flag(0) CSPS_flag(0)
+        v.push(1 << 2);
+        // byte10: sys_audio_lock(1) sys_video_lock(1) marker(1) video_bound(5)=1
+        v.push(0b1110_0000 | 1);
+        // byte11: packet_rate_restriction(0) reserved(111 1111)
+        v.push(0x7F);
+        // 4 stream_bound entries (3 bytes each = 12 bytes).
+        // video 0xB9 scale=1 size=232 (×1024)
+        for &(sid, scale, size) in &[
+            (0xB9u8, true, 232u16),
+            (0xB8u8, false, 32u16),
+            (0xBDu8, true, 58u16),
+            (0xBFu8, true, 2u16),
+        ] {
+            v.push(sid);
+            v.push(0b1100_0000 | ((scale as u8) << 5) | ((size >> 8) as u8 & 0x1F));
+            v.push((size & 0xFF) as u8);
+        }
         v
     }
 
@@ -2771,6 +2946,65 @@ mod tests {
         assert_eq!(p.scr_ext, 42);
         assert_eq!(p.mux_rate, 25200);
         assert_eq!(p.stuffing_bytes, 4);
+    }
+
+    #[test]
+    fn system_header_dvd_decode() {
+        let sh = SystemHeader::parse(&build_system_header()).unwrap();
+        assert_eq!(sh.rate_bound, 25_200);
+        assert_eq!(sh.audio_bound, 1);
+        assert!(!sh.fixed_flag);
+        assert!(!sh.csps_flag);
+        assert!(sh.system_audio_lock);
+        assert!(sh.system_video_lock);
+        assert_eq!(sh.video_bound, 1);
+        assert!(!sh.packet_rate_restriction);
+        // The four mandatory DVD stream_bound entries.
+        assert_eq!(sh.stream_bounds.len(), 4);
+        assert_eq!(sh.stream_bounds[0].stream_id, 0xB9); // video
+        assert!(sh.stream_bounds[0].buffer_bound_scale);
+        assert_eq!(sh.stream_bounds[0].buffer_bytes(), 232 * 1024);
+        assert_eq!(sh.stream_bounds[1].stream_id, 0xB8); // audio
+        assert!(!sh.stream_bounds[1].buffer_bound_scale);
+        assert_eq!(sh.stream_bounds[1].buffer_bytes(), 32 * 128);
+        assert_eq!(sh.stream_bounds[2].stream_id, 0xBD); // private 1
+        assert_eq!(sh.stream_bounds[3].stream_id, 0xBF); // private 2 / nav
+        assert_eq!(sh.stream_bounds[3].buffer_bytes(), 2 * 1024);
+    }
+
+    #[test]
+    fn system_header_rejects_bad_start() {
+        let mut buf = build_system_header();
+        buf[3] = SC_PACK_HEADER;
+        assert!(SystemHeader::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn system_header_rejects_truncated_length() {
+        let mut buf = build_system_header();
+        // Claim a header_length longer than the buffer.
+        buf[5] = 0xFF;
+        assert!(SystemHeader::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn nav_pack_surfaces_system_header() {
+        // Build a full nav-pack sector and confirm NavPack::parse
+        // decodes the embedded system header.
+        let mut sector = vec![0u8; DVD_SECTOR];
+        let pack = build_pack_header(0, 0, 25200, 0);
+        sector[..pack.len()].copy_from_slice(&pack);
+        let sys = build_system_header();
+        sector[0x0E..0x0E + sys.len()].copy_from_slice(&sys);
+        // PCI marker + substream at 0x26 / 0x2C.
+        sector[0x26..0x2A].copy_from_slice(&[0x00, 0x00, 0x01, SC_PRIVATE_STREAM_2]);
+        sector[0x2C] = 0x00;
+        // DSI marker + substream at 0x400 / 0x406.
+        sector[0x400..0x404].copy_from_slice(&[0x00, 0x00, 0x01, SC_PRIVATE_STREAM_2]);
+        sector[0x406] = 0x01;
+        let nav = NavPack::parse(&sector).unwrap();
+        assert_eq!(nav.system_header.rate_bound, 25_200);
+        assert_eq!(nav.system_header.stream_bounds.len(), 4);
     }
 
     #[test]
