@@ -794,6 +794,141 @@ impl PictureCodingExtension {
     }
 }
 
+// ------------------------------------------------------------------
+// Start-code scanner + high-level sequence summary
+// ------------------------------------------------------------------
+
+/// One located MPEG start code within an elementary stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartCode {
+    /// Byte offset of the `00 00 01` prefix.
+    pub offset: usize,
+    /// The start-code value (byte after the `00 00 01` prefix).
+    pub code: u8,
+}
+
+/// Iterate every `00 00 01 xx` start code in an MPEG elementary
+/// stream, in order. This is the lightweight scan a header walker
+/// uses to find sequence / GOP / picture boundaries; it does not
+/// distinguish start codes from emulation-prevention sequences inside
+/// macroblock data (MPEG-2 forbids `00 00 01` inside coded data, so
+/// every match is a real start code).
+pub fn iter_start_codes(stream: &[u8]) -> impl Iterator<Item = StartCode> + '_ {
+    let mut i = 0usize;
+    std::iter::from_fn(move || {
+        while i + 3 < stream.len() {
+            if stream[i] == 0 && stream[i + 1] == 0 && stream[i + 2] == 1 {
+                let sc = StartCode {
+                    offset: i,
+                    code: stream[i + 3],
+                };
+                i += 3;
+                return Some(sc);
+            }
+            i += 1;
+        }
+        None
+    })
+}
+
+/// A high-level summary of an MPEG-2 video elementary stream's opening
+/// headers, produced by [`scan_video_sequence`].
+///
+/// This is what a player labels a DVD video track with: the picture
+/// geometry, aspect / frame rate, profile, and the first GOP / picture
+/// entry point. Fields are `Option` because a stream may be a bare
+/// MPEG-1 sequence (no extensions) or be truncated before a GOP.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VideoSequenceInfo {
+    /// The first Sequence Header (`00 00 01 B3`).
+    pub sequence: Option<SequenceHeader>,
+    /// The Sequence Extension immediately following it (present iff
+    /// MPEG-2).
+    pub sequence_extension: Option<SequenceExtension>,
+    /// The Sequence Display Extension, if authored.
+    pub display_extension: Option<SequenceDisplayExtension>,
+    /// The first GOP header (`00 00 01 B8`), if reached.
+    pub first_gop: Option<GopHeader>,
+    /// The first picture header (`00 00 01 00`), if reached.
+    pub first_picture: Option<PictureHeader>,
+}
+
+impl VideoSequenceInfo {
+    /// Whether the stream is MPEG-2 (a Sequence Extension was found
+    /// after the Sequence Header).
+    pub fn is_mpeg2(&self) -> bool {
+        self.sequence_extension.is_some()
+    }
+
+    /// The full coded frame size `(width, height)`, combining the
+    /// sequence header's low bits with any extension high bits, or
+    /// `None` if no sequence header was found.
+    pub fn coded_size(&self) -> Option<(u16, u16)> {
+        let seq = self.sequence?;
+        match &self.sequence_extension {
+            Some(ext) => Some((seq.full_horizontal_size(ext), seq.full_vertical_size(ext))),
+            None => Some((seq.horizontal_size, seq.vertical_size)),
+        }
+    }
+
+    /// The displayed frame rate as `(num, den)`, or `None`.
+    pub fn frame_rate(&self) -> Option<(u32, u32)> {
+        self.sequence?.frame_rate.as_ratio()
+    }
+}
+
+/// Scan an MPEG video elementary stream's opening headers into a
+/// [`VideoSequenceInfo`]. Stops once it has seen the first picture
+/// header (everything a track-labeller needs is by then decoded), or
+/// when the stream ends.
+///
+/// `stream` is the demuxed video bytes — e.g. `VobStreams::video`
+/// from the [`crate::vob`] demuxer — beginning at or before the first
+/// `00 00 01 B3` sequence header.
+pub fn scan_video_sequence(stream: &[u8]) -> VideoSequenceInfo {
+    let mut info = VideoSequenceInfo::default();
+    for sc in iter_start_codes(stream) {
+        let tail = &stream[sc.offset..];
+        match sc.code {
+            SC_SEQUENCE_HEADER if info.sequence.is_none() => {
+                if let Ok(h) = SequenceHeader::parse(tail) {
+                    info.sequence = Some(h);
+                }
+            }
+            SC_EXTENSION if tail.len() >= 5 => {
+                // Disambiguate by extension-id nibble.
+                match tail[4] >> 4 {
+                    EXT_ID_SEQUENCE if info.sequence_extension.is_none() => {
+                        if let Ok(e) = SequenceExtension::parse(tail) {
+                            info.sequence_extension = Some(e);
+                        }
+                    }
+                    EXT_ID_SEQUENCE_DISPLAY if info.display_extension.is_none() => {
+                        if let Ok(e) = SequenceDisplayExtension::parse(tail) {
+                            info.display_extension = Some(e);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            SC_GROUP_OF_PICTURES if info.first_gop.is_none() => {
+                if let Ok(g) = GopHeader::parse(tail) {
+                    info.first_gop = Some(g);
+                }
+            }
+            SC_PICTURE if info.first_picture.is_none() => {
+                if let Ok(p) = PictureHeader::parse(tail) {
+                    info.first_picture = Some(p);
+                }
+                // First picture reached — opening headers complete.
+                break;
+            }
+            _ => {}
+        }
+    }
+    info
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1156,6 +1291,87 @@ mod tests {
         assert_eq!(
             PictureStructure::from_code(3),
             PictureStructure::FramePicture
+        );
+    }
+
+    #[test]
+    fn start_code_iteration() {
+        // Two sequence headers + a GOP + a picture.
+        let mut s = Vec::new();
+        s.extend_from_slice(&[0xFF, 0xFF]); // leading junk
+        s.extend_from_slice(&ntsc_seq_header());
+        s.extend_from_slice(&gop_header(false, true, false));
+        s.extend_from_slice(&picture_header(0, 1, 0));
+        let codes: Vec<u8> = iter_start_codes(&s).map(|c| c.code).collect();
+        assert_eq!(
+            codes,
+            vec![SC_SEQUENCE_HEADER, SC_GROUP_OF_PICTURES, SC_PICTURE]
+        );
+    }
+
+    #[test]
+    fn scan_full_mpeg2_sequence() {
+        // sequence header + seq ext + display ext + GOP + I-picture
+        let mut s = Vec::new();
+        s.extend_from_slice(&ntsc_seq_header());
+        s.extend_from_slice(&main_seq_ext());
+        s.extend_from_slice(&disp_ext_no_colour());
+        s.extend_from_slice(&gop_header(false, true, false));
+        s.extend_from_slice(&picture_header(0, 1, 0));
+        // Some trailing slice/macroblock noise (no start codes).
+        s.extend_from_slice(&[0x12, 0x34, 0x56]);
+
+        let info = scan_video_sequence(&s);
+        assert!(info.is_mpeg2());
+        assert_eq!(info.coded_size(), Some((720, 480)));
+        assert_eq!(info.frame_rate(), Some((30000, 1001)));
+        assert_eq!(
+            info.sequence.unwrap().aspect_ratio,
+            AspectRatioCode::Ratio16x9
+        );
+        assert_eq!(info.display_extension.unwrap().display_horizontal_size, 720);
+        assert!(info.first_gop.unwrap().closed_gop);
+        assert_eq!(
+            info.first_picture.unwrap().coding_type,
+            PictureCodingType::Intra
+        );
+    }
+
+    #[test]
+    fn scan_bare_mpeg1_sequence() {
+        // sequence header + picture, no extensions → MPEG-1 reading.
+        let mut s = Vec::new();
+        s.extend_from_slice(&ntsc_seq_header());
+        s.extend_from_slice(&picture_header(0, 1, 0));
+        let info = scan_video_sequence(&s);
+        assert!(!info.is_mpeg2());
+        assert_eq!(info.coded_size(), Some((720, 480)));
+        assert!(info.sequence_extension.is_none());
+        assert!(info.first_picture.is_some());
+    }
+
+    #[test]
+    fn scan_empty_stream() {
+        let info = scan_video_sequence(&[]);
+        assert_eq!(info, VideoSequenceInfo::default());
+        assert_eq!(info.coded_size(), None);
+        assert_eq!(info.frame_rate(), None);
+        assert!(!info.is_mpeg2());
+    }
+
+    #[test]
+    fn scan_stops_at_first_picture() {
+        // A second sequence header after the first picture must be
+        // ignored — scan stops at the first picture.
+        let mut s = Vec::new();
+        s.extend_from_slice(&ntsc_seq_header());
+        s.extend_from_slice(&picture_header(0, 1, 0));
+        s.extend_from_slice(&picture_header(1, 2, 0));
+        let info = scan_video_sequence(&s);
+        assert_eq!(info.first_picture.unwrap().temporal_reference, 0);
+        assert_eq!(
+            info.first_picture.unwrap().coding_type,
+            PictureCodingType::Intra
         );
     }
 }

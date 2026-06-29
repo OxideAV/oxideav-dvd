@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MPEG video elementary-stream header scanner (`mpeg` module).**
+  `iter_start_codes` walks every `00 00 01 xx` start code in an MPEG
+  elementary stream (the demuxed `VobStreams::video` bytes), and
+  `scan_video_sequence` drives the per-header decoders to assemble a
+  `VideoSequenceInfo` summary — the first Sequence Header + Sequence
+  Extension + Sequence Display Extension + first GOP + first picture —
+  stopping at the first picture (the point at which everything a track
+  labeller needs has been decoded). `VideoSequenceInfo::is_mpeg2()`
+  (a Sequence Extension was found), `coded_size()` (full width/height
+  recombining base + extension bits), and `frame_rate()` give a player
+  the geometry/rate at a glance. 5 new tests (start-code iteration,
+  full MPEG-2 scan, bare MPEG-1 scan, empty stream, stop-at-first-
+  picture).
+
 - **Program Stream System Header typed decode (`vob` module).** The
   `00 00 01 BB` MPEG-PS System Header that sits between the pack
   header and the PCI packet in every NAV pack — previously only
