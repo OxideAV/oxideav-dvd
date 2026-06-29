@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MPEG-2 Picture Header + Picture Coding Extension decode (`mpeg`
+  module).** `PictureHeader::parse` (start code `00 00 01 00`)
+  decodes the 10-bit `temporal_reference`, the 3-bit
+  `picture_coding_type` (typed `PictureCodingType` — I / P / B /
+  D-intra / reserved, with `is_intra()` for GOP-entry-point
+  detection), and the 16-bit `vbv_delay`.
+  `PictureCodingExtension::parse` (start code `00 00 01 B5`,
+  extension-id `1000`) decodes the four 4-bit `f_code[s][t]` motion
+  ranges, `intra_dc_precision` (`intra_dc_bits()` → 8..=11),
+  `picture_structure` (typed `PictureStructure` — top / bottom field
+  / frame), and the eight per-picture coding flags (`top_field_first`,
+  `frame_pred_frame_dct`, `concealment_motion_vectors`,
+  `q_scale_type`, `intra_vlc_format`, `alternate_scan`,
+  `repeat_first_field`, `chroma_420_type`) plus `progressive_frame` /
+  `composite_display_flag`. 6 new tests.
+
 - **MPEG-2 Sequence Display Extension + GOP header decode (`mpeg`
   module).** `SequenceDisplayExtension::parse` (start code
   `00 00 01 B5`, extension-id `0010`) decodes `video_format`, the

@@ -558,6 +558,242 @@ impl GopHeader {
     }
 }
 
+// ------------------------------------------------------------------
+// Picture header (00 00 01 00)
+// ------------------------------------------------------------------
+
+/// `picture_coding_type` — the per-picture frame type.
+///
+/// Per `mpucoder-mpeghdrs.html` (`frame type 1=I, 2=P, 3=B, 4=D`);
+/// DVD MPEG-2 uses only I/P/B (D-pictures are MPEG-1-only and never
+/// authored on DVD).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PictureCodingType {
+    /// `1` — intra-coded (I) picture.
+    Intra,
+    /// `2` — predictive (P) picture.
+    Predictive,
+    /// `3` — bidirectionally-predictive (B) picture.
+    Bidirectional,
+    /// `4` — DC intra-coded (D) picture (MPEG-1 only).
+    DcIntra,
+    /// `0` / `5..=7` — forbidden / reserved.
+    Reserved(u8),
+}
+
+impl PictureCodingType {
+    /// Decode the raw 3-bit code.
+    pub fn from_code(code: u8) -> Self {
+        match code & 0b111 {
+            1 => Self::Intra,
+            2 => Self::Predictive,
+            3 => Self::Bidirectional,
+            4 => Self::DcIntra,
+            other => Self::Reserved(other),
+        }
+    }
+
+    /// Whether this picture is a GOP entry point (an I-picture a
+    /// seeker can decode without earlier references).
+    pub fn is_intra(self) -> bool {
+        matches!(self, Self::Intra)
+    }
+}
+
+/// Decoded MPEG video Picture Header (`mpucoder-mpeghdrs.html`).
+///
+/// Bit layout after the `00 00 01 00` start code:
+/// - `temporal_reference` — 10 bits
+/// - `picture_coding_type` — 3 bits
+/// - `vbv_delay` — 16 bits
+///
+/// The MPEG-1 `full_pel`/`f_code` tail for P/B pictures is not
+/// decoded (on DVD MPEG-2 those bits are the fixed `0111` placeholder
+/// and the real motion `f_code` values live in the
+/// [`PictureCodingExtension`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PictureHeader {
+    /// 10-bit `temporal_reference` (display order within the GOP).
+    pub temporal_reference: u16,
+    /// 3-bit `picture_coding_type`.
+    pub coding_type: PictureCodingType,
+    /// 16-bit `vbv_delay`.
+    pub vbv_delay: u16,
+}
+
+impl PictureHeader {
+    /// Minimum bytes after the start code needed to read the three
+    /// fixed fields (29 bits → 4 bytes).
+    pub const FIXED_LEN: usize = 4;
+
+    /// Parse a picture header. `buf` begins at the `00 00 01 00`
+    /// start code.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 4 || buf[0..3] != [0x00, 0x00, 0x01] || buf[3] != SC_PICTURE {
+            return Err(Error::InvalidUdf("MPEG picture: missing 00 00 01 00"));
+        }
+        if buf.len() < 4 + Self::FIXED_LEN {
+            return Err(Error::InvalidUdf("MPEG picture: truncated"));
+        }
+        let b = &buf[4..];
+        // temporal_reference: byte0 (8 bits) + byte1 top 2.
+        let temporal_reference = ((b[0] as u16) << 2) | ((b[1] >> 6) as u16);
+        let coding_type = PictureCodingType::from_code((b[1] >> 3) & 0b111);
+        // vbv_delay: byte1 low 3 + byte2 (8) + byte3 top 5.
+        let vbv_delay =
+            (((b[1] & 0b111) as u16) << 13) | ((b[2] as u16) << 5) | ((b[3] >> 3) as u16);
+        Ok(Self {
+            temporal_reference,
+            coding_type,
+            vbv_delay,
+        })
+    }
+}
+
+// ------------------------------------------------------------------
+// Picture Coding Extension (00 00 01 B5, ext-id 1000)
+// ------------------------------------------------------------------
+
+/// `picture_structure` — how the picture maps onto display fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PictureStructure {
+    /// `0` — reserved.
+    Reserved,
+    /// `1` — top field.
+    TopField,
+    /// `2` — bottom field.
+    BottomField,
+    /// `3` — frame picture (both fields).
+    FramePicture,
+}
+
+impl PictureStructure {
+    /// Decode the raw 2-bit code.
+    pub fn from_code(code: u8) -> Self {
+        match code & 0b11 {
+            1 => Self::TopField,
+            2 => Self::BottomField,
+            3 => Self::FramePicture,
+            _ => Self::Reserved,
+        }
+    }
+}
+
+/// Decoded MPEG-2 Picture Coding Extension (`mpucoder-mpeghdrs.html`).
+///
+/// Body after the `00 00 01 B5` start code (extension-id `1000`):
+/// - 4 × 4-bit `f_code[s][t]`
+/// - `intra_dc_precision` — 2 bits
+/// - `picture_structure` — 2 bits
+/// - `top_field_first` / `frame_pred_frame_dct` /
+///   `concealment_motion_vectors` / `q_scale_type` /
+///   `intra_vlc_format` / `alternate_scan` / `repeat_first_field` /
+///   `chroma_420_type` — 1 bit each
+/// - `progressive_frame` — 1 bit
+/// - `composite_display_flag` — 1 bit (+ trailer when set; not decoded)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PictureCodingExtension {
+    /// `f_code[0][0]` — forward horizontal.
+    pub f_code_fwd_horiz: u8,
+    /// `f_code[0][1]` — forward vertical.
+    pub f_code_fwd_vert: u8,
+    /// `f_code[1][0]` — backward horizontal.
+    pub f_code_bwd_horiz: u8,
+    /// `f_code[1][1]` — backward vertical.
+    pub f_code_bwd_vert: u8,
+    /// 2-bit `intra_dc_precision`.
+    pub intra_dc_precision: u8,
+    /// 2-bit `picture_structure`.
+    pub picture_structure: PictureStructure,
+    /// `top_field_first`.
+    pub top_field_first: bool,
+    /// `frame_pred_frame_dct`.
+    pub frame_pred_frame_dct: bool,
+    /// `concealment_motion_vectors`.
+    pub concealment_motion_vectors: bool,
+    /// `q_scale_type`.
+    pub q_scale_type: bool,
+    /// `intra_vlc_format`.
+    pub intra_vlc_format: bool,
+    /// `alternate_scan`.
+    pub alternate_scan: bool,
+    /// `repeat_first_field`.
+    pub repeat_first_field: bool,
+    /// `chroma_420_type`.
+    pub chroma_420_type: bool,
+    /// `progressive_frame`.
+    pub progressive_frame: bool,
+    /// `composite_display_flag`.
+    pub composite_display_flag: bool,
+}
+
+impl PictureCodingExtension {
+    /// Minimum body bytes after the start code (5 bytes covers
+    /// through `composite_display_flag`).
+    pub const MIN_BODY_LEN: usize = 5;
+
+    /// Parse a Picture Coding Extension. `buf` begins at the
+    /// `00 00 01 B5` start code; the extension-id must be `1000`.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 4 || buf[0..3] != [0x00, 0x00, 0x01] || buf[3] != SC_EXTENSION {
+            return Err(Error::InvalidUdf(
+                "MPEG pic-coding ext: missing 00 00 01 B5",
+            ));
+        }
+        if buf.len() < 4 + Self::MIN_BODY_LEN {
+            return Err(Error::InvalidUdf("MPEG pic-coding ext: truncated"));
+        }
+        let b = &buf[4..];
+        if (b[0] >> 4) != EXT_ID_PICTURE_CODING {
+            return Err(Error::InvalidUdf(
+                "MPEG pic-coding ext: extension-id != 1000",
+            ));
+        }
+        // byte0: id(4) f00(4); byte1: f01(4) f10(4); byte2: f11(4) ...
+        let f_code_fwd_horiz = b[0] & 0x0F;
+        let f_code_fwd_vert = b[1] >> 4;
+        let f_code_bwd_horiz = b[1] & 0x0F;
+        let f_code_bwd_vert = b[2] >> 4;
+        let intra_dc_precision = (b[2] >> 2) & 0b11;
+        let picture_structure = PictureStructure::from_code(b[2] & 0b11);
+        // byte3: TFF FPFD CMV QST IVF AS RFF C420
+        let top_field_first = (b[3] >> 7) & 1 == 1;
+        let frame_pred_frame_dct = (b[3] >> 6) & 1 == 1;
+        let concealment_motion_vectors = (b[3] >> 5) & 1 == 1;
+        let q_scale_type = (b[3] >> 4) & 1 == 1;
+        let intra_vlc_format = (b[3] >> 3) & 1 == 1;
+        let alternate_scan = (b[3] >> 2) & 1 == 1;
+        let repeat_first_field = (b[3] >> 1) & 1 == 1;
+        let chroma_420_type = b[3] & 1 == 1;
+        // byte4: progressive_frame composite_display_flag ...
+        let progressive_frame = (b[4] >> 7) & 1 == 1;
+        let composite_display_flag = (b[4] >> 6) & 1 == 1;
+        Ok(Self {
+            f_code_fwd_horiz,
+            f_code_fwd_vert,
+            f_code_bwd_horiz,
+            f_code_bwd_vert,
+            intra_dc_precision,
+            picture_structure,
+            top_field_first,
+            frame_pred_frame_dct,
+            concealment_motion_vectors,
+            q_scale_type,
+            intra_vlc_format,
+            alternate_scan,
+            repeat_first_field,
+            chroma_420_type,
+            progressive_frame,
+            composite_display_flag,
+        })
+    }
+
+    /// `intra_dc_precision` as the actual bit depth (8 + value).
+    pub fn intra_dc_bits(self) -> u8 {
+        8 + self.intra_dc_precision
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,5 +1055,107 @@ mod tests {
         let mut buf = gop_header(false, true, false);
         buf[3] = SC_SEQUENCE_HEADER;
         assert!(GopHeader::parse(&buf).is_err());
+    }
+
+    /// Picture header: temporal_reference, coding type, vbv_delay.
+    fn picture_header(tr: u16, ct: u8, vbv: u16) -> Vec<u8> {
+        let mut b = vec![0x00, 0x00, 0x01, SC_PICTURE];
+        // byte0: TR[9..2]
+        b.push((tr >> 2) as u8);
+        // byte1: TR[1..0](2) coding_type(3) vbv[15..13](3)
+        b.push((((tr & 0b11) as u8) << 6) | ((ct & 0b111) << 3) | ((vbv >> 13) as u8));
+        // byte2: vbv[12..5]
+        b.push((vbv >> 5) as u8);
+        // byte3: vbv[4..0](5) + 3 trailing bits (0)
+        b.push(((vbv & 0x1F) as u8) << 3);
+        b
+    }
+
+    #[test]
+    fn picture_header_i_frame() {
+        let p = PictureHeader::parse(&picture_header(0, 1, 0xFFFF)).unwrap();
+        assert_eq!(p.temporal_reference, 0);
+        assert_eq!(p.coding_type, PictureCodingType::Intra);
+        assert!(p.coding_type.is_intra());
+        assert_eq!(p.vbv_delay, 0xFFFF);
+    }
+
+    #[test]
+    fn picture_header_b_frame() {
+        let p = PictureHeader::parse(&picture_header(513, 3, 0x1234)).unwrap();
+        assert_eq!(p.temporal_reference, 513);
+        assert_eq!(p.coding_type, PictureCodingType::Bidirectional);
+        assert!(!p.coding_type.is_intra());
+        assert_eq!(p.vbv_delay, 0x1234);
+    }
+
+    #[test]
+    fn picture_coding_type_codes() {
+        assert_eq!(PictureCodingType::from_code(1), PictureCodingType::Intra);
+        assert_eq!(
+            PictureCodingType::from_code(2),
+            PictureCodingType::Predictive
+        );
+        assert_eq!(PictureCodingType::from_code(4), PictureCodingType::DcIntra);
+        assert_eq!(
+            PictureCodingType::from_code(0),
+            PictureCodingType::Reserved(0)
+        );
+    }
+
+    /// Picture Coding Extension: f_codes 0111 (MPEG-2 placeholder for
+    /// fwd) and 0xF for unused, intra_dc=0, frame picture, TFF=1,
+    /// frame_pred=1, progressive_frame=0.
+    fn pic_coding_ext() -> Vec<u8> {
+        let mut b = vec![0x00, 0x00, 0x01, SC_EXTENSION];
+        // byte0: id(1000) f_fwd_h(0111)
+        b.push((EXT_ID_PICTURE_CODING << 4) | 0b0111);
+        // byte1: f_fwd_v(0111) f_bwd_h(1111)
+        b.push((0b0111 << 4) | 0b1111);
+        // byte2: f_bwd_v(1111) intra_dc(00) pic_struct(11=frame)
+        b.push((0b1111 << 4) | 0b11);
+        // byte3: TFF(1) FPFD(1) CMV(0) QST(0) IVF(0) AS(0) RFF(0) C420(0)
+        b.push(0b1100_0000);
+        // byte4: progressive_frame(0) composite(0) ...
+        b.push(0x00);
+        b
+    }
+
+    #[test]
+    fn pic_coding_ext_decode() {
+        let e = PictureCodingExtension::parse(&pic_coding_ext()).unwrap();
+        assert_eq!(e.f_code_fwd_horiz, 0b0111);
+        assert_eq!(e.f_code_fwd_vert, 0b0111);
+        assert_eq!(e.f_code_bwd_horiz, 0b1111);
+        assert_eq!(e.f_code_bwd_vert, 0b1111);
+        assert_eq!(e.intra_dc_precision, 0);
+        assert_eq!(e.intra_dc_bits(), 8);
+        assert_eq!(e.picture_structure, PictureStructure::FramePicture);
+        assert!(e.top_field_first);
+        assert!(e.frame_pred_frame_dct);
+        assert!(!e.concealment_motion_vectors);
+        assert!(!e.progressive_frame);
+        assert!(!e.composite_display_flag);
+    }
+
+    #[test]
+    fn pic_coding_ext_wrong_id() {
+        let mut buf = pic_coding_ext();
+        buf[4] = (EXT_ID_SEQUENCE << 4) | (buf[4] & 0x0F);
+        assert!(PictureCodingExtension::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn picture_structure_codes() {
+        assert_eq!(PictureStructure::from_code(0), PictureStructure::Reserved);
+        assert_eq!(PictureStructure::from_code(1), PictureStructure::TopField);
+        assert_eq!(
+            PictureStructure::from_code(2),
+            PictureStructure::BottomField
+        );
+        assert_eq!(
+            PictureStructure::from_code(3),
+            PictureStructure::FramePicture
+        );
     }
 }

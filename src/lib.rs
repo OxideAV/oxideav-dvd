@@ -129,7 +129,8 @@ pub use lpcm::{
     DVD_LPCM_MAX_BITRATE_KBPS, LPCM_HEADER_LEN,
 };
 pub use mpeg::{
-    AspectRatioCode, ColourDescription, FrameRateCode, GopHeader, SequenceDisplayExtension,
+    AspectRatioCode, ColourDescription, FrameRateCode, GopHeader, PictureCodingExtension,
+    PictureCodingType, PictureHeader, PictureStructure, SequenceDisplayExtension,
     SequenceExtension, SequenceHeader,
 };
 pub use nav::{
