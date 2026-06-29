@@ -128,7 +128,10 @@ pub use lpcm::{
     peel_lpcm_payload, LpcmHeader, LpcmQuantisation, LpcmSampleFrequency,
     DVD_LPCM_MAX_BITRATE_KBPS, LPCM_HEADER_LEN,
 };
-pub use mpeg::{AspectRatioCode, FrameRateCode, SequenceExtension, SequenceHeader};
+pub use mpeg::{
+    AspectRatioCode, ColourDescription, FrameRateCode, GopHeader, SequenceDisplayExtension,
+    SequenceExtension, SequenceHeader,
+};
 pub use nav::{
     CallSSTarget, CmpOp, JumpSSTarget, LinkSubset, NavInstruction, Operand, Register, SetOp,
 };

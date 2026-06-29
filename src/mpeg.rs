@@ -384,6 +384,180 @@ impl SequenceExtension {
     }
 }
 
+// ------------------------------------------------------------------
+// Sequence Display Extension (00 00 01 B5, ext-id 0010)
+// ------------------------------------------------------------------
+
+/// Optional colour-description triple carried by a
+/// [`SequenceDisplayExtension`] when its `colour_description_flag`
+/// is set (per `mpucoder-mpeghdrs.html`; the same ISO/IEC 13818-2
+/// §6.3.6 code points DVD authors per `mpucoder-dvdmpeg.html`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColourDescription {
+    /// `colour_primaries` (NTSC = 4 BT.470 M or 6 SMPTE 170M;
+    /// PAL = 5 BT.470 B/G).
+    pub colour_primaries: u8,
+    /// `transfer_characteristics`.
+    pub transfer_characteristics: u8,
+    /// `matrix_coefficients` (NTSC = 4/6, PAL = 5).
+    pub matrix_coefficients: u8,
+}
+
+/// Decoded MPEG-2 Sequence Display Extension (`mpucoder-mpeghdrs.html`).
+///
+/// Layout after the `00 00 01 B5` start code:
+/// - extension-id — 4 bits (`0010`)
+/// - `video_format` — 3 bits
+/// - `colour_description` — 1 bit (+ 3 colour bytes when set)
+/// - `display_horizontal_size` — 14 bits
+/// - marker bit — 1
+/// - `display_vertical_size` — 14 bits
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SequenceDisplayExtension {
+    /// 3-bit `video_format` (0 = component, 1 = PAL, 2 = NTSC,
+    /// 3 = SECAM, 4 = MAC, 5 = unspecified).
+    pub video_format: u8,
+    /// Optional colour description (present iff
+    /// `colour_description_flag` was 1).
+    pub colour: Option<ColourDescription>,
+    /// 14-bit `display_horizontal_size`.
+    pub display_horizontal_size: u16,
+    /// 14-bit `display_vertical_size`.
+    pub display_vertical_size: u16,
+}
+
+impl SequenceDisplayExtension {
+    /// Parse a Sequence Display Extension. `buf` begins at the
+    /// `00 00 01 B5` start code; the extension-id must be `0010`.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 4 || buf[0..3] != [0x00, 0x00, 0x01] || buf[3] != SC_EXTENSION {
+            return Err(Error::InvalidUdf("MPEG seq disp ext: missing 00 00 01 B5"));
+        }
+        // Minimum body: id+fmt+flag in byte0, then 4 bytes for the two
+        // 14-bit sizes (when no colour description). 5 body bytes.
+        if buf.len() < 4 + 5 {
+            return Err(Error::InvalidUdf("MPEG seq disp ext: truncated"));
+        }
+        let b = &buf[4..];
+        if (b[0] >> 4) != EXT_ID_SEQUENCE_DISPLAY {
+            return Err(Error::InvalidUdf("MPEG seq disp ext: extension-id != 0010"));
+        }
+        let video_format = (b[0] >> 1) & 0b111;
+        let colour_description_flag = b[0] & 1 == 1;
+        // The two 14-bit sizes are byte-aligned right after the
+        // optional 3 colour bytes: each size spans 2 bytes minus the
+        // marker bit between them.
+        let (colour, off) = if colour_description_flag {
+            if buf.len() < 4 + 8 {
+                return Err(Error::InvalidUdf(
+                    "MPEG seq disp ext: colour flagged but truncated",
+                ));
+            }
+            (
+                Some(ColourDescription {
+                    colour_primaries: b[1],
+                    transfer_characteristics: b[2],
+                    matrix_coefficients: b[3],
+                }),
+                4usize,
+            )
+        } else {
+            (None, 1usize)
+        };
+        // display_horizontal_size: 14 bits across b[off], b[off+1] hi6.
+        let dh = ((b[off] as u16) << 6) | ((b[off + 1] as u16) >> 2);
+        // marker bit at b[off+1] bit1.
+        if (b[off + 1] >> 1) & 1 != 1 {
+            return Err(Error::InvalidUdf("MPEG seq disp ext: marker bit not set"));
+        }
+        // display_vertical_size: 14 bits — low 1 bit of b[off+1],
+        // b[off+2], top 5 bits of b[off+3].
+        let dv = (((b[off + 1] & 1) as u16) << 13)
+            | ((b[off + 2] as u16) << 5)
+            | ((b[off + 3] as u16) >> 3);
+        Ok(Self {
+            video_format,
+            colour,
+            display_horizontal_size: dh,
+            display_vertical_size: dv,
+        })
+    }
+}
+
+// ------------------------------------------------------------------
+// Group-of-Pictures header (00 00 01 B8)
+// ------------------------------------------------------------------
+
+/// Decoded GOP header (`mpucoder-mpeghdrs.html`). Fixed length:
+/// 4 bytes after the `00 00 01 B8` start code carry a 25-bit SMPTE
+/// time-code plus the drop-frame / closed-GOP / broken-link flags.
+///
+/// Bit layout (after the start code):
+/// - `drop_frame_flag` — 1
+/// - `time_code_hours` — 5
+/// - `time_code_minutes` — 6
+/// - marker bit — 1
+/// - `time_code_seconds` — 6
+/// - `time_code_pictures` — 6
+/// - `closed_gop` — 1
+/// - `broken_link` — 1
+/// - 5 reserved zero bits
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GopHeader {
+    /// `drop_frame_flag` (NTSC drop-frame time-code).
+    pub drop_frame: bool,
+    /// Time-code hours (0..=23).
+    pub hours: u8,
+    /// Time-code minutes (0..=59).
+    pub minutes: u8,
+    /// Time-code seconds (0..=59).
+    pub seconds: u8,
+    /// Time-code frame/picture number (0..=59).
+    pub frames: u8,
+    /// `closed_gop` — the GOP can be decoded without the previous one.
+    pub closed_gop: bool,
+    /// `broken_link` — editing severed the prior reference (display
+    /// the leading B-frames at the player's discretion).
+    pub broken_link: bool,
+}
+
+impl GopHeader {
+    /// Length of the fixed body after the start code (4 bytes).
+    pub const BODY_LEN: usize = 4;
+
+    /// Parse a GOP header. `buf` begins at the `00 00 01 B8` start
+    /// code.
+    pub fn parse(buf: &[u8]) -> Result<Self> {
+        if buf.len() < 4 || buf[0..3] != [0x00, 0x00, 0x01] || buf[3] != SC_GROUP_OF_PICTURES {
+            return Err(Error::InvalidUdf("MPEG GOP: missing 00 00 01 B8"));
+        }
+        if buf.len() < 4 + Self::BODY_LEN {
+            return Err(Error::InvalidUdf("MPEG GOP: truncated"));
+        }
+        let b = &buf[4..];
+        let drop_frame = (b[0] >> 7) & 1 == 1;
+        let hours = (b[0] >> 2) & 0x1F;
+        let minutes = ((b[0] & 0b11) << 4) | (b[1] >> 4);
+        // marker bit at b[1] bit3.
+        if (b[1] >> 3) & 1 != 1 {
+            return Err(Error::InvalidUdf("MPEG GOP: marker bit not set"));
+        }
+        let seconds = ((b[1] & 0b111) << 3) | (b[2] >> 5);
+        let frames = ((b[2] & 0x1F) << 1) | (b[3] >> 7);
+        let closed_gop = (b[3] >> 6) & 1 == 1;
+        let broken_link = (b[3] >> 5) & 1 == 1;
+        Ok(Self {
+            drop_frame,
+            hours,
+            minutes,
+            seconds,
+            frames,
+            closed_gop,
+            broken_link,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,5 +706,118 @@ mod tests {
         let mut buf = main_seq_ext();
         buf[4] = (EXT_ID_SEQUENCE_DISPLAY << 4) | (buf[4] & 0x0F);
         assert!(SequenceExtension::parse(&buf).is_err());
+    }
+
+    /// Sequence Display Extension with no colour description:
+    /// video_format = NTSC (2), display 720×480.
+    fn disp_ext_no_colour() -> Vec<u8> {
+        let mut b = vec![0x00, 0x00, 0x01, SC_EXTENSION];
+        let video_format = 2u8;
+        // byte0: id(0010) video_format(010) colour_flag(0)
+        b.push((EXT_ID_SEQUENCE_DISPLAY << 4) | (video_format << 1));
+        // display_horizontal_size = 720 (14 bits): hi8 | lo6
+        let dh: u16 = 720;
+        b.push((dh >> 6) as u8);
+        let dh_lo6 = (dh & 0x3F) as u8;
+        let marker = 1u8;
+        let dv: u16 = 480;
+        let dv_hi1 = (dv >> 13) as u8;
+        // byte: dh_lo6(6) marker(1) dv_hi1(1)
+        b.push((dh_lo6 << 2) | (marker << 1) | dv_hi1);
+        // byte: dv bits 12..5
+        b.push((dv >> 5) as u8);
+        // byte: dv bits 4..0 (top 5) then 3 zero bits
+        b.push(((dv & 0x1F) as u8) << 3);
+        b
+    }
+
+    #[test]
+    fn seq_disp_ext_no_colour() {
+        let e = SequenceDisplayExtension::parse(&disp_ext_no_colour()).unwrap();
+        assert_eq!(e.video_format, 2);
+        assert_eq!(e.colour, None);
+        assert_eq!(e.display_horizontal_size, 720);
+        assert_eq!(e.display_vertical_size, 480);
+    }
+
+    /// Sequence Display Extension with a colour description triple.
+    fn disp_ext_colour() -> Vec<u8> {
+        let mut b = vec![0x00, 0x00, 0x01, SC_EXTENSION];
+        let video_format = 2u8;
+        b.push((EXT_ID_SEQUENCE_DISPLAY << 4) | (video_format << 1) | 1); // colour flag
+        b.push(6); // colour_primaries (SMPTE 170M)
+        b.push(6); // transfer
+        b.push(6); // matrix
+        let dh: u16 = 720;
+        b.push((dh >> 6) as u8);
+        let dv: u16 = 480;
+        b.push(((dh & 0x3F) as u8) << 2 | (1 << 1) | (dv >> 13) as u8);
+        b.push((dv >> 5) as u8);
+        b.push(((dv & 0x1F) as u8) << 3);
+        b
+    }
+
+    #[test]
+    fn seq_disp_ext_with_colour() {
+        let e = SequenceDisplayExtension::parse(&disp_ext_colour()).unwrap();
+        assert_eq!(
+            e.colour,
+            Some(ColourDescription {
+                colour_primaries: 6,
+                transfer_characteristics: 6,
+                matrix_coefficients: 6,
+            })
+        );
+        assert_eq!(e.display_horizontal_size, 720);
+        assert_eq!(e.display_vertical_size, 480);
+    }
+
+    #[test]
+    fn seq_disp_ext_wrong_id() {
+        let mut buf = disp_ext_no_colour();
+        buf[4] = (EXT_ID_SEQUENCE << 4) | (buf[4] & 0x0F);
+        assert!(SequenceDisplayExtension::parse(&buf).is_err());
+    }
+
+    /// GOP header: 01:23:45;12, closed GOP, not broken, drop-frame.
+    fn gop_header(drop: bool, closed: bool, broken: bool) -> Vec<u8> {
+        let mut b = vec![0x00, 0x00, 0x01, SC_GROUP_OF_PICTURES];
+        let (h, m, s, f) = (1u8, 23u8, 45u8, 12u8);
+        // byte0: drop(1) hours(5) min_hi(2)
+        b.push(((drop as u8) << 7) | (h << 2) | (m >> 4));
+        // byte1: min_lo(4) marker(1) sec_hi(3)
+        b.push(((m & 0x0F) << 4) | (1 << 3) | (s >> 3));
+        // byte2: sec_lo(3) frame_hi(5)
+        b.push(((s & 0b111) << 5) | (f >> 1));
+        // byte3: frame_lo(1) closed(1) broken(1) zeros(5)
+        b.push(((f & 1) << 7) | ((closed as u8) << 6) | ((broken as u8) << 5));
+        b
+    }
+
+    #[test]
+    fn gop_header_decode() {
+        let g = GopHeader::parse(&gop_header(true, true, false)).unwrap();
+        assert!(g.drop_frame);
+        assert_eq!(g.hours, 1);
+        assert_eq!(g.minutes, 23);
+        assert_eq!(g.seconds, 45);
+        assert_eq!(g.frames, 12);
+        assert!(g.closed_gop);
+        assert!(!g.broken_link);
+    }
+
+    #[test]
+    fn gop_header_open_broken() {
+        let g = GopHeader::parse(&gop_header(false, false, true)).unwrap();
+        assert!(!g.drop_frame);
+        assert!(!g.closed_gop);
+        assert!(g.broken_link);
+    }
+
+    #[test]
+    fn gop_header_bad_start() {
+        let mut buf = gop_header(false, true, false);
+        buf[3] = SC_SEQUENCE_HEADER;
+        assert!(GopHeader::parse(&buf).is_err());
     }
 }

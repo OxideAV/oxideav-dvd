@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MPEG-2 Sequence Display Extension + GOP header decode (`mpeg`
+  module).** `SequenceDisplayExtension::parse` (start code
+  `00 00 01 B5`, extension-id `0010`) decodes `video_format`, the
+  optional `ColourDescription` triple (`colour_primaries` /
+  `transfer_characteristics` / `matrix_coefficients`), and the two
+  14-bit `display_horizontal_size` / `display_vertical_size` fields.
+  `GopHeader::parse` (start code `00 00 01 B8`) decodes the
+  `drop_frame` flag, the 25-bit SMPTE `hh:mm:ss:ff` time-code, and
+  the `closed_gop` / `broken_link` flags a seamless-seek engine needs
+  to know whether a GOP can be entered cold. 6 new tests.
+
 - **MPEG-2 video sequence-header decode (`mpeg` module).** A new
   `mpeg` module decodes the ISO/IEC 13818-2 elementary-stream video
   headers that ride inside a DVD VOB's video PES (start-code
