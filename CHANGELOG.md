@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`VobStreams::video_sequence_info()` convenience (`vob` module).**
+  After a `VobDemuxer` extracts the title's video elementary stream,
+  `VobStreams::video_sequence_info()` runs the `mpeg` scanner over the
+  `video` buffer and returns the `VideoSequenceInfo` summary so a
+  caller labels the demuxed track (size / aspect / frame rate / GOP
+  entry point) in one call rather than re-wiring the scanner. 1 new
+  test driving a synthetic MPEG-2 sequence through the full demux →
+  summary path.
+
 - **MPEG video elementary-stream header scanner (`mpeg` module).**
   `iter_start_codes` walks every `00 00 01 xx` start code in an MPEG
   elementary stream (the demuxed `VobStreams::video` bytes), and

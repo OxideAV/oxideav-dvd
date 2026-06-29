@@ -2525,6 +2525,19 @@ pub struct VobStreams {
     pub nav_packs: Vec<NavPack>,
 }
 
+impl VobStreams {
+    /// Decode the opening MPEG video headers of the demuxed [`Self::video`]
+    /// elementary stream into a [`crate::mpeg::VideoSequenceInfo`] — the
+    /// picture geometry, aspect / frame rate, profile, and first GOP /
+    /// picture entry point a player labels the track with.
+    ///
+    /// Returns the default (all-`None`) summary when no video was
+    /// demuxed or no sequence header was found.
+    pub fn video_sequence_info(&self) -> crate::mpeg::VideoSequenceInfo {
+        crate::mpeg::scan_video_sequence(&self.video)
+    }
+}
+
 // ------------------------------------------------------------------
 // Demuxer
 // ------------------------------------------------------------------
@@ -3734,6 +3747,59 @@ mod tests {
         );
         assert_eq!(streams.nav_packs.len(), 1);
         assert_eq!(streams.nav_packs[0].pci.nv_pck_lbn, 100);
+    }
+
+    /// Build a minimal NTSC MPEG-2 sequence header (720×480, 16:9,
+    /// 29.97) followed by a sequence extension and an I-picture, so a
+    /// demuxed video stream can be summarised by `video_sequence_info`.
+    fn mpeg2_video_payload() -> Vec<u8> {
+        use crate::mpeg::{EXT_ID_SEQUENCE, SC_EXTENSION, SC_PICTURE, SC_SEQUENCE_HEADER};
+        let mut v = Vec::new();
+        // Sequence header: 720×480, aspect=3 (16:9), fr=4 (29.97),
+        // bit_rate=24500, marker=1, vbv=112, CP=0, no quant matrices.
+        v.extend_from_slice(&[0x00, 0x00, 0x01, SC_SEQUENCE_HEADER]);
+        let (h, vv): (u16, u16) = (720, 480);
+        v.push((h >> 4) as u8);
+        v.push((((h & 0x0F) << 4) | (vv >> 8)) as u8);
+        v.push((vv & 0xFF) as u8);
+        v.push((3 << 4) | 4);
+        let br: u32 = 24_500;
+        v.push((br >> 10) as u8);
+        v.push((br >> 2) as u8);
+        v.push((((br & 0b11) as u8) << 6) | (1 << 5) | (112u16 >> 5) as u8);
+        v.push(((112u16 & 0x1F) as u8) << 3);
+        // Sequence extension: Main@Main, chroma 4:2:0.
+        v.extend_from_slice(&[0x00, 0x00, 0x01, SC_EXTENSION]);
+        v.push((EXT_ID_SEQUENCE << 4) | 0x4);
+        v.push((0x8 << 4) | (1 << 1));
+        v.push(0x00);
+        v.push(0x01);
+        v.push(0x00);
+        v.push(0x00);
+        // I-picture: temporal_reference=0, coding_type=1, vbv_delay=0.
+        v.extend_from_slice(&[0x00, 0x00, 0x01, SC_PICTURE]);
+        v.extend_from_slice(&[0x00, 0x08, 0x00, 0x00]);
+        v
+    }
+
+    #[test]
+    fn video_sequence_info_from_demuxed_stream() {
+        let mut demuxer = VobDemuxer::new();
+        let mut sec = vec![0u8; DVD_SECTOR];
+        let pack = build_pack_header(0, 0, 25200, 0);
+        sec[..14].copy_from_slice(&pack);
+        let payload = mpeg2_video_payload();
+        let pes = build_pes_video(&payload, Some(0x1000));
+        sec[14..14 + pes.len()].copy_from_slice(&pes);
+        demuxer.push_sector(&sec).unwrap();
+
+        let streams = demuxer.take();
+        let info = streams.video_sequence_info();
+        assert!(info.is_mpeg2());
+        assert_eq!(info.coded_size(), Some((720, 480)));
+        assert_eq!(info.frame_rate(), Some((30000, 1001)));
+        assert!(info.first_picture.is_some());
+        assert!(info.first_picture.unwrap().coding_type.is_intra());
     }
 
     // ----- DSI sub-section layout pins (mpucoder-dsi_pkt.html) ------
