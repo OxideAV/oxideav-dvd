@@ -398,6 +398,16 @@ impl TtSrpt {
             entries,
         })
     }
+
+    /// The TT_SRPT entry for the 1-based volume-wide title number
+    /// `ttn` (the operand of `JumpTT` and the value of SPRM 4), or
+    /// `None` when the title doesn't exist on this disc.
+    pub fn title(&self, ttn: u8) -> Option<&DvdTitleEntry> {
+        if ttn == 0 {
+            return None;
+        }
+        self.entries.get(usize::from(ttn) - 1)
+    }
 }
 
 // ------------------------------------------------------------------
@@ -1283,6 +1293,31 @@ impl VtsPttSrpt {
             end_address,
             titles,
         })
+    }
+
+    /// The `(PGCN, PGN)` pair for chapter `pttn` of the VTS-internal
+    /// title `vts_ttn` (both 1-based) — the lookup `JumpVTS_PTT` and
+    /// `LinkPTTN` resolve through. `None` when either index is out
+    /// of range.
+    pub fn ptt(&self, vts_ttn: u8, pttn: u16) -> Option<Ptt> {
+        if vts_ttn == 0 || pttn == 0 {
+            return None;
+        }
+        self.titles
+            .get(usize::from(vts_ttn) - 1)
+            .and_then(|t| t.chapters.get(usize::from(pttn) - 1))
+            .copied()
+    }
+
+    /// Number of chapters (PTTs) in the 1-based VTS-internal title
+    /// `vts_ttn`, or `None` when the title doesn't exist.
+    pub fn chapter_count(&self, vts_ttn: u8) -> Option<u16> {
+        if vts_ttn == 0 {
+            return None;
+        }
+        self.titles
+            .get(usize::from(vts_ttn) - 1)
+            .map(|t| t.chapters.len() as u16)
     }
 }
 
@@ -2259,6 +2294,30 @@ pub struct PgciSrp {
     pub offset: u32,
 }
 
+impl PgciSrp {
+    /// `true` when the entry-PGC flag (byte 0 bit 7 of the category
+    /// dword) is set — this PGC is where playback of its title
+    /// starts. Per `mpucoder-ifo_vts.html` (VTS_PGCI PGC-category
+    /// breakdown).
+    #[inline]
+    pub fn is_entry_pgc(&self) -> bool {
+        (self.category >> 24) & 0x80 != 0
+    }
+
+    /// 1-based VTS-internal title number this PGC belongs to (byte 0
+    /// bits 6..0 of the category dword).
+    #[inline]
+    pub fn title_number(&self) -> u8 {
+        ((self.category >> 24) & 0x7F) as u8
+    }
+
+    /// Parental management mask (bytes 2..4 of the category dword).
+    #[inline]
+    pub fn parental_mask(&self) -> u16 {
+        (self.category & 0xFFFF) as u16
+    }
+}
+
 /// Parsed PGCI (VTS_PGCI or VMGM_PGCI body).
 #[derive(Debug, Clone)]
 pub struct Pgci {
@@ -2305,6 +2364,38 @@ impl Pgci {
             srp,
             pgcs,
         })
+    }
+
+    /// The PGC body for the 1-based program-chain number `pgcn`
+    /// (`1..=number_of_pgcs`), or `None` when out of range.
+    pub fn pgc(&self, pgcn: u16) -> Option<&Pgc> {
+        if pgcn == 0 {
+            return None;
+        }
+        self.pgcs.get(usize::from(pgcn - 1))
+    }
+
+    /// 1-based PGCN of the **entry PGC** for the 1-based VTS-internal
+    /// title number `vts_ttn`.
+    ///
+    /// Per `mpucoder-ifo_vts.html` (VTS_PGCI PGC-category breakdown)
+    /// each search pointer carries an entry-PGC flag plus the title
+    /// number it belongs to; a title's playback starts at its entry
+    /// PGC (the one `JumpTT` / `JumpVTS_TT` lands on). Returns `None`
+    /// when no SRP declares itself the entry for that title.
+    pub fn entry_pgcn_for_title(&self, vts_ttn: u8) -> Option<u16> {
+        self.srp
+            .iter()
+            .position(|s| s.is_entry_pgc() && s.title_number() == vts_ttn)
+            .map(|i| (i as u16) + 1)
+    }
+
+    /// The entry PGC body for the 1-based VTS-internal title number
+    /// `vts_ttn` — [`Self::entry_pgcn_for_title`] resolved through
+    /// [`Self::pgc`].
+    pub fn entry_pgc_for_title(&self, vts_ttn: u8) -> Option<&Pgc> {
+        self.entry_pgcn_for_title(vts_ttn)
+            .and_then(|pgcn| self.pgc(pgcn))
     }
 }
 
@@ -2477,6 +2568,18 @@ impl PgciLu {
             pgcs,
         })
     }
+
+    /// The first **entry PGC** in this Language Unit whose menu type
+    /// matches `menu` — the PGC a `JumpSS`/`CallSS` menu selector
+    /// lands on. Returns the 1-based PGCN within this LU plus the
+    /// body. Per `mpucoder-ifo_vts.html` the menu-type nibble is only
+    /// meaningful on SRPs with the entry-PGC flag set.
+    pub fn entry_pgc(&self, menu: MenuType) -> Option<(u16, &Pgc)> {
+        self.srp
+            .iter()
+            .position(|s| s.is_entry_pgc() && s.menu_type() == menu)
+            .and_then(|i| self.pgcs.get(i).map(|p| ((i as u16) + 1, p)))
+    }
 }
 
 /// One language-unit search-pointer in the menu PGCI Unit Table.
@@ -2607,6 +2710,33 @@ impl PgciUt {
             .iter()
             .position(|s| s.language_code == language_code)
             .and_then(|i| self.language_units.get(i))
+    }
+
+    /// Resolve a menu selector to its entry PGC.
+    ///
+    /// Tries the Language Unit for `preferred_language` (the SPRM 0
+    /// menu-language slot) first; when the disc doesn't author that
+    /// language — or the preferred LU carries no entry PGC of the
+    /// requested type — falls back to the first Language Unit that
+    /// does. Returns `(language_code, pgcn_within_lu, pgc)` so the
+    /// caller knows which language actually resolved.
+    pub fn resolve_menu(
+        &self,
+        preferred_language: u16,
+        menu: MenuType,
+    ) -> Option<(u16, u16, &Pgc)> {
+        if let Some(lu) = self.language_unit(preferred_language) {
+            if let Some((pgcn, pgc)) = lu.entry_pgc(menu) {
+                return Some((preferred_language, pgcn, pgc));
+            }
+        }
+        self.srp
+            .iter()
+            .zip(self.language_units.iter())
+            .find_map(|(srp, lu)| {
+                lu.entry_pgc(menu)
+                    .map(|(pgcn, pgc)| (srp.language_code, pgcn, pgc))
+            })
     }
 }
 
@@ -3039,6 +3169,10 @@ pub struct VtsIfo {
     pub titles: Vec<DvdTitle>,
     /// All program chains in the VTS.
     pub pgcs: Vec<Pgc>,
+    /// VTS_PGCI search pointers, parallel to [`Self::pgcs`] — each
+    /// carries the entry-PGC flag, title number, and parental mask
+    /// (see [`PgciSrp`]).
+    pub pgci_srp: Vec<PgciSrp>,
     /// Cell address table.
     pub cell_adt: VtsCAdt,
     /// Per-VOBU sector list for the title-set VOBs
@@ -3181,11 +3315,48 @@ impl VtsIfo {
             title_count: title_count_u8,
             titles,
             pgcs: pgci.pgcs,
+            pgci_srp: pgci.srp,
             cell_adt,
             vobu_admap,
             time_map,
             mat,
         })
+    }
+
+    /// The PGC body for the 1-based program-chain number `pgcn`, or
+    /// `None` when out of range.
+    pub fn pgc(&self, pgcn: u16) -> Option<&Pgc> {
+        if pgcn == 0 {
+            return None;
+        }
+        self.pgcs.get(usize::from(pgcn - 1))
+    }
+
+    /// 1-based PGCN of the entry PGC for the 1-based VTS-internal
+    /// title number `vts_ttn` — the PGC `JumpTT` / `JumpVTS_TT`
+    /// playback starts at, per the VTS_PGCI category dword's
+    /// entry-PGC flag + title number.
+    pub fn entry_pgcn_for_title(&self, vts_ttn: u8) -> Option<u16> {
+        self.pgci_srp
+            .iter()
+            .position(|s| s.is_entry_pgc() && s.title_number() == vts_ttn)
+            .map(|i| (i as u16) + 1)
+    }
+
+    /// The `(PGCN, PGN)` pair for chapter `pttn` of the VTS-internal
+    /// title `vts_ttn` (both 1-based) — the `JumpVTS_PTT`
+    /// destination, resolved through the materialised chapter list.
+    pub fn ptt(&self, vts_ttn: u8, pttn: u16) -> Option<Ptt> {
+        if vts_ttn == 0 || pttn == 0 {
+            return None;
+        }
+        self.titles
+            .get(usize::from(vts_ttn) - 1)
+            .and_then(|t| t.chapters.get(usize::from(pttn) - 1))
+            .map(|c| Ptt {
+                pgcn: c.pgcn,
+                pgn: c.pgn,
+            })
     }
 
     /// VOB-relative starting sector of the VOBU that covers playback
@@ -5510,6 +5681,120 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
+    // Title / chapter / entry-PGC resolution accessors
+    // ----------------------------------------------------------------
+
+    /// Wrap `pgc_blobs` into a synthetic PGCI with the given per-PGC
+    /// category dwords.
+    fn build_pgci(entries: &[(u32, &[u8])]) -> Vec<u8> {
+        let header = 8 + entries.len() * 8;
+        let total: usize = header + entries.iter().map(|(_, b)| b.len()).sum::<usize>();
+        let mut buf = vec![0u8; total];
+        buf[0..2].copy_from_slice(&(entries.len() as u16).to_be_bytes());
+        buf[4..8].copy_from_slice(&((total - 1) as u32).to_be_bytes());
+        let mut body_off = header;
+        for (i, (cat, blob)) in entries.iter().enumerate() {
+            let srp = 8 + i * 8;
+            buf[srp..srp + 4].copy_from_slice(&cat.to_be_bytes());
+            buf[srp + 4..srp + 8].copy_from_slice(&(body_off as u32).to_be_bytes());
+            buf[body_off..body_off + blob.len()].copy_from_slice(blob);
+            body_off += blob.len();
+        }
+        buf
+    }
+
+    #[test]
+    fn pgci_srp_category_accessors() {
+        // Entry PGC of title 3, parental mask 0x1234.
+        let srp = PgciSrp {
+            category: 0x8300_1234,
+            offset: 0,
+        };
+        assert!(srp.is_entry_pgc());
+        assert_eq!(srp.title_number(), 3);
+        assert_eq!(srp.parental_mask(), 0x1234);
+        // Non-entry PGC of the same title.
+        let srp2 = PgciSrp {
+            category: 0x0300_0000,
+            offset: 0,
+        };
+        assert!(!srp2.is_entry_pgc());
+        assert_eq!(srp2.title_number(), 3);
+    }
+
+    #[test]
+    fn pgci_entry_pgc_for_title() {
+        let cells = [make_cell(1000, 1999)];
+        let positions = [CellPositionInfo {
+            vob_id: 1,
+            cell_id: 1,
+        }];
+        let blob = build_pgc_with_cells(&cells, &positions);
+        // PGC 1: entry for title 1; PGC 2: continuation of title 1;
+        // PGC 3: entry for title 2.
+        let buf = build_pgci(&[
+            (0x8100_0000, &blob[..]),
+            (0x0100_0000, &blob[..]),
+            (0x8200_0000, &blob[..]),
+        ]);
+        let pgci = Pgci::parse(&buf).unwrap();
+        assert_eq!(pgci.entry_pgcn_for_title(1), Some(1));
+        assert_eq!(pgci.entry_pgcn_for_title(2), Some(3));
+        assert_eq!(pgci.entry_pgcn_for_title(3), None);
+        assert!(pgci.entry_pgc_for_title(2).is_some());
+        // 1-based pgc() lookup.
+        assert!(pgci.pgc(0).is_none());
+        assert!(pgci.pgc(3).is_some());
+        assert!(pgci.pgc(4).is_none());
+    }
+
+    #[test]
+    fn tt_srpt_title_lookup() {
+        let entry = DvdTitleEntry {
+            title_type: 0,
+            angle_count: 1,
+            chapter_count: 5,
+            parental_mask: 0,
+            vts_number: 2,
+            vts_title_number: 1,
+            vts_start_sector: 1000,
+        };
+        let srpt = TtSrpt {
+            title_count: 1,
+            end_address: 19,
+            entries: vec![entry],
+        };
+        assert_eq!(srpt.title(1), Some(&entry));
+        assert!(srpt.title(0).is_none());
+        assert!(srpt.title(2).is_none());
+    }
+
+    #[test]
+    fn vts_ptt_srpt_ptt_lookup() {
+        let srpt = VtsPttSrpt {
+            title_count: 2,
+            end_address: 0,
+            titles: vec![
+                PttTitle {
+                    chapters: vec![Ptt { pgcn: 1, pgn: 1 }, Ptt { pgcn: 1, pgn: 2 }],
+                },
+                PttTitle {
+                    chapters: vec![Ptt { pgcn: 2, pgn: 1 }],
+                },
+            ],
+        };
+        assert_eq!(srpt.ptt(1, 2), Some(Ptt { pgcn: 1, pgn: 2 }));
+        assert_eq!(srpt.ptt(2, 1), Some(Ptt { pgcn: 2, pgn: 1 }));
+        assert!(srpt.ptt(0, 1).is_none());
+        assert!(srpt.ptt(1, 0).is_none());
+        assert!(srpt.ptt(1, 3).is_none());
+        assert!(srpt.ptt(3, 1).is_none());
+        assert_eq!(srpt.chapter_count(1), Some(2));
+        assert_eq!(srpt.chapter_count(2), Some(1));
+        assert!(srpt.chapter_count(3).is_none());
+    }
+
+    // ----------------------------------------------------------------
     // VMGM_PGCI_UT / VTSM_PGCI_UT — Menu PGCI Unit Table
     // ----------------------------------------------------------------
 
@@ -5709,6 +5994,43 @@ mod tests {
         assert_eq!(MenuType::from_nibble(0), MenuType::Unknown(0));
         // High nibble is masked off — only low 4 bits matter.
         assert_eq!(MenuType::from_nibble(0xF3), MenuType::Root);
+    }
+
+    #[test]
+    fn pgci_lu_entry_pgc_and_resolve_menu() {
+        // English LU: root-menu entry PGC + a non-entry PGC.
+        // Japanese LU: audio-menu entry PGC only.
+        let en = u16::from_be_bytes(*b"en");
+        let ja = u16::from_be_bytes(*b"ja");
+        let buf = build_pgci_ut(&[
+            (en, 0, 0x80, vec![0x8300_0000, 0x0000_0000]),
+            (ja, 0, 0x80, vec![0x8500_0000]),
+        ]);
+        let ut = PgciUt::parse(&buf).unwrap();
+
+        // Direct LU lookup.
+        let en_lu = ut.language_unit(en).unwrap();
+        let (pgcn, _) = en_lu.entry_pgc(MenuType::Root).unwrap();
+        assert_eq!(pgcn, 1);
+        assert!(en_lu.entry_pgc(MenuType::Audio).is_none());
+
+        // Preferred language resolves directly.
+        let (lang, pgcn, _) = ut.resolve_menu(en, MenuType::Root).unwrap();
+        assert_eq!((lang, pgcn), (en, 1));
+
+        // Preferred language exists but lacks the menu type → falls
+        // back to the LU that has it.
+        let (lang, pgcn, _) = ut.resolve_menu(en, MenuType::Audio).unwrap();
+        assert_eq!((lang, pgcn), (ja, 1));
+
+        // Preferred language absent entirely → first LU carrying the
+        // requested type.
+        let fr = u16::from_be_bytes(*b"fr");
+        let (lang, pgcn, _) = ut.resolve_menu(fr, MenuType::Root).unwrap();
+        assert_eq!((lang, pgcn), (en, 1));
+
+        // No LU carries a PTT menu.
+        assert!(ut.resolve_menu(en, MenuType::Ptt).is_none());
     }
 
     #[test]
