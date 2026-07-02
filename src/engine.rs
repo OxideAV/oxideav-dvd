@@ -24,7 +24,7 @@
 //!   instruction index naming the 13 `Link*` destinations.
 
 use crate::nav::{CallSSTarget, JumpSSTarget};
-use crate::vm::VmAction;
+use crate::vm::{LinkAction, VmAction};
 
 // =====================================================================
 // Domain — where playback currently is.
@@ -185,6 +185,189 @@ pub fn transition_permitted(from: Domain, action: &VmAction, current_vts: u8) ->
             // within First Play, and the title domain is what RSM
             // resumes *to*.
             matches!(from, Domain::VideoManager | Domain::VtsMenu)
+        }
+    }
+}
+
+// =====================================================================
+// Link resolution — turning a Type-1 LinkAction into a destination.
+// =====================================================================
+
+/// Where playback currently sits inside a PGC — the state a Type-1
+/// `Link*` destination is computed against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PgcPosition {
+    /// 1-based program-chain number of the current PGC within its
+    /// domain's PGC table.
+    pub pgcn: u16,
+    /// 1-based program number within the PGC.
+    pub program: u8,
+    /// 1-based cell number within the PGC.
+    pub cell: u8,
+}
+
+/// The resolved destination of a Type-1 [`LinkAction`].
+///
+/// Per `mpucoder-vmi-sum.html` the Link family moves playback
+/// "within the same domain" — so every destination is expressed in
+/// terms of the current domain's PGC table: a cell inside the
+/// current PGC, the current PGC's post-command list, another PGC by
+/// number, or a chapter (which the caller resolves through
+/// `VTS_PTT_SRPT`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkOutcome {
+    /// `LinkNoLink` (subset `Nop`) — no transfer; the surrounding
+    /// command list keeps walking.
+    Continue,
+    /// Present cell `cell` of the **current** PGC (already
+    /// angle-resolved via [`Pgc::cell_for_angle`]).
+    PlayCell { cell: u8 },
+    /// Enter the current PGC's post-command list (`LinkTailPGC`, or
+    /// a next-cell / next-PG walk that ran off the end of the PGC).
+    PostCommands,
+    /// Load PGC `pgcn` of the current domain from its pre-commands
+    /// (`LinkPGCN` / `LinkTopPGC` / `LinkNextPGC` / `LinkPrevPGC` /
+    /// `LinkGoupPGC`).
+    OtherPgc { pgcn: u16 },
+    /// `LinkPTTN pttn` — a chapter of the current title; the caller
+    /// resolves it to a `(PGCN, PGN)` pair via `VtsPttSrpt::ptt`.
+    Chapter { pttn: u16 },
+    /// The `RSM` subset — pop the engine's resume bookkeeping.
+    Resume,
+    /// The link names a destination the PGC doesn't carry (a zero
+    /// next / previous / goup PGCN, an out-of-range program or cell,
+    /// or one of the spec's invalid subset codes).
+    NoDestination,
+}
+
+/// The highlight-button override a [`LinkAction`] carries, if any.
+///
+/// Per `mpucoder-vmi.html` most Link forms embed a 6-bit `hl_bn`
+/// ("Most Link commands can also specify a new highlight selection"
+/// — `mpucoder-vmi-sum.html`); `0` means "leave SPRM 8 alone". The
+/// caller stores `Some(n)` into SPRM 8's button field (bits 15..10)
+/// before transferring.
+pub fn link_highlight_button(link: &LinkAction) -> Option<u8> {
+    let hl = match link {
+        LinkAction::Subset { hl_bn, .. } => *hl_bn,
+        LinkAction::Pttn { hl_bn, .. } => *hl_bn,
+        LinkAction::Pgn { hl_bn, .. } => *hl_bn,
+        LinkAction::Cn { hl_bn, .. } => *hl_bn,
+        // LinkPGCN carries no button field per the opcode table.
+        LinkAction::Pgcn { .. } => 0,
+    };
+    (hl != 0).then_some(hl)
+}
+
+/// Resolve a Type-1 [`LinkAction`] against the current PGC.
+///
+/// `pgc` is the PGC `pos` points into, and `angle` is the current
+/// SPRM 3 camera angle (used to angle-resolve any destination cell
+/// that opens an angle block). Destination semantics per the 13
+/// `Link*` rows of `stnsoft-vmindx.html` + `mpucoder-vmi.html`:
+///
+/// - The cell-level subsets (`Top` / `Next` / `PrevCell`) move
+///   relative to `pos.cell`; a next-cell walk past the PGC's final
+///   cell falls through to [`LinkOutcome::PostCommands`] (the same
+///   place sequential playback goes), and a prev-cell at cell 1
+///   clamps to cell 1.
+/// - The program-level subsets move relative to `pos.program` and
+///   land on the destination program's entry cell; `LinkNextPG`
+///   past the final program falls through to post-commands and
+///   `LinkPrevPG` clamps at program 1.
+/// - The PGC-level subsets follow the PGC header's linkage words
+///   (`next_pgcn` / `prev_pgcn` / `goup_pgcn`); an unauthored (zero)
+///   word yields [`LinkOutcome::NoDestination`].
+/// - The numbered forms (`LinkPGCN` / `LinkPTTN` / `LinkPGN` /
+///   `LinkCN`) address their destination directly.
+pub fn resolve_link(
+    pgc: &crate::ifo::Pgc,
+    pos: PgcPosition,
+    link: &LinkAction,
+    angle: u8,
+) -> LinkOutcome {
+    use crate::nav::LinkSubset;
+
+    match link {
+        LinkAction::Subset { subset, .. } => match subset {
+            LinkSubset::Nop => LinkOutcome::Continue,
+            LinkSubset::LinkTopCell => LinkOutcome::PlayCell { cell: pos.cell },
+            LinkSubset::LinkNextCell => match pgc.next_cell(pos.cell, angle) {
+                Some(cell) => LinkOutcome::PlayCell { cell },
+                None => LinkOutcome::PostCommands,
+            },
+            LinkSubset::LinkPrevCell => {
+                let prev = pos.cell.saturating_sub(1).max(1);
+                LinkOutcome::PlayCell {
+                    cell: pgc.cell_for_angle(prev, angle),
+                }
+            }
+            LinkSubset::LinkTopPG => match pgc.program_entry_cell(pos.program) {
+                Some(cell) => LinkOutcome::PlayCell {
+                    cell: pgc.cell_for_angle(cell, angle),
+                },
+                None => LinkOutcome::NoDestination,
+            },
+            LinkSubset::LinkNextPG => {
+                if pos.program >= pgc.number_of_programs {
+                    LinkOutcome::PostCommands
+                } else {
+                    match pgc.program_entry_cell(pos.program + 1) {
+                        Some(cell) => LinkOutcome::PlayCell {
+                            cell: pgc.cell_for_angle(cell, angle),
+                        },
+                        None => LinkOutcome::NoDestination,
+                    }
+                }
+            }
+            LinkSubset::LinkPrevPG => {
+                let prev = pos.program.saturating_sub(1).max(1);
+                match pgc.program_entry_cell(prev) {
+                    Some(cell) => LinkOutcome::PlayCell {
+                        cell: pgc.cell_for_angle(cell, angle),
+                    },
+                    None => LinkOutcome::NoDestination,
+                }
+            }
+            LinkSubset::LinkTopPGC => LinkOutcome::OtherPgc { pgcn: pos.pgcn },
+            LinkSubset::LinkNextPGC => match pgc.next_pgcn {
+                0 => LinkOutcome::NoDestination,
+                pgcn => LinkOutcome::OtherPgc { pgcn },
+            },
+            LinkSubset::LinkPrevPGC => match pgc.prev_pgcn {
+                0 => LinkOutcome::NoDestination,
+                pgcn => LinkOutcome::OtherPgc { pgcn },
+            },
+            LinkSubset::LinkGoupPGC => match pgc.goup_pgcn {
+                0 => LinkOutcome::NoDestination,
+                pgcn => LinkOutcome::OtherPgc { pgcn },
+            },
+            LinkSubset::LinkTailPGC => LinkOutcome::PostCommands,
+            LinkSubset::Rsm => LinkOutcome::Resume,
+            LinkSubset::Invalid(_) => LinkOutcome::NoDestination,
+        },
+        LinkAction::Pgcn { pgcn } => match pgcn {
+            0 => LinkOutcome::NoDestination,
+            pgcn => LinkOutcome::OtherPgc { pgcn: *pgcn },
+        },
+        LinkAction::Pttn { pttn, .. } => match pttn {
+            0 => LinkOutcome::NoDestination,
+            pttn => LinkOutcome::Chapter { pttn: *pttn },
+        },
+        LinkAction::Pgn { pgn, .. } => match pgc.program_entry_cell(*pgn) {
+            Some(cell) => LinkOutcome::PlayCell {
+                cell: pgc.cell_for_angle(cell, angle),
+            },
+            None => LinkOutcome::NoDestination,
+        },
+        LinkAction::Cn { cn, .. } => {
+            if *cn >= 1 && *cn <= pgc.number_of_cells {
+                LinkOutcome::PlayCell {
+                    cell: pgc.cell_for_angle(*cn, angle),
+                }
+            } else {
+                LinkOutcome::NoDestination
+            }
         }
     }
 }
@@ -574,5 +757,262 @@ mod tests {
         assert!(Domain::VtsMenu.is_menu());
         assert!(!Domain::FirstPlay.is_menu());
         assert!(!Domain::VtsTitle.is_menu());
+    }
+
+    // ---- resolve_link ------------------------------------------------
+
+    use crate::ifo::{CellPlaybackInfo, Pgc, PgcTime};
+    use crate::nav::LinkSubset;
+
+    fn test_cell(category: u8) -> CellPlaybackInfo {
+        CellPlaybackInfo {
+            category_byte0: category,
+            restricted: false,
+            still_time: 0,
+            cell_command: 0,
+            playback_time: PgcTime::from_bytes([0, 1, 0, 0xE0]),
+            first_vobu_start_sector: 0,
+            first_ilvu_end_sector: 0,
+            last_vobu_start_sector: 0,
+            last_vobu_end_sector: 0,
+        }
+    }
+
+    /// 5-cell / 2-program PGC: cells 1..=2 plain, cells 3..=5 a
+    /// 3-angle block. Program 1 → cell 1, program 2 → cell 3.
+    /// next PGCN = 7, prev PGCN unauthored, goup PGCN = 9.
+    fn link_test_pgc() -> Pgc {
+        let mut pgc = Pgc::parse(&[0u8; 0xEC]).unwrap();
+        pgc.number_of_programs = 2;
+        pgc.number_of_cells = 5;
+        pgc.program_map = vec![1, 3];
+        pgc.cells = vec![
+            test_cell(0x00),
+            test_cell(0x00),
+            test_cell(0x50), // first of angle block
+            test_cell(0x90), // middle
+            test_cell(0xD0), // last
+        ];
+        pgc.next_pgcn = 7;
+        pgc.prev_pgcn = 0;
+        pgc.goup_pgcn = 9;
+        pgc
+    }
+
+    fn subset(subset: LinkSubset) -> LinkAction {
+        LinkAction::Subset { subset, hl_bn: 0 }
+    }
+
+    #[test]
+    fn resolve_link_cell_subsets() {
+        let pgc = link_test_pgc();
+        let pos = PgcPosition {
+            pgcn: 2,
+            program: 1,
+            cell: 2,
+        };
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::Nop), 1),
+            LinkOutcome::Continue
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::LinkTopCell), 1),
+            LinkOutcome::PlayCell { cell: 2 }
+        );
+        // Next cell enters the angle block, angle-resolved.
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::LinkNextCell), 1),
+            LinkOutcome::PlayCell { cell: 3 }
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::LinkNextCell), 2),
+            LinkOutcome::PlayCell { cell: 4 }
+        );
+        // From inside the block, next-cell runs off the PGC → post.
+        let in_block = PgcPosition {
+            pgcn: 2,
+            program: 2,
+            cell: 4,
+        };
+        assert_eq!(
+            resolve_link(&pgc, in_block, &subset(LinkSubset::LinkNextCell), 1),
+            LinkOutcome::PostCommands
+        );
+        // Prev cell, and the clamp at cell 1.
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::LinkPrevCell), 1),
+            LinkOutcome::PlayCell { cell: 1 }
+        );
+        let at_first = PgcPosition {
+            pgcn: 2,
+            program: 1,
+            cell: 1,
+        };
+        assert_eq!(
+            resolve_link(&pgc, at_first, &subset(LinkSubset::LinkPrevCell), 1),
+            LinkOutcome::PlayCell { cell: 1 }
+        );
+    }
+
+    #[test]
+    fn resolve_link_program_subsets() {
+        let pgc = link_test_pgc();
+        let p1 = PgcPosition {
+            pgcn: 2,
+            program: 1,
+            cell: 2,
+        };
+        let p2 = PgcPosition {
+            pgcn: 2,
+            program: 2,
+            cell: 4,
+        };
+        // TopPG restarts the current program at its entry cell.
+        assert_eq!(
+            resolve_link(&pgc, p2, &subset(LinkSubset::LinkTopPG), 1),
+            LinkOutcome::PlayCell { cell: 3 }
+        );
+        // …angle-resolved when the entry cell opens an angle block.
+        assert_eq!(
+            resolve_link(&pgc, p2, &subset(LinkSubset::LinkTopPG), 2),
+            LinkOutcome::PlayCell { cell: 4 }
+        );
+        assert_eq!(
+            resolve_link(&pgc, p1, &subset(LinkSubset::LinkNextPG), 1),
+            LinkOutcome::PlayCell { cell: 3 }
+        );
+        // Next-PG past the final program → post commands.
+        assert_eq!(
+            resolve_link(&pgc, p2, &subset(LinkSubset::LinkNextPG), 1),
+            LinkOutcome::PostCommands
+        );
+        assert_eq!(
+            resolve_link(&pgc, p2, &subset(LinkSubset::LinkPrevPG), 1),
+            LinkOutcome::PlayCell { cell: 1 }
+        );
+        // Prev-PG clamps at program 1.
+        assert_eq!(
+            resolve_link(&pgc, p1, &subset(LinkSubset::LinkPrevPG), 1),
+            LinkOutcome::PlayCell { cell: 1 }
+        );
+    }
+
+    #[test]
+    fn resolve_link_pgc_subsets() {
+        let pgc = link_test_pgc();
+        let pos = PgcPosition {
+            pgcn: 2,
+            program: 1,
+            cell: 1,
+        };
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::LinkTopPGC), 1),
+            LinkOutcome::OtherPgc { pgcn: 2 }
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::LinkNextPGC), 1),
+            LinkOutcome::OtherPgc { pgcn: 7 }
+        );
+        // prev PGCN is unauthored (zero).
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::LinkPrevPGC), 1),
+            LinkOutcome::NoDestination
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::LinkGoupPGC), 1),
+            LinkOutcome::OtherPgc { pgcn: 9 }
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::LinkTailPGC), 1),
+            LinkOutcome::PostCommands
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::Rsm), 1),
+            LinkOutcome::Resume
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &subset(LinkSubset::Invalid(0x04)), 1),
+            LinkOutcome::NoDestination
+        );
+    }
+
+    #[test]
+    fn resolve_link_numbered_forms() {
+        let pgc = link_test_pgc();
+        let pos = PgcPosition {
+            pgcn: 2,
+            program: 1,
+            cell: 1,
+        };
+        assert_eq!(
+            resolve_link(&pgc, pos, &LinkAction::Pgcn { pgcn: 3 }, 1),
+            LinkOutcome::OtherPgc { pgcn: 3 }
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &LinkAction::Pgcn { pgcn: 0 }, 1),
+            LinkOutcome::NoDestination
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &LinkAction::Pttn { pttn: 5, hl_bn: 0 }, 1),
+            LinkOutcome::Chapter { pttn: 5 }
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &LinkAction::Pttn { pttn: 0, hl_bn: 0 }, 1),
+            LinkOutcome::NoDestination
+        );
+        // LinkPGN lands on the program's entry cell, angle-resolved.
+        assert_eq!(
+            resolve_link(&pgc, pos, &LinkAction::Pgn { pgn: 2, hl_bn: 0 }, 3),
+            LinkOutcome::PlayCell { cell: 5 }
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &LinkAction::Pgn { pgn: 3, hl_bn: 0 }, 1),
+            LinkOutcome::NoDestination
+        );
+        // LinkCN addresses a cell directly (angle-resolved when it
+        // opens a block; a non-first block cell passes through).
+        assert_eq!(
+            resolve_link(&pgc, pos, &LinkAction::Cn { cn: 3, hl_bn: 0 }, 2),
+            LinkOutcome::PlayCell { cell: 4 }
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &LinkAction::Cn { cn: 5, hl_bn: 0 }, 1),
+            LinkOutcome::PlayCell { cell: 5 }
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &LinkAction::Cn { cn: 6, hl_bn: 0 }, 1),
+            LinkOutcome::NoDestination
+        );
+        assert_eq!(
+            resolve_link(&pgc, pos, &LinkAction::Cn { cn: 0, hl_bn: 0 }, 1),
+            LinkOutcome::NoDestination
+        );
+    }
+
+    #[test]
+    fn link_highlight_button_extraction() {
+        assert_eq!(
+            link_highlight_button(&LinkAction::Subset {
+                subset: LinkSubset::LinkTopCell,
+                hl_bn: 5
+            }),
+            Some(5)
+        );
+        assert_eq!(
+            link_highlight_button(&LinkAction::Subset {
+                subset: LinkSubset::LinkTopCell,
+                hl_bn: 0
+            }),
+            None
+        );
+        assert_eq!(
+            link_highlight_button(&LinkAction::Pttn { pttn: 1, hl_bn: 9 }),
+            Some(9)
+        );
+        assert_eq!(link_highlight_button(&LinkAction::Pgcn { pgcn: 1 }), None);
+        assert_eq!(
+            link_highlight_button(&LinkAction::Cn { cn: 1, hl_bn: 2 }),
+            Some(2)
+        );
     }
 }

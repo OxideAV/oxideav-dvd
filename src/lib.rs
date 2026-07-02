@@ -108,7 +108,10 @@ pub mod pipeline;
 pub use ac3::{Ac3AudioCodingMode, Ac3BitstreamMode, Ac3Header, Ac3SampleRate, AC3_SYNC_WORD};
 pub use disc::{DvdDisc, DvdFile, DvdFileKind};
 pub use dts::{DtsAudioMode, DtsBitRate, DtsFrameType, DtsHeader, DtsSampleRate, DTS_SYNC_WORD};
-pub use engine::{target_domain, transition_permitted, Domain};
+pub use engine::{
+    link_highlight_button, resolve_link, target_domain, transition_permitted, Domain, LinkOutcome,
+    PgcPosition,
+};
 pub use error::{Error, Result};
 pub use ifo::{
     menu_existence, AudioApplicationMode, AudioAttributes, AudioCodingMode, AudioLanguageType,
