@@ -2280,6 +2280,154 @@ impl Pgc {
         };
         Some((first, last))
     }
+
+    /// The 1-based program that owns cell `cell_1based` — the inverse
+    /// of [`Self::program_entry_cell`]: the highest program whose
+    /// entry cell is `<= cell_1based`. `None` when the cell number is
+    /// out of range, the program map is elided, or the cell precedes
+    /// the first program's entry cell (a malformed map).
+    pub fn program_containing_cell(&self, cell_1based: u8) -> Option<u8> {
+        if cell_1based == 0 || cell_1based > self.number_of_cells {
+            return None;
+        }
+        let mut found = None;
+        for (i, &entry) in self.program_map.iter().enumerate() {
+            if entry != 0 && entry <= cell_1based {
+                found = Some((i as u8) + 1);
+            }
+        }
+        found
+    }
+
+    /// The inclusive 1-based cell span `[first, last]` of the angle
+    /// block starting at cell `first_1based`.
+    ///
+    /// Per `mpucoder-pgc.html` an angle block is a run of consecutive
+    /// cells whose category marks them `first of angle block` /
+    /// `middle of angle block` / `last of angle block` — one cell per
+    /// camera angle, of which a player plays exactly one. Returns
+    /// `None` unless `first_1based` is in range **and** its category
+    /// byte declares it the first cell of an angle block. A malformed
+    /// block that never declares a last cell runs through the PGC's
+    /// final cell.
+    pub fn angle_block_span(&self, first_1based: u8) -> Option<(u8, u8)> {
+        if first_1based == 0 {
+            return None;
+        }
+        let first_idx = usize::from(first_1based - 1);
+        let first = self.cells.get(first_idx)?;
+        if first.category().cell_type != CellType::FirstOfAngleBlock {
+            return None;
+        }
+        let mut last = first_1based;
+        for (i, cell) in self.cells.iter().enumerate().skip(first_idx) {
+            last = (i as u8) + 1;
+            if cell.category().cell_type == CellType::LastOfAngleBlock {
+                break;
+            }
+        }
+        Some((first_1based, last))
+    }
+
+    /// The cell a player presents for camera angle `angle` (1-based,
+    /// = SPRM 3) at cell `cell_1based`.
+    ///
+    /// When `cell_1based` starts an angle block, the block's cells
+    /// map one-to-one onto angles in order (first cell = angle 1);
+    /// an angle past the block's cell count falls back to angle 1's
+    /// cell, matching the SPRM 3 constraint that the angle number
+    /// never exceeds the authored angle count. For a plain cell the
+    /// input is returned unchanged.
+    pub fn cell_for_angle(&self, cell_1based: u8, angle: u8) -> u8 {
+        match self.angle_block_span(cell_1based) {
+            Some((first, last)) => {
+                let candidate = first.saturating_add(angle.saturating_sub(1));
+                if angle >= 1 && candidate <= last {
+                    candidate
+                } else {
+                    first
+                }
+            }
+            None => cell_1based,
+        }
+    }
+
+    /// The next cell to present after `cell_1based` has finished, for
+    /// camera angle `angle` — the sequential-playback successor per
+    /// `mpucoder-pgc.html`'s cell semantics.
+    ///
+    /// If `cell_1based` sits inside an angle block the walk skips the
+    /// block's remaining cells (the other angles' copies) and lands
+    /// one past its last cell; a plain cell advances by one. The
+    /// landing cell is then angle-resolved via
+    /// [`Self::cell_for_angle`] so entering a follow-on angle block
+    /// picks the right angle cell directly. `None` once playback
+    /// runs past the PGC's final cell (post-command territory).
+    pub fn next_cell(&self, cell_1based: u8, angle: u8) -> Option<u8> {
+        if cell_1based == 0 || cell_1based > self.number_of_cells {
+            return None;
+        }
+        let mut next = cell_1based.checked_add(1)?;
+        let idx = usize::from(cell_1based - 1);
+        if let Some(cell) = self.cells.get(idx) {
+            if cell.category().cell_type.is_angle_block() {
+                // Skip forward to one past the block's last cell.
+                let mut last = cell_1based;
+                for (i, c) in self.cells.iter().enumerate().skip(idx) {
+                    last = (i as u8) + 1;
+                    if c.category().cell_type == CellType::LastOfAngleBlock {
+                        break;
+                    }
+                }
+                next = last.checked_add(1)?;
+            }
+        }
+        if next > self.number_of_cells {
+            return None;
+        }
+        Some(self.cell_for_angle(next, angle))
+    }
+
+    /// The first cell to present for camera angle `angle` — cell 1,
+    /// angle-resolved in case the PGC opens straight into an angle
+    /// block. `None` for a cell-less PGC (a pure command PGC, e.g.
+    /// most First-Play PGCs).
+    pub fn first_cell(&self, angle: u8) -> Option<u8> {
+        if self.number_of_cells == 0 {
+            return None;
+        }
+        Some(self.cell_for_angle(1, angle))
+    }
+
+    /// Iterator over the cells a sequential playback of this PGC
+    /// presents for camera angle `angle`, in order — angle blocks
+    /// contribute exactly one cell each.
+    pub fn cell_walk(&self, angle: u8) -> CellWalk<'_> {
+        CellWalk {
+            pgc: self,
+            next: self.first_cell(angle),
+            angle,
+        }
+    }
+}
+
+/// Iterator returned by [`Pgc::cell_walk`] — yields the 1-based cell
+/// numbers a sequential playback presents for one camera angle.
+#[derive(Debug)]
+pub struct CellWalk<'a> {
+    pgc: &'a Pgc,
+    next: Option<u8>,
+    angle: u8,
+}
+
+impl Iterator for CellWalk<'_> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<u8> {
+        let current = self.next?;
+        self.next = self.pgc.next_cell(current, self.angle);
+        Some(current)
+    }
 }
 
 // ------------------------------------------------------------------
@@ -4573,6 +4721,114 @@ mod tests {
         assert_eq!(pgc.program_cell_range(2), Some((3, 3)));
         assert_eq!(pgc.program_cell_range(3), Some((4, 5)));
         assert_eq!(pgc.program_cell_range(4), None);
+
+        // Inverse lookup — the program owning each cell.
+        assert_eq!(pgc.program_containing_cell(1), Some(1));
+        assert_eq!(pgc.program_containing_cell(2), Some(1));
+        assert_eq!(pgc.program_containing_cell(3), Some(2));
+        assert_eq!(pgc.program_containing_cell(4), Some(3));
+        assert_eq!(pgc.program_containing_cell(5), Some(3));
+        assert_eq!(pgc.program_containing_cell(6), None);
+        assert_eq!(pgc.program_containing_cell(0), None);
+    }
+
+    // -------------------------------------------------------------
+    // Angle-aware cell navigation
+    // -------------------------------------------------------------
+
+    /// 7-cell PGC: cell 1 plain, cells 2..=4 a 3-angle block, cell 5
+    /// plain, cells 6..=7 a 2-angle block. Category byte layout per
+    /// mpucoder-pgc.html: bits 7..6 cell type, bits 5..4 block type.
+    fn angle_test_pgc() -> Pgc {
+        let cats = [0x00u8, 0x50, 0x90, 0xD0, 0x00, 0x50, 0xD0];
+        let cells: Vec<CellPlaybackInfo> = cats
+            .iter()
+            .enumerate()
+            .map(|(i, &cat)| {
+                let mut c = make_cell(1000 * (i as u32 + 1), 1000 * (i as u32 + 1) + 999);
+                c.category_byte0 = cat;
+                c
+            })
+            .collect();
+        let positions: Vec<CellPositionInfo> = (1..=7)
+            .map(|i| CellPositionInfo {
+                vob_id: 1,
+                cell_id: i,
+            })
+            .collect();
+        Pgc::parse(&build_pgc_with_cells(&cells, &positions)).unwrap()
+    }
+
+    #[test]
+    fn angle_block_span_detection() {
+        let pgc = angle_test_pgc();
+        assert_eq!(pgc.angle_block_span(2), Some((2, 4)));
+        assert_eq!(pgc.angle_block_span(6), Some((6, 7)));
+        // Plain cells and non-first block cells are not block starts.
+        assert_eq!(pgc.angle_block_span(1), None);
+        assert_eq!(pgc.angle_block_span(3), None);
+        assert_eq!(pgc.angle_block_span(4), None);
+        assert_eq!(pgc.angle_block_span(0), None);
+        assert_eq!(pgc.angle_block_span(8), None);
+    }
+
+    #[test]
+    fn cell_for_angle_selection() {
+        let pgc = angle_test_pgc();
+        // Inside the 3-angle block, angles map one-to-one.
+        assert_eq!(pgc.cell_for_angle(2, 1), 2);
+        assert_eq!(pgc.cell_for_angle(2, 2), 3);
+        assert_eq!(pgc.cell_for_angle(2, 3), 4);
+        // Angle past the block's cell count falls back to angle 1.
+        assert_eq!(pgc.cell_for_angle(2, 4), 2);
+        assert_eq!(pgc.cell_for_angle(2, 0), 2);
+        // Plain cells pass through unchanged for any angle.
+        assert_eq!(pgc.cell_for_angle(1, 5), 1);
+        assert_eq!(pgc.cell_for_angle(5, 2), 5);
+        // The 2-angle block.
+        assert_eq!(pgc.cell_for_angle(6, 2), 7);
+        assert_eq!(pgc.cell_for_angle(6, 3), 6);
+    }
+
+    #[test]
+    fn next_cell_skips_angle_blocks() {
+        let pgc = angle_test_pgc();
+        // Entering the block resolves the angle immediately.
+        assert_eq!(pgc.next_cell(1, 1), Some(2));
+        assert_eq!(pgc.next_cell(1, 3), Some(4));
+        // Leaving the block from *any* of its cells lands one past
+        // the last block cell.
+        assert_eq!(pgc.next_cell(2, 1), Some(5));
+        assert_eq!(pgc.next_cell(3, 2), Some(5));
+        assert_eq!(pgc.next_cell(4, 1), Some(5));
+        // Cell 5 → second block, angle-resolved.
+        assert_eq!(pgc.next_cell(5, 1), Some(6));
+        assert_eq!(pgc.next_cell(5, 2), Some(7));
+        // Past the final cell → post-command territory.
+        assert_eq!(pgc.next_cell(6, 1), None);
+        assert_eq!(pgc.next_cell(7, 1), None);
+        assert_eq!(pgc.next_cell(0, 1), None);
+        assert_eq!(pgc.next_cell(8, 1), None);
+    }
+
+    #[test]
+    fn cell_walk_per_angle() {
+        let pgc = angle_test_pgc();
+        assert_eq!(pgc.cell_walk(1).collect::<Vec<_>>(), vec![1, 2, 5, 6]);
+        assert_eq!(pgc.cell_walk(2).collect::<Vec<_>>(), vec![1, 3, 5, 7]);
+        // Angle 3 exists in the first block but not the second — the
+        // second block falls back to its first cell.
+        assert_eq!(pgc.cell_walk(3).collect::<Vec<_>>(), vec![1, 4, 5, 6]);
+    }
+
+    #[test]
+    fn first_cell_and_empty_pgc() {
+        let pgc = angle_test_pgc();
+        assert_eq!(pgc.first_cell(1), Some(1));
+        // A cell-less (pure command) PGC has no first cell.
+        let empty = Pgc::parse(&vec![0u8; 0xEC]).unwrap();
+        assert_eq!(empty.first_cell(1), None);
+        assert_eq!(empty.cell_walk(1).count(), 0);
     }
 
     // -------------------------------------------------------------
