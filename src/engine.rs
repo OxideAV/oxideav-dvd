@@ -723,6 +723,183 @@ impl<'a> PgcRunner<'a> {
     }
 }
 
+// =====================================================================
+// Jump resolution — turning a transfer VmAction into a destination.
+// =====================================================================
+
+/// A cross-list transfer resolved into the concrete structure the
+/// disc-level engine must load next.
+///
+/// [`resolve_action`] maps the transfer-class [`VmAction`]s onto
+/// these; the caller then parses / looks up the named structure
+/// (VTS IFO, entry PGC, menu LU) and builds a fresh [`PgcRunner`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JumpResolution {
+    /// `JumpTT ttn` resolved through TT_SRPT: parse title set `vts`
+    /// (its first sector is `vts_start_sector`) and enter the entry
+    /// PGC of its VTS-internal title `vts_ttn`
+    /// (`Pgci::entry_pgcn_for_title`). Set SPRM 4 = `ttn` and
+    /// SPRM 5 = `vts_ttn` on arrival ([`note_title_position`]).
+    TitleEntry {
+        ttn: u8,
+        vts: u8,
+        vts_ttn: u8,
+        vts_start_sector: u32,
+    },
+    /// `JumpVTS_TT ttn` — the entry PGC of VTS-internal title `ttn`
+    /// of the **current** title set (the instruction may not cross
+    /// title sets, per `mpucoder-vmi-jmp.html` rows 9 / 13).
+    VtsTitleEntry { vts_ttn: u8 },
+    /// `JumpVTS_PTT ttn, pttn` — chapter `pttn` of VTS-internal
+    /// title `ttn` of the current title set; resolve to a
+    /// `(PGCN, PGN)` pair via `VtsPttSrpt::ptt` and enter at the
+    /// program's entry cell (`PgcRunner::new_at_cell`).
+    VtsChapter { vts_ttn: u8, pttn: u16 },
+    /// `JumpSS FP` / `CallSS FP` — the First-Play PGC
+    /// (`DvdDisc::parse_fp_pgc`).
+    FirstPlay,
+    /// `JumpSS VMGM menu` / `CallSS VMGM menu` — a VMG-domain menu
+    /// by type; resolve through `VMGM_PGCI_UT`
+    /// (`PgciUt::resolve_menu` with SPRM 0's language).
+    VmgMenu { menu: crate::ifo::MenuType },
+    /// `JumpSS VMGM pgcn` / `CallSS VMGM pgcn` — a VMG-domain PGC
+    /// addressed by number.
+    VmgPgc { pgcn: u16 },
+    /// `JumpSS VTSM vts, ttn, menu` — a VTS-menu-domain menu of
+    /// title set `vts`; resolve through that VTS's `VTSM_PGCI_UT`.
+    VtsMenu {
+        vts: u8,
+        vts_ttn: u8,
+        menu: crate::ifo::MenuType,
+    },
+    /// `CallSS VTSM menu` — a menu of the **current** title set
+    /// (the CallSS form carries no VTS operand).
+    SameVtsMenu { menu: crate::ifo::MenuType },
+    /// `RSM` — pop the engine's [`ResumeContext`] stack.
+    Resume,
+    /// `Exit` — stop playback entirely.
+    Stop,
+}
+
+/// Resolve a transfer-class [`VmAction`] into a [`JumpResolution`].
+///
+/// `tt_srpt` is the VMG title table (needed only for `JumpTT`).
+/// Returns `None` for non-transfer actions (`Continue` / `Break` /
+/// `Link` / `SetNavTimer` / `NoOpRaw`) and for a `JumpTT` whose
+/// title number is absent from TT_SRPT (a malformed disc).
+///
+/// The 4-bit `menu` operand of the `JumpSS` / `CallSS` menu forms is
+/// decoded through [`crate::ifo::MenuType::from_nibble`] — the menu
+/// selector uses the same code space as the PGC-category menu-type
+/// nibble (`3` = root, `4` = sub-picture, `5` = audio, `6` = angle,
+/// `7` = PTT per `mpucoder-ifo_vts.html`, plus `2` = title on the
+/// VMGM side per `mpucoder-ifo_vmg.html`), which is how the
+/// destination "Root Menu" rows of `mpucoder-vmi-jmp.html` name it.
+pub fn resolve_action(
+    action: &VmAction,
+    tt_srpt: Option<&crate::ifo::TtSrpt>,
+) -> Option<JumpResolution> {
+    use crate::ifo::MenuType;
+    match action {
+        VmAction::JumpTitle { ttn } => {
+            let entry = tt_srpt?.title(*ttn)?;
+            Some(JumpResolution::TitleEntry {
+                ttn: *ttn,
+                vts: entry.vts_number,
+                vts_ttn: entry.vts_title_number,
+                vts_start_sector: entry.vts_start_sector,
+            })
+        }
+        VmAction::JumpVtsTitle { ttn } => Some(JumpResolution::VtsTitleEntry { vts_ttn: *ttn }),
+        VmAction::JumpVtsPtt { ttn, pttn } => Some(JumpResolution::VtsChapter {
+            vts_ttn: *ttn,
+            pttn: *pttn,
+        }),
+        VmAction::JumpSs(t) => Some(match t {
+            JumpSSTarget::FirstPlay => JumpResolution::FirstPlay,
+            JumpSSTarget::VmgmMenu { menu } => JumpResolution::VmgMenu {
+                menu: MenuType::from_nibble(*menu),
+            },
+            JumpSSTarget::VmgmPgcn { pgcn } => JumpResolution::VmgPgc { pgcn: *pgcn },
+            JumpSSTarget::VtsmMenu { vts, ttn, menu } => JumpResolution::VtsMenu {
+                vts: *vts,
+                vts_ttn: *ttn,
+                menu: MenuType::from_nibble(*menu),
+            },
+        }),
+        VmAction::CallSs(t) => Some(match t {
+            CallSSTarget::FirstPlay { .. } => JumpResolution::FirstPlay,
+            CallSSTarget::VmgmMenu { menu, .. } => JumpResolution::VmgMenu {
+                menu: MenuType::from_nibble(*menu),
+            },
+            CallSSTarget::VmgmPgcn { pgcn, .. } => JumpResolution::VmgPgc { pgcn: *pgcn },
+            CallSSTarget::VtsmMenu { menu, .. } => JumpResolution::SameVtsMenu {
+                menu: MenuType::from_nibble(*menu),
+            },
+        }),
+        VmAction::Resume(_) => Some(JumpResolution::Resume),
+        VmAction::Exit => Some(JumpResolution::Stop),
+        VmAction::Continue
+        | VmAction::Break
+        | VmAction::Link(_)
+        | VmAction::SetNavTimer { .. }
+        | VmAction::NoOpRaw(_) => None,
+    }
+}
+
+/// Record an arrival in the title domain on the SPRM file — the
+/// position registers a disc's conditional navigation branches on:
+/// SPRM 4 (`TTN`, volume-wide title), SPRM 5 (`VTS_TTN`), SPRM 6
+/// (`TT_PGCN`), and SPRM 7 (`PTTN`, when the arrival was a chapter
+/// jump). Allocation per `mpucoder-sprm.html`.
+pub fn note_title_position(vm: &mut Vm, ttn: u8, vts_ttn: u8, pgcn: u16, pttn: Option<u16>) {
+    vm.regs.set_sprm(crate::vm::SPRM_TITLE, u16::from(ttn));
+    vm.regs
+        .set_sprm(crate::vm::SPRM_VTS_TITLE, u16::from(vts_ttn));
+    vm.regs.set_sprm(crate::vm::SPRM_PGCN, pgcn);
+    if let Some(pttn) = pttn {
+        vm.regs.set_sprm(crate::vm::SPRM_PTT, pttn);
+    }
+}
+
+/// Everything the disc-level engine must remember at a `CallSS` to
+/// honour a later `RSM`.
+///
+/// The [`Vm`]'s own RSM stack carries only what the instruction word
+/// encodes (the optional `rsm_cell` override + highlight button);
+/// *where* playback was — domain, title set, PGC, cell — is engine
+/// state, mirrored here. Push one of these when a
+/// [`PlaybackEvent::Transfer`] carries a `CallSs`; pop it when the
+/// VM surfaces [`VmAction::Resume`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeContext {
+    /// Domain the CallSS left (per `mpucoder-vmi-jmp.html` rows
+    /// 10..12 this is always the VTS Title domain on a conforming
+    /// disc).
+    pub domain: Domain,
+    /// 1-based title set the call left (`0` outside any VTS).
+    pub vts: u8,
+    /// 1-based PGCN of the interrupted PGC.
+    pub pgcn: u16,
+    /// 1-based cell that was being presented when the call fired.
+    pub cell: u8,
+}
+
+impl ResumeContext {
+    /// The cell to re-enter on resume: the `CallSS` word's non-zero
+    /// `rsm_cell` overrides the interrupted cell, per
+    /// `mpucoder-vmi-sum.html` ("CallSS commands may optionally
+    /// specify a cell different from the current to be entered on
+    /// RSM") — the zero value means "the cell that was active".
+    pub fn effective_cell(&self, rp: &crate::vm::ResumePoint) -> u8 {
+        if rp.resume_cell != 0 {
+            rp.resume_cell
+        } else {
+            self.cell
+        }
+    }
+}
+
 /// What [`PgcRunner::handle_list_action`] tells the state loop.
 #[derive(Debug)]
 enum ListVerdict {
@@ -1596,6 +1773,175 @@ mod tests {
         // Out-of-range entry cell falls through to post → Finished.
         let mut r2 = PgcRunner::new_at_cell(&pgc, 1, 9);
         assert_eq!(r2.next_event(&mut vm), PlaybackEvent::Finished);
+    }
+
+    // ---- resolve_action / note_title_position / ResumeContext ---------
+
+    use crate::ifo::{DvdTitleEntry, MenuType, TtSrpt};
+
+    fn one_title_srpt() -> TtSrpt {
+        TtSrpt {
+            title_count: 1,
+            end_address: 19,
+            entries: vec![DvdTitleEntry {
+                title_type: 0,
+                angle_count: 1,
+                chapter_count: 8,
+                parental_mask: 0,
+                vts_number: 2,
+                vts_title_number: 1,
+                vts_start_sector: 12345,
+            }],
+        }
+    }
+
+    #[test]
+    fn resolve_action_title_jumps() {
+        let srpt = one_title_srpt();
+        assert_eq!(
+            resolve_action(&VmAction::JumpTitle { ttn: 1 }, Some(&srpt)),
+            Some(JumpResolution::TitleEntry {
+                ttn: 1,
+                vts: 2,
+                vts_ttn: 1,
+                vts_start_sector: 12345,
+            })
+        );
+        // Missing title / missing table -> unresolvable.
+        assert_eq!(
+            resolve_action(&VmAction::JumpTitle { ttn: 2 }, Some(&srpt)),
+            None
+        );
+        assert_eq!(resolve_action(&VmAction::JumpTitle { ttn: 1 }, None), None);
+        // Same-VTS forms need no table.
+        assert_eq!(
+            resolve_action(&VmAction::JumpVtsTitle { ttn: 3 }, None),
+            Some(JumpResolution::VtsTitleEntry { vts_ttn: 3 })
+        );
+        assert_eq!(
+            resolve_action(&VmAction::JumpVtsPtt { ttn: 3, pttn: 7 }, None),
+            Some(JumpResolution::VtsChapter {
+                vts_ttn: 3,
+                pttn: 7
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_action_menu_forms() {
+        assert_eq!(
+            resolve_action(&VmAction::JumpSs(JumpSSTarget::FirstPlay), None),
+            Some(JumpResolution::FirstPlay)
+        );
+        assert_eq!(
+            resolve_action(&VmAction::JumpSs(JumpSSTarget::VmgmMenu { menu: 2 }), None),
+            Some(JumpResolution::VmgMenu {
+                menu: MenuType::Title
+            })
+        );
+        assert_eq!(
+            resolve_action(&VmAction::JumpSs(JumpSSTarget::VmgmPgcn { pgcn: 12 }), None),
+            Some(JumpResolution::VmgPgc { pgcn: 12 })
+        );
+        assert_eq!(
+            resolve_action(
+                &VmAction::JumpSs(JumpSSTarget::VtsmMenu {
+                    vts: 2,
+                    ttn: 1,
+                    menu: 3
+                }),
+                None
+            ),
+            Some(JumpResolution::VtsMenu {
+                vts: 2,
+                vts_ttn: 1,
+                menu: MenuType::Root
+            })
+        );
+        // CallSS VTSM has no VTS operand -> current title set.
+        assert_eq!(
+            resolve_action(
+                &VmAction::CallSs(CallSSTarget::VtsmMenu {
+                    menu: 5,
+                    rsm_cell: 3
+                }),
+                None
+            ),
+            Some(JumpResolution::SameVtsMenu {
+                menu: MenuType::Audio
+            })
+        );
+        assert_eq!(
+            resolve_action(
+                &VmAction::CallSs(CallSSTarget::VmgmPgcn {
+                    pgcn: 4,
+                    rsm_cell: 0
+                }),
+                None
+            ),
+            Some(JumpResolution::VmgPgc { pgcn: 4 })
+        );
+        assert_eq!(
+            resolve_action(&VmAction::Exit, None),
+            Some(JumpResolution::Stop)
+        );
+        assert_eq!(
+            resolve_action(
+                &VmAction::Resume(ResumePoint {
+                    resume_cell: 0,
+                    hl_btn: 0
+                }),
+                None
+            ),
+            Some(JumpResolution::Resume)
+        );
+        // Non-transfers resolve to None.
+        assert_eq!(resolve_action(&VmAction::Continue, None), None);
+        assert_eq!(resolve_action(&VmAction::Break, None), None);
+        assert_eq!(
+            resolve_action(&VmAction::Link(LinkAction::Pgcn { pgcn: 1 }), None),
+            None
+        );
+    }
+
+    #[test]
+    fn note_title_position_sets_sprms() {
+        let mut vm = Vm::new();
+        note_title_position(&mut vm, 3, 1, 5, Some(7));
+        assert_eq!(vm.regs.sprm(crate::vm::SPRM_TITLE), 3);
+        assert_eq!(vm.regs.sprm(crate::vm::SPRM_VTS_TITLE), 1);
+        assert_eq!(vm.regs.sprm(crate::vm::SPRM_PGCN), 5);
+        assert_eq!(vm.regs.sprm(crate::vm::SPRM_PTT), 7);
+        // Without a chapter, SPRM 7 stays put.
+        note_title_position(&mut vm, 4, 2, 6, None);
+        assert_eq!(vm.regs.sprm(crate::vm::SPRM_TITLE), 4);
+        assert_eq!(vm.regs.sprm(crate::vm::SPRM_PTT), 7);
+    }
+
+    #[test]
+    fn resume_context_effective_cell() {
+        let ctx = ResumeContext {
+            domain: Domain::VtsTitle,
+            vts: 2,
+            pgcn: 3,
+            cell: 6,
+        };
+        // rsm_cell 0 = "the cell that was active".
+        assert_eq!(
+            ctx.effective_cell(&ResumePoint {
+                resume_cell: 0,
+                hl_btn: 0
+            }),
+            6
+        );
+        // Non-zero rsm_cell overrides.
+        assert_eq!(
+            ctx.effective_cell(&ResumePoint {
+                resume_cell: 9,
+                hl_btn: 0
+            }),
+            9
+        );
     }
 
     #[test]

@@ -109,8 +109,9 @@ pub use ac3::{Ac3AudioCodingMode, Ac3BitstreamMode, Ac3Header, Ac3SampleRate, AC
 pub use disc::{DvdDisc, DvdFile, DvdFileKind};
 pub use dts::{DtsAudioMode, DtsBitRate, DtsFrameType, DtsHeader, DtsSampleRate, DTS_SYNC_WORD};
 pub use engine::{
-    link_highlight_button, resolve_link, target_domain, transition_permitted, Domain, LinkOutcome,
-    PgcPosition, PgcRunner, PlaybackEvent,
+    link_highlight_button, note_title_position, resolve_action, resolve_link, target_domain,
+    transition_permitted, Domain, JumpResolution, LinkOutcome, PgcPosition, PgcRunner,
+    PlaybackEvent, ResumeContext,
 };
 pub use error::{Error, Result};
 pub use ifo::{
