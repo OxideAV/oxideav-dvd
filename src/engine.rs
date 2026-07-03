@@ -1228,6 +1228,356 @@ impl PlaybackEvent {
     }
 }
 
+// =====================================================================
+// Stream selection — logical → physical audio / sub-picture routing.
+// =====================================================================
+
+/// A resolved audio-stream choice — see [`select_audio_stream`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioSelection {
+    /// Play logical stream `logical` (the SPRM 1 value), demuxing the
+    /// physical MPEG-audio stream / private_stream_1 substream number
+    /// `physical` (the PGC_AST_CTL mapping).
+    Selected {
+        logical: u8,
+        physical: u8,
+        /// `false` when SPRM 1 named this stream directly; `true`
+        /// when it was chosen by the preference fallback (SPRM 16/17
+        /// language matching or first-available).
+        via_preference: bool,
+    },
+    /// No audio: SPRM 1 carries the `15` sentinel, or the PGC offers
+    /// no stream this player can play.
+    NoAudio,
+}
+
+/// `true` when the player's SPRM 15 capability bitmap can play a
+/// stream with these attributes.
+///
+/// The SPRM 15 page allocates one plain bit and one karaoke bit per
+/// optional codec (`bit10` SDDS / `bit11` DTS / `bit12` MPEG /
+/// `bit14` Dolby, karaoke variants at `bit2..bit7`); a stream whose
+/// VTS attributes declare [`crate::ifo::AudioApplicationMode::Karaoke`]
+/// is checked against the karaoke bit, anything else against the
+/// plain bit. LPCM has no plain capability bit on the page (it is
+/// the one format every player must decode), so non-karaoke LPCM is
+/// always playable; karaoke LPCM checks `bit7` (PCM karaoke). A
+/// reserved coding mode is never playable.
+pub fn audio_stream_playable(
+    caps: crate::vm::AudioCapabilities,
+    attrs: &crate::ifo::AudioAttributes,
+) -> bool {
+    use crate::ifo::{AudioApplicationMode, AudioCodingMode};
+    let karaoke = matches!(attrs.application_mode, AudioApplicationMode::Karaoke);
+    match attrs.coding_mode {
+        AudioCodingMode::Ac3 => {
+            if karaoke {
+                caps.dolby_karaoke
+            } else {
+                caps.dolby
+            }
+        }
+        AudioCodingMode::Mpeg1 | AudioCodingMode::Mpeg2Ext => {
+            if karaoke {
+                caps.mpeg_karaoke
+            } else {
+                caps.mpeg
+            }
+        }
+        AudioCodingMode::Dts => {
+            if karaoke {
+                caps.dts_karaoke
+            } else {
+                caps.dts
+            }
+        }
+        AudioCodingMode::Lpcm => !karaoke || caps.pcm_karaoke,
+        AudioCodingMode::Reserved(_) => false,
+    }
+}
+
+/// Pick the audio stream to play: the logical → physical routing
+/// decision that combines SPRM 1 (`ASTN`), the PGC's `PGC_AST_CTL`
+/// availability table, the VTS audio attributes, and the player
+/// preference SPRMs.
+///
+/// Selection policy (each rule from the documented field semantics;
+/// the *ordering* is this engine's policy):
+///
+/// 1. SPRM 1 `15` sentinel ⇒ [`AudioSelection::NoAudio`].
+/// 2. SPRM 1 `0..=7` naming an available slot whose attributes the
+///    player can play (SPRM 15, [`audio_stream_playable`]) ⇒ that
+///    stream, `via_preference: false`.
+/// 3. Otherwise scan logical streams `0..=7` that are available and
+///    playable: first preference goes to a stream whose ISO-639
+///    attribute code matches SPRM 16 *and* whose code extension
+///    matches a non-zero SPRM 17; then a plain SPRM 16 language
+///    match; then the lowest available stream.
+///
+/// `attrs` is indexed by logical stream number (the VTS_MAT audio
+/// attribute list order); a missing entry is treated as playable so
+/// structurally sparse IFOs still resolve.
+pub fn select_audio_stream(
+    vm: &Vm,
+    ast_ctl: &[crate::ifo::AudioStreamControl; 8],
+    attrs: &[crate::ifo::AudioAttributes],
+) -> AudioSelection {
+    let caps = vm.regs.audio_capabilities();
+    let usable = |n: usize| -> bool {
+        // (map_or, not is_none_or: MSRV 1.80.)
+        ast_ctl[n].available
+            && attrs
+                .get(n)
+                .map_or(true, |a| audio_stream_playable(caps, a))
+    };
+    match vm.regs.audio_stream() {
+        crate::vm::AudioStreamSelector::None => return AudioSelection::NoAudio,
+        crate::vm::AudioStreamSelector::Stream(n) => {
+            if usable(usize::from(n)) {
+                return AudioSelection::Selected {
+                    logical: n,
+                    physical: ast_ctl[usize::from(n)].stream_number,
+                    via_preference: false,
+                };
+            }
+        }
+        crate::vm::AudioStreamSelector::Invalid(_) => {}
+    }
+    // Preference fallback over the available + playable set.
+    let pref_lang = vm.regs.preferred_audio_language();
+    let pref_ext = vm.regs.sprm(crate::vm::SPRM_PREF_AUDIO_LANG_EXT) as u8;
+    let lang_matches = |n: usize| -> bool {
+        pref_lang
+            .ascii_bytes()
+            .zip(attrs.get(n))
+            .is_some_and(|(code, a)| a.language_code == code)
+    };
+    let ext_matches = |n: usize| -> bool {
+        pref_ext != 0 && attrs.get(n).is_some_and(|a| a.code_extension == pref_ext)
+    };
+    let candidates: Vec<usize> = (0..8).filter(|&n| usable(n)).collect();
+    let pick = candidates
+        .iter()
+        .copied()
+        .find(|&n| lang_matches(n) && ext_matches(n))
+        .or_else(|| candidates.iter().copied().find(|&n| lang_matches(n)))
+        .or_else(|| candidates.first().copied());
+    match pick {
+        Some(n) => AudioSelection::Selected {
+            logical: n as u8,
+            physical: ast_ctl[n].stream_number,
+            via_preference: true,
+        },
+        None => AudioSelection::NoAudio,
+    }
+}
+
+/// Write an [`AudioSelection`] back into SPRM 1 so later `SetSystem`
+/// reads and resume snapshots observe the stream the engine actually
+/// picked (`15` for [`AudioSelection::NoAudio`], per the SPRM table's
+/// sentinel).
+pub fn note_audio_selection(vm: &mut Vm, sel: AudioSelection) {
+    let value = match sel {
+        AudioSelection::Selected { logical, .. } => u16::from(logical),
+        AudioSelection::NoAudio => 15,
+    };
+    vm.regs.set_sprm(crate::vm::SPRM_AUDIO_STREAM, value);
+}
+
+/// Map the player's SPRM 14 video preference / current mode onto the
+/// [`crate::ifo::SubpictureDisplay`] column a `PGC_SPST_CTL` entry is
+/// resolved with.
+///
+/// The pan&scan / letterbox current-mode codes name their columns
+/// directly. `Normal` picks between the `4:3` and `wide` columns by
+/// the preferred-aspect bits: `16:9` ⇒ wide, everything else
+/// (`4:3` / not-specified / reserved) ⇒ the 4:3 column, which is the
+/// only column a 4:3 title authors.
+pub fn subpicture_display_mode(pref: crate::vm::VideoPreference) -> crate::ifo::SubpictureDisplay {
+    use crate::ifo::SubpictureDisplay;
+    use crate::vm::{AspectRatio, DisplayMode};
+    match pref.mode {
+        DisplayMode::PanScan => SubpictureDisplay::PanScan,
+        DisplayMode::Letterbox => SubpictureDisplay::Letterbox,
+        DisplayMode::Normal | DisplayMode::Reserved => match pref.aspect {
+            AspectRatio::Ar16x9 => SubpictureDisplay::Wide,
+            _ => SubpictureDisplay::Ratio4x3,
+        },
+    }
+}
+
+/// A resolved sub-picture choice — see [`select_subpicture_stream`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubpictureSelection {
+    /// Route logical stream `logical` to physical sub-stream
+    /// `physical` (`0x20 | physical` on the wire).
+    Selected {
+        logical: u8,
+        physical: u8,
+        /// SPRM 2 bit 6 — `false` means decode but do not display
+        /// (except forced-display SPUs, which ignore the flag).
+        display: bool,
+        /// `true` when SPRM 2 carried the `63` "forced" sentinel —
+        /// only forced-display sub-picture units may be shown.
+        forced_only: bool,
+    },
+    /// No sub-picture stream is selected / available.
+    None,
+}
+
+/// Pick the sub-picture stream: combines SPRM 2 (`SPSTN` — stream
+/// bits, display bit 6, `62` none / `63` forced sentinels), the
+/// PGC's `PGC_SPST_CTL` table resolved through the SPRM 14 display
+/// mode ([`subpicture_display_mode`]), and — for the fallback — the
+/// SPRM 18 preferred sub-picture language over the VTS sub-picture
+/// attributes.
+///
+/// Policy mirror of [`select_audio_stream`]: an explicit SPRM 2
+/// stream that is available wins; the `62` sentinel selects nothing;
+/// the `63` sentinel and any dangling explicit stream fall back to
+/// the language preference (then the lowest available stream, but
+/// only when the disc *forces* a pick — for `63` — since an
+/// unspecified preference must not spontaneously enable subtitles).
+pub fn select_subpicture_stream(
+    vm: &Vm,
+    spst_ctl: &[crate::ifo::SubpictureStreamControl; 32],
+    attrs: &[crate::ifo::SubpictureAttributes],
+) -> SubpictureSelection {
+    let view = vm.regs.subpicture_stream();
+    let mode = subpicture_display_mode(vm.regs.video_preference());
+    if view.is_none_sentinel() {
+        return SubpictureSelection::None;
+    }
+    let forced_only = view.is_forced_sentinel();
+    if !forced_only {
+        let n = usize::from(view.stream);
+        if let Some(physical) = spst_ctl.get(n).and_then(|c| c.resolve(mode)) {
+            return SubpictureSelection::Selected {
+                logical: view.stream,
+                physical,
+                display: view.display,
+                forced_only: false,
+            };
+        }
+    }
+    // Fallback: SPRM 18 language preference over the available set.
+    let pref = vm.regs.preferred_subpicture_language();
+    let available: Vec<usize> = (0..32).filter(|&n| spst_ctl[n].available).collect();
+    let lang_pick = available.iter().copied().find(|&n| {
+        pref.ascii_bytes()
+            .zip(attrs.get(n))
+            .is_some_and(|(code, a)| a.language_code == code)
+    });
+    // Without a language hit, only the forced sentinel may force the
+    // lowest available stream into service.
+    let pick = lang_pick.or_else(|| {
+        if forced_only {
+            available.first().copied()
+        } else {
+            None
+        }
+    });
+    match pick.and_then(|n| spst_ctl[n].resolve(mode).map(|p| (n, p))) {
+        Some((n, physical)) => SubpictureSelection::Selected {
+            logical: n as u8,
+            physical,
+            display: view.display,
+            forced_only,
+        },
+        None => SubpictureSelection::None,
+    }
+}
+
+// =====================================================================
+// Karaoke downmix routing — SPRM 11 × the VTS multichannel extension.
+// =====================================================================
+
+/// What one karaoke source channel carries, unified across the
+/// per-channel flag names of the `McExtensionEntry` (channel 2
+/// carries guide melodies 1/2; channels 3/4 carry guide melody A/B
+/// plus sound effects A/B).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KaraokeChannelContent {
+    /// Guide vocal 1 present on this channel.
+    pub guide_vocal_1: bool,
+    /// Guide vocal 2 present on this channel.
+    pub guide_vocal_2: bool,
+    /// Primary guide melody (melody 1 on channel 2, melody A on
+    /// channel 3, melody B on channel 4).
+    pub guide_melody_primary: bool,
+    /// Secondary guide melody (melody 2 — channel 2 only).
+    pub guide_melody_secondary: bool,
+    /// Sound effect (effect A on channel 3, effect B on channel 4).
+    pub sound_effect: bool,
+}
+
+/// One row of the karaoke downmix plan: whether SPRM 11 currently
+/// mixes source channel [`channel`](Self::channel) into the front /
+/// rear destinations, and what content the title says lives there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KaraokeChannelRoute {
+    /// Source audio channel (`2..=4` — the only channels SPRM 11
+    /// allocates mix bits for).
+    pub channel: u8,
+    /// SPRM 11 bit `channel` — mix into the front destination.
+    pub to_front: bool,
+    /// SPRM 11 bit `channel + 8` — mix into the rear destination.
+    pub to_rear: bool,
+    /// Content flags from the stream's multichannel-extension entry.
+    pub content: KaraokeChannelContent,
+}
+
+/// Combine the SPRM 11 karaoke mixing mode with a stream's
+/// multichannel-extension entry into the three-channel routing plan a
+/// karaoke mixer executes: for each source channel 2 / 3 / 4, the
+/// current user mix destinations plus the authored content labels
+/// (guide vocals / melodies / effects). Channels 0 / 1 are the base
+/// stereo pair and are always presented; their optional guide-melody
+/// flags remain readable on the raw [`crate::ifo::McExtensionEntry`].
+pub fn karaoke_routing(
+    mix: crate::vm::AudioMixMode,
+    mc: &crate::ifo::McExtensionEntry,
+) -> [KaraokeChannelRoute; 3] {
+    [
+        KaraokeChannelRoute {
+            channel: 2,
+            to_front: mix.mix_2_to_front,
+            to_rear: mix.mix_2_to_rear,
+            content: KaraokeChannelContent {
+                guide_vocal_1: mc.ach2_guide_vocal_1,
+                guide_vocal_2: mc.ach2_guide_vocal_2,
+                guide_melody_primary: mc.ach2_guide_melody_1,
+                guide_melody_secondary: mc.ach2_guide_melody_2,
+                sound_effect: false,
+            },
+        },
+        KaraokeChannelRoute {
+            channel: 3,
+            to_front: mix.mix_3_to_front,
+            to_rear: mix.mix_3_to_rear,
+            content: KaraokeChannelContent {
+                guide_vocal_1: mc.ach3_guide_vocal_1,
+                guide_vocal_2: mc.ach3_guide_vocal_2,
+                guide_melody_primary: mc.ach3_guide_melody_a,
+                guide_melody_secondary: false,
+                sound_effect: mc.ach3_sound_effect_a,
+            },
+        },
+        KaraokeChannelRoute {
+            channel: 4,
+            to_front: mix.mix_4_to_front,
+            to_rear: mix.mix_4_to_rear,
+            content: KaraokeChannelContent {
+                guide_vocal_1: mc.ach4_guide_vocal_1,
+                guide_vocal_2: mc.ach4_guide_vocal_2,
+                guide_melody_primary: mc.ach4_guide_melody_b,
+                guide_melody_secondary: false,
+                sound_effect: mc.ach4_sound_effect_b,
+            },
+        },
+    ]
+}
+
 /// What [`PgcRunner::handle_list_action`] tells the state loop.
 #[derive(Debug)]
 enum ListVerdict {
@@ -2588,5 +2938,402 @@ mod tests {
         assert!(clock.advance_ms(1));
         assert!(!clock.is_holding());
         assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
+    }
+
+    // ---- Stream selection ------------------------------------------
+
+    use crate::ifo::{
+        AudioAttributes, AudioStreamControl, McExtensionEntry, SubpictureAttributes,
+        SubpictureDisplay, SubpictureStreamControl,
+    };
+    use crate::vm::{
+        SPRM_AUDIO_CAPS, SPRM_AUDIO_STREAM, SPRM_PREF_AUDIO_LANG, SPRM_PREF_AUDIO_LANG_EXT,
+        SPRM_PREF_SUBP_LANG, SPRM_SUBPICTURE_STREAM, SPRM_VIDEO_PREF,
+    };
+
+    /// Build an 8-byte audio-attribute field: coding mode, application
+    /// mode, ISO-639 language, code extension.
+    fn audio_attrs(coding: u8, app: u8, lang: [u8; 2], ext: u8) -> AudioAttributes {
+        let lang_type = if lang == [0, 0] { 0u8 } else { 1 };
+        AudioAttributes::parse(&[
+            (coding << 5) | (lang_type << 2) | app,
+            0b0000_0001, // 48 kHz, stereo
+            lang[0],
+            lang[1],
+            0,
+            ext,
+            0,
+            0,
+        ])
+    }
+
+    fn ast_ctl_with(entries: &[(usize, u8)]) -> [AudioStreamControl; 8] {
+        let mut ctl = [AudioStreamControl {
+            available: false,
+            stream_number: 0,
+        }; 8];
+        for &(i, phys) in entries {
+            ctl[i] = AudioStreamControl {
+                available: true,
+                stream_number: phys,
+            };
+        }
+        ctl
+    }
+
+    /// All-capabilities player (every SPRM 15 bit that matters set).
+    fn all_caps_vm() -> Vm {
+        let mut vm = Vm::new();
+        vm.regs.set_sprm(SPRM_AUDIO_CAPS, 0b0100_1100_1101_1100);
+        vm
+    }
+
+    #[test]
+    fn audio_playable_per_codec_and_karaoke_bit() {
+        let caps = |raw: u16| crate::vm::AudioCapabilities {
+            sdds_karaoke: (raw >> 2) & 1 == 1,
+            dts_karaoke: (raw >> 3) & 1 == 1,
+            mpeg_karaoke: (raw >> 4) & 1 == 1,
+            dolby_karaoke: (raw >> 6) & 1 == 1,
+            pcm_karaoke: (raw >> 7) & 1 == 1,
+            sdds: (raw >> 10) & 1 == 1,
+            dts: (raw >> 11) & 1 == 1,
+            mpeg: (raw >> 12) & 1 == 1,
+            dolby: (raw >> 14) & 1 == 1,
+            raw,
+        };
+        // AC-3 normal ↔ bit 14; AC-3 karaoke ↔ bit 6.
+        let ac3 = audio_attrs(0, 0, *b"en", 0);
+        let ac3_kar = audio_attrs(0, 1, *b"en", 0);
+        assert!(audio_stream_playable(caps(1 << 14), &ac3));
+        assert!(!audio_stream_playable(caps(1 << 6), &ac3));
+        assert!(audio_stream_playable(caps(1 << 6), &ac3_kar));
+        assert!(!audio_stream_playable(caps(1 << 14), &ac3_kar));
+        // DTS ↔ bit 11 / bit 3; MPEG ↔ bit 12 / bit 4.
+        assert!(audio_stream_playable(
+            caps(1 << 11),
+            &audio_attrs(6, 0, *b"en", 0)
+        ));
+        assert!(audio_stream_playable(
+            caps(1 << 3),
+            &audio_attrs(6, 1, *b"en", 0)
+        ));
+        assert!(audio_stream_playable(
+            caps(1 << 12),
+            &audio_attrs(2, 0, *b"en", 0)
+        ));
+        assert!(audio_stream_playable(
+            caps(1 << 4),
+            &audio_attrs(3, 1, *b"en", 0)
+        ));
+        // LPCM: always playable unless karaoke without bit 7.
+        assert!(audio_stream_playable(
+            caps(0),
+            &audio_attrs(4, 0, *b"en", 0)
+        ));
+        assert!(!audio_stream_playable(
+            caps(0),
+            &audio_attrs(4, 1, *b"en", 0)
+        ));
+        assert!(audio_stream_playable(
+            caps(1 << 7),
+            &audio_attrs(4, 1, *b"en", 0)
+        ));
+        // Reserved coding mode: never playable.
+        assert!(!audio_stream_playable(
+            caps(u16::MAX),
+            &audio_attrs(1, 0, *b"en", 0)
+        ));
+    }
+
+    #[test]
+    fn select_audio_prefers_explicit_sprm1() {
+        let mut vm = all_caps_vm();
+        vm.regs.set_sprm(SPRM_AUDIO_STREAM, 2);
+        let ctl = ast_ctl_with(&[(0, 0), (2, 5)]);
+        let attrs = vec![audio_attrs(0, 0, *b"en", 0); 3];
+        assert_eq!(
+            select_audio_stream(&vm, &ctl, &attrs),
+            AudioSelection::Selected {
+                logical: 2,
+                physical: 5,
+                via_preference: false,
+            }
+        );
+    }
+
+    #[test]
+    fn select_audio_none_sentinel_short_circuits() {
+        let mut vm = all_caps_vm();
+        vm.regs.set_sprm(SPRM_AUDIO_STREAM, 15);
+        let ctl = ast_ctl_with(&[(0, 0)]);
+        assert_eq!(
+            select_audio_stream(&vm, &ctl, &[audio_attrs(0, 0, *b"en", 0)]),
+            AudioSelection::NoAudio
+        );
+    }
+
+    #[test]
+    fn select_audio_falls_back_to_language_preference() {
+        // SPRM 1 names stream 5, which the PGC does not carry;
+        // streams 0 (en) and 1 (ja) are available; SPRM 16 = "ja".
+        let mut vm = all_caps_vm();
+        vm.regs.set_sprm(SPRM_AUDIO_STREAM, 5);
+        vm.regs
+            .set_sprm(SPRM_PREF_AUDIO_LANG, u16::from_be_bytes(*b"ja"));
+        let ctl = ast_ctl_with(&[(0, 0), (1, 1)]);
+        let attrs = vec![audio_attrs(0, 0, *b"en", 0), audio_attrs(0, 0, *b"ja", 0)];
+        assert_eq!(
+            select_audio_stream(&vm, &ctl, &attrs),
+            AudioSelection::Selected {
+                logical: 1,
+                physical: 1,
+                via_preference: true,
+            }
+        );
+    }
+
+    #[test]
+    fn select_audio_language_extension_tiebreak() {
+        // Two "en" streams; SPRM 17 = 3 (director comments) matches
+        // stream 1's code extension.
+        let mut vm = all_caps_vm();
+        vm.regs.set_sprm(SPRM_AUDIO_STREAM, 7); // dangling
+        vm.regs
+            .set_sprm(SPRM_PREF_AUDIO_LANG, u16::from_be_bytes(*b"en"));
+        vm.regs.set_sprm(SPRM_PREF_AUDIO_LANG_EXT, 3);
+        let ctl = ast_ctl_with(&[(0, 0), (1, 1)]);
+        let attrs = vec![audio_attrs(0, 0, *b"en", 1), audio_attrs(0, 0, *b"en", 3)];
+        assert_eq!(
+            select_audio_stream(&vm, &ctl, &attrs),
+            AudioSelection::Selected {
+                logical: 1,
+                physical: 1,
+                via_preference: true,
+            }
+        );
+    }
+
+    #[test]
+    fn select_audio_skips_unplayable_codec() {
+        // Stream 0 is DTS but the player has no DTS bit; stream 1 is
+        // AC-3 and playable — the fallback lands on 1 even though 0
+        // is lower.
+        let mut vm = Vm::new();
+        vm.regs.set_sprm(SPRM_AUDIO_CAPS, 1 << 14); // Dolby only
+        vm.regs.set_sprm(SPRM_AUDIO_STREAM, 0);
+        let ctl = ast_ctl_with(&[(0, 0), (1, 1)]);
+        let attrs = vec![audio_attrs(6, 0, *b"en", 0), audio_attrs(0, 0, *b"en", 0)];
+        assert_eq!(
+            select_audio_stream(&vm, &ctl, &attrs),
+            AudioSelection::Selected {
+                logical: 1,
+                physical: 1,
+                via_preference: true,
+            }
+        );
+        // No playable stream at all → NoAudio.
+        let dts_only = vec![audio_attrs(6, 0, *b"en", 0), audio_attrs(6, 0, *b"en", 0)];
+        assert_eq!(
+            select_audio_stream(&vm, &ctl, &dts_only),
+            AudioSelection::NoAudio
+        );
+    }
+
+    #[test]
+    fn note_audio_selection_writes_sprm1() {
+        let mut vm = Vm::new();
+        note_audio_selection(
+            &mut vm,
+            AudioSelection::Selected {
+                logical: 3,
+                physical: 7,
+                via_preference: true,
+            },
+        );
+        assert_eq!(vm.regs.sprm(SPRM_AUDIO_STREAM), 3);
+        note_audio_selection(&mut vm, AudioSelection::NoAudio);
+        assert_eq!(vm.regs.sprm(SPRM_AUDIO_STREAM), 15);
+    }
+
+    #[test]
+    fn subpicture_display_mode_mapping() {
+        let pref = |aspect: u16, mode: u16| {
+            let mut vm = Vm::new();
+            vm.regs
+                .set_sprm(SPRM_VIDEO_PREF, (aspect << 10) | (mode << 8));
+            vm.regs.video_preference()
+        };
+        // Pan&scan / letterbox modes name their columns directly.
+        assert_eq!(
+            subpicture_display_mode(pref(3, 1)),
+            SubpictureDisplay::PanScan
+        );
+        assert_eq!(
+            subpicture_display_mode(pref(0, 2)),
+            SubpictureDisplay::Letterbox
+        );
+        // Normal: 16:9 ⇒ wide, 4:3 / not-specified ⇒ 4:3 column.
+        assert_eq!(subpicture_display_mode(pref(3, 0)), SubpictureDisplay::Wide);
+        assert_eq!(
+            subpicture_display_mode(pref(0, 0)),
+            SubpictureDisplay::Ratio4x3
+        );
+        assert_eq!(
+            subpicture_display_mode(pref(1, 0)),
+            SubpictureDisplay::Ratio4x3
+        );
+    }
+
+    fn spst_ctl_with(entries: &[(usize, [u8; 4])]) -> [SubpictureStreamControl; 32] {
+        let mut ctl = [SubpictureStreamControl {
+            available: false,
+            stream_4x3: 0,
+            stream_wide: 0,
+            stream_letterbox: 0,
+            stream_pan_scan: 0,
+        }; 32];
+        for &(i, [s43, sw, slb, sps]) in entries {
+            ctl[i] = SubpictureStreamControl {
+                available: true,
+                stream_4x3: s43,
+                stream_wide: sw,
+                stream_letterbox: slb,
+                stream_pan_scan: sps,
+            };
+        }
+        ctl
+    }
+
+    fn subp_attrs(lang: [u8; 2]) -> SubpictureAttributes {
+        SubpictureAttributes::parse(&[0b0000_0001, 0, lang[0], lang[1], 0, 0])
+    }
+
+    #[test]
+    fn select_subpicture_explicit_stream_resolves_display_column() {
+        let mut vm = Vm::new();
+        // Stream 1, display on; 16:9 wide output.
+        vm.regs.set_sprm(SPRM_SUBPICTURE_STREAM, (1 << 6) | 1);
+        vm.regs.set_sprm(SPRM_VIDEO_PREF, 3 << 10);
+        let ctl = spst_ctl_with(&[(1, [4, 5, 6, 7])]);
+        assert_eq!(
+            select_subpicture_stream(&vm, &ctl, &[]),
+            SubpictureSelection::Selected {
+                logical: 1,
+                physical: 5, // the wide column
+                display: true,
+                forced_only: false,
+            }
+        );
+        // Same slot on a letterboxed output routes column 6.
+        vm.regs.set_sprm(SPRM_VIDEO_PREF, 2 << 8);
+        assert_eq!(
+            select_subpicture_stream(&vm, &ctl, &[]),
+            SubpictureSelection::Selected {
+                logical: 1,
+                physical: 6,
+                display: true,
+                forced_only: false,
+            }
+        );
+    }
+
+    #[test]
+    fn select_subpicture_none_sentinel() {
+        let mut vm = Vm::new();
+        vm.regs.set_sprm(SPRM_SUBPICTURE_STREAM, 62);
+        let ctl = spst_ctl_with(&[(0, [0, 0, 0, 0])]);
+        assert_eq!(
+            select_subpicture_stream(&vm, &ctl, &[]),
+            SubpictureSelection::None
+        );
+    }
+
+    #[test]
+    fn select_subpicture_forced_sentinel_falls_back() {
+        // SPRM 2 = 63 (forced): language preference picks stream 1
+        // ("ja"); without a match the lowest available serves.
+        let mut vm = Vm::new();
+        vm.regs.set_sprm(SPRM_SUBPICTURE_STREAM, 63);
+        vm.regs
+            .set_sprm(SPRM_PREF_SUBP_LANG, u16::from_be_bytes(*b"ja"));
+        let ctl = spst_ctl_with(&[(0, [2, 2, 2, 2]), (1, [9, 9, 9, 9])]);
+        let attrs = vec![subp_attrs(*b"en"), subp_attrs(*b"ja")];
+        assert_eq!(
+            select_subpicture_stream(&vm, &ctl, &attrs),
+            SubpictureSelection::Selected {
+                logical: 1,
+                physical: 9,
+                display: false,
+                forced_only: true,
+            }
+        );
+        // No language hit → lowest available, still forced-only.
+        vm.regs.set_sprm(SPRM_PREF_SUBP_LANG, 0xFFFF);
+        assert_eq!(
+            select_subpicture_stream(&vm, &ctl, &attrs),
+            SubpictureSelection::Selected {
+                logical: 0,
+                physical: 2,
+                display: false,
+                forced_only: true,
+            }
+        );
+    }
+
+    #[test]
+    fn select_subpicture_dangling_stream_needs_language_match() {
+        // SPRM 2 names stream 9 (not authored). With no language
+        // preference match the engine must NOT spontaneously enable a
+        // subtitle stream.
+        let mut vm = Vm::new();
+        vm.regs.set_sprm(SPRM_SUBPICTURE_STREAM, (1 << 6) | 9);
+        let ctl = spst_ctl_with(&[(0, [2, 2, 2, 2])]);
+        let attrs = vec![subp_attrs(*b"en")];
+        assert_eq!(
+            select_subpicture_stream(&vm, &ctl, &attrs),
+            SubpictureSelection::None
+        );
+        // A language match rescues it.
+        vm.regs
+            .set_sprm(SPRM_PREF_SUBP_LANG, u16::from_be_bytes(*b"en"));
+        assert_eq!(
+            select_subpicture_stream(&vm, &ctl, &attrs),
+            SubpictureSelection::Selected {
+                logical: 0,
+                physical: 2,
+                display: true,
+                forced_only: false,
+            }
+        );
+    }
+
+    // ---- Karaoke routing -------------------------------------------
+
+    #[test]
+    fn karaoke_routing_combines_amxmd_and_mc_entry() {
+        let mut vm = Vm::new();
+        // Mix ch2 → front, ch3 → rear, ch4 → both.
+        vm.regs.set_sprm(
+            crate::vm::SPRM_AMXMD,
+            (1 << 2) | (1 << 11) | (1 << 4) | (1 << 12),
+        );
+        // MC entry: ch2 carries guide vocal 1 + melody 2; ch3 carries
+        // sound effect A; ch4 carries guide melody B.
+        let mc = McExtensionEntry::parse(&[0, 0, 0b0000_1001, 0b0000_0001, 0b0000_0010, 0, 0, 0]);
+        let routes = karaoke_routing(vm.regs.audio_mix_mode(), &mc);
+        assert_eq!(routes[0].channel, 2);
+        assert!(routes[0].to_front && !routes[0].to_rear);
+        assert!(routes[0].content.guide_vocal_1);
+        assert!(routes[0].content.guide_melody_secondary);
+        assert!(!routes[0].content.sound_effect);
+        assert_eq!(routes[1].channel, 3);
+        assert!(!routes[1].to_front && routes[1].to_rear);
+        assert!(routes[1].content.sound_effect);
+        assert!(!routes[1].content.guide_vocal_1);
+        assert_eq!(routes[2].channel, 4);
+        assert!(routes[2].to_front && routes[2].to_rear);
+        assert!(routes[2].content.guide_melody_primary);
+        assert!(!routes[2].content.guide_melody_secondary);
     }
 }
