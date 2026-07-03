@@ -24,7 +24,7 @@
 //!   instruction index naming the 13 `Link*` destinations.
 
 use crate::nav::{CallSSTarget, JumpSSTarget};
-use crate::vm::{LinkAction, VmAction};
+use crate::vm::{LinkAction, Vm, VmAction};
 
 // =====================================================================
 // Domain — where playback currently is.
@@ -370,6 +370,369 @@ pub fn resolve_link(
             }
         }
     }
+}
+
+// =====================================================================
+// PgcRunner — one PGC's playback state machine.
+// =====================================================================
+
+/// One player-visible step of a PGC's playback.
+///
+/// [`PgcRunner::next_event`] drives the spec's per-PGC flow — pre
+/// commands → cells (each optionally followed by its cell command) →
+/// post commands — and emits one of these each time something the
+/// playback engine must act on happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackEvent {
+    /// Present cell `cell` (1-based, already angle-resolved): demux
+    /// the VOB-relative sector span `first_sector ..= last_sector`
+    /// (the C_PBI `first VOBU start sector` / `last VOBU end sector`
+    /// words) and honour the cell's still time afterwards.
+    PlayCell {
+        cell: u8,
+        /// 1-based program the cell belongs to.
+        program: u8,
+        first_sector: u32,
+        last_sector: u32,
+        still: crate::ifo::StillTime,
+    },
+    /// All cells are done and the PGC header's still-time byte
+    /// (offset `0x00A2`) is non-zero — freeze the final frame for
+    /// the given duration before the post commands run.
+    PgcStill { still: crate::ifo::StillTime },
+    /// A `SetNVTMR` executed — arm a wall-clock timer that fires a
+    /// `LinkPGCN(pgcn)` after `seconds`. The command list resumes on
+    /// the next [`PgcRunner::next_event`] call.
+    NavTimer { seconds: u16, pgcn: u16 },
+    /// Control transfers to PGC `pgcn` of the **same domain** (a
+    /// `LinkPGCN` / `LinkTopPGC` / next-PGCN chain / …). The engine
+    /// builds a fresh [`PgcRunner`] for it.
+    NextPgc { pgcn: u16 },
+    /// Control transfers to chapter `pttn` of the current title
+    /// (`LinkPTTN`) — resolve via `VtsPttSrpt::ptt`.
+    Chapter { pttn: u16 },
+    /// A cross-domain transfer (Jump / Call / Resume / Exit)
+    /// surfaced out of a command list — the disc-level engine owns
+    /// these (check it with [`transition_permitted`] first).
+    Transfer(VmAction),
+    /// The PGC ran to completion with no follow-on PGC (post
+    /// commands fell off the end and the header's next-PGCN word is
+    /// zero). Repeated calls keep returning this.
+    Finished,
+}
+
+/// Where the runner currently is inside the PGC flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerState {
+    /// Executing the pre-command list from index `pc`.
+    Pre { pc: usize },
+    /// About to present cell `cell`.
+    PlayCell { cell: u8 },
+    /// Cell `cell` has been presented; run its cell command (unless
+    /// already done) and advance.
+    AfterCell { cell: u8, command_done: bool },
+    /// Executing the post-command list from index `pc`.
+    Post { pc: usize },
+    /// Terminal.
+    Finished,
+}
+
+/// Drives one PGC through its spec-ordered playback flow against a
+/// caller-owned [`Vm`].
+///
+/// The runner owns *intra-PGC* sequencing only: pre commands, the
+/// angle-aware cell walk (camera angle = SPRM 3 at each step), cell
+/// commands, the PGC still time, post commands, and the next-PGCN
+/// chain. Everything that leaves the PGC — other PGCs, chapters,
+/// cross-domain jumps — is surfaced as a [`PlaybackEvent`] for the
+/// disc-level engine, so the runner never needs disc I/O.
+///
+/// Highlight-button overrides carried by Link forms (`hl_bn`) are
+/// applied to SPRM 8 (button number in bits 15..10 per
+/// `mpucoder-sprm.html`) before the transfer resolves.
+#[derive(Debug)]
+pub struct PgcRunner<'a> {
+    pgc: &'a crate::ifo::Pgc,
+    /// 1-based PGCN of `pgc` within its domain's table.
+    pgcn: u16,
+    state: RunnerState,
+}
+
+impl<'a> PgcRunner<'a> {
+    /// Start a runner at the top of `pgc` (its pre-command list).
+    /// `pgcn` is the 1-based number of `pgc` within its domain's PGC
+    /// table (used to resolve `LinkTopPGC` back to itself).
+    pub fn new(pgc: &'a crate::ifo::Pgc, pgcn: u16) -> Self {
+        Self {
+            pgc,
+            pgcn,
+            state: RunnerState::Pre { pc: 0 },
+        }
+    }
+
+    /// Start a runner directly at cell `cell` (1-based), skipping the
+    /// pre-command list — the entry shape for a chapter jump
+    /// (`JumpVTS_PTT` lands on a program's entry cell, not on the
+    /// PGC's pre commands) or a `LinkCN` re-entry.
+    pub fn new_at_cell(pgc: &'a crate::ifo::Pgc, pgcn: u16, cell: u8) -> Self {
+        Self {
+            pgc,
+            pgcn,
+            state: if cell >= 1 && cell <= pgc.number_of_cells {
+                RunnerState::PlayCell { cell }
+            } else {
+                RunnerState::Post { pc: 0 }
+            },
+        }
+    }
+
+    /// The current camera angle per SPRM 3, defaulting to 1 when the
+    /// register holds an out-of-range value.
+    fn angle(vm: &Vm) -> u8 {
+        vm.regs.angle_number().unwrap_or(1)
+    }
+
+    /// Apply a Link's highlight-button override to SPRM 8 (button
+    /// number lives in bits 15..10).
+    fn apply_hl_btn(vm: &mut Vm, link: &LinkAction) {
+        if let Some(btn) = link_highlight_button(link) {
+            vm.regs
+                .set_sprm(crate::vm::SPRM_HL_BTNN, u16::from(btn) << 10);
+        }
+    }
+
+    /// The position a Link inside the current state resolves against.
+    fn position(&self, cell: u8) -> PgcPosition {
+        PgcPosition {
+            pgcn: self.pgcn,
+            program: self.pgc.program_containing_cell(cell).unwrap_or(1),
+            cell,
+        }
+    }
+
+    /// Advance the PGC flow until something player-visible happens.
+    ///
+    /// Each call returns exactly one [`PlaybackEvent`]. The caller
+    /// keeps calling until it sees a transfer-class event
+    /// ([`PlaybackEvent::NextPgc`] / [`PlaybackEvent::Chapter`] /
+    /// [`PlaybackEvent::Transfer`]) or [`PlaybackEvent::Finished`].
+    pub fn next_event(&mut self, vm: &mut Vm) -> PlaybackEvent {
+        loop {
+            match self.state {
+                RunnerState::Pre { pc } => {
+                    let list: &[crate::ifo::NavCommand] = self
+                        .pgc
+                        .commands
+                        .as_ref()
+                        .map(|c| c.pre.as_slice())
+                        .unwrap_or(&[]);
+                    let (action, npc) = vm.run_list_from(list, pc);
+                    match self.handle_list_action(vm, action, npc, /*current_cell=*/ 1) {
+                        ListVerdict::EnterCells => self.enter_cells(vm),
+                        ListVerdict::Emit(ev) => return ev,
+                        ListVerdict::Moved => {}
+                    }
+                }
+                RunnerState::PlayCell { cell } => {
+                    let Some(info) = usize::from(cell)
+                        .checked_sub(1)
+                        .and_then(|i| self.pgc.cells.get(i))
+                    else {
+                        // Malformed cell index — fall through to post.
+                        self.state = RunnerState::Post { pc: 0 };
+                        continue;
+                    };
+                    self.state = RunnerState::AfterCell {
+                        cell,
+                        command_done: false,
+                    };
+                    return PlaybackEvent::PlayCell {
+                        cell,
+                        program: self.pgc.program_containing_cell(cell).unwrap_or(1),
+                        first_sector: info.first_vobu_start_sector,
+                        last_sector: info.last_vobu_end_sector,
+                        still: info.still(),
+                    };
+                }
+                RunnerState::AfterCell { cell, command_done } => {
+                    if !command_done {
+                        self.state = RunnerState::AfterCell {
+                            cell,
+                            command_done: true,
+                        };
+                        // Run the cell command, if the cell names one.
+                        let cmd_index = self
+                            .pgc
+                            .cells
+                            .get(usize::from(cell) - 1)
+                            .map(|c| u16::from(c.cell_command))
+                            .unwrap_or(0);
+                        if cmd_index != 0 {
+                            if let Some(ins) = self
+                                .pgc
+                                .commands
+                                .as_ref()
+                                .and_then(|c| c.cell_instruction(cmd_index))
+                            {
+                                let action = vm.step(ins);
+                                match self.handle_list_action(vm, action, 0, cell) {
+                                    // A cell command has no list to
+                                    // fall back into: "ran clean"
+                                    // just means "advance to the
+                                    // next cell".
+                                    ListVerdict::EnterCells => {}
+                                    ListVerdict::Emit(ev) => return ev,
+                                    ListVerdict::Moved => {}
+                                }
+                                continue;
+                            }
+                        }
+                        continue;
+                    }
+                    // Advance the angle-aware cell walk.
+                    match self.pgc.next_cell(cell, Self::angle(vm)) {
+                        Some(next) => self.state = RunnerState::PlayCell { cell: next },
+                        None => {
+                            self.state = RunnerState::Post { pc: 0 };
+                            let still = self.pgc.still();
+                            if still != crate::ifo::StillTime::None {
+                                return PlaybackEvent::PgcStill { still };
+                            }
+                        }
+                    }
+                }
+                RunnerState::Post { pc } => {
+                    let list: &[crate::ifo::NavCommand] = self
+                        .pgc
+                        .commands
+                        .as_ref()
+                        .map(|c| c.post.as_slice())
+                        .unwrap_or(&[]);
+                    let (action, npc) = vm.run_list_from(list, pc);
+                    match self.handle_list_action(vm, action, npc, self.pgc.number_of_cells.max(1))
+                    {
+                        ListVerdict::EnterCells => {
+                            // Post list ran clean (or Break): follow
+                            // the header's next-PGCN chain.
+                            self.state = RunnerState::Finished;
+                            match self.pgc.next_pgcn {
+                                0 => return PlaybackEvent::Finished,
+                                pgcn => return PlaybackEvent::NextPgc { pgcn },
+                            }
+                        }
+                        ListVerdict::Emit(ev) => return ev,
+                        ListVerdict::Moved => {}
+                    }
+                }
+                RunnerState::Finished => return PlaybackEvent::Finished,
+            }
+        }
+    }
+
+    /// Enter the cell phase from the top (after pre commands).
+    fn enter_cells(&mut self, vm: &Vm) {
+        match self.pgc.first_cell(Self::angle(vm)) {
+            Some(cell) => self.state = RunnerState::PlayCell { cell },
+            None => self.state = RunnerState::Post { pc: 0 },
+        }
+    }
+
+    /// Common handling for a [`VmAction`] surfaced by a command list
+    /// (or a lone cell command). `npc` is the PC the list stopped at;
+    /// `current_cell` anchors Link resolution.
+    fn handle_list_action(
+        &mut self,
+        vm: &mut Vm,
+        action: VmAction,
+        npc: usize,
+        current_cell: u8,
+    ) -> ListVerdict {
+        match action {
+            // Ran off the end of the list, or Break = "exit the
+            // pre / post command section" (mpucoder-vmi-sum.html).
+            VmAction::Continue | VmAction::Break => ListVerdict::EnterCells,
+            VmAction::SetNavTimer { seconds, pgcn } => {
+                // Informational: surface it, then resume the list
+                // after the SetNVTMR word.
+                self.note_resume(npc.saturating_add(1));
+                ListVerdict::Emit(PlaybackEvent::NavTimer { seconds, pgcn })
+            }
+            VmAction::Link(link) => {
+                Self::apply_hl_btn(vm, &link);
+                let pos = self.position(current_cell);
+                match resolve_link(self.pgc, pos, &link, Self::angle(vm)) {
+                    LinkOutcome::Continue | LinkOutcome::NoDestination => {
+                        // No transfer (LinkNoLink) — or a link into an
+                        // unauthored destination, which we skip over
+                        // rather than halt on. Resume after the word.
+                        self.note_resume(npc.saturating_add(1));
+                        ListVerdict::Moved
+                    }
+                    LinkOutcome::PlayCell { cell } => {
+                        self.state = RunnerState::PlayCell { cell };
+                        ListVerdict::Moved
+                    }
+                    LinkOutcome::PostCommands => {
+                        self.state = RunnerState::Post { pc: 0 };
+                        ListVerdict::Moved
+                    }
+                    LinkOutcome::OtherPgc { pgcn } => {
+                        self.state = RunnerState::Finished;
+                        ListVerdict::Emit(PlaybackEvent::NextPgc { pgcn })
+                    }
+                    LinkOutcome::Chapter { pttn } => {
+                        self.state = RunnerState::Finished;
+                        ListVerdict::Emit(PlaybackEvent::Chapter { pttn })
+                    }
+                    LinkOutcome::Resume => {
+                        // Unreachable through Vm::step (which pops the
+                        // RSM stack itself), but map it faithfully.
+                        self.state = RunnerState::Finished;
+                        ListVerdict::Emit(PlaybackEvent::Transfer(action))
+                    }
+                }
+            }
+            // Cross-domain transfers + Exit + RSM end this runner.
+            VmAction::Exit
+            | VmAction::JumpTitle { .. }
+            | VmAction::JumpVtsTitle { .. }
+            | VmAction::JumpVtsPtt { .. }
+            | VmAction::JumpSs(_)
+            | VmAction::CallSs(_)
+            | VmAction::Resume(_) => {
+                self.state = RunnerState::Finished;
+                ListVerdict::Emit(PlaybackEvent::Transfer(action))
+            }
+            // Structurally unknown word — skip it and resume.
+            VmAction::NoOpRaw(_) => {
+                self.note_resume(npc.saturating_add(1));
+                ListVerdict::Moved
+            }
+        }
+    }
+
+    /// If we're inside a command list, arrange to resume it at `pc`.
+    /// (A lone cell command has nowhere to resume into — the caller
+    /// advances the cell walk instead.)
+    fn note_resume(&mut self, pc: usize) {
+        match self.state {
+            RunnerState::Pre { .. } => self.state = RunnerState::Pre { pc },
+            RunnerState::Post { .. } => self.state = RunnerState::Post { pc },
+            _ => {}
+        }
+    }
+}
+
+/// What [`PgcRunner::handle_list_action`] tells the state loop.
+#[derive(Debug)]
+enum ListVerdict {
+    /// The list completed — proceed to the next phase (cells after
+    /// pre, next-PGCN chain after post).
+    EnterCells,
+    /// Return this event to the caller.
+    Emit(PlaybackEvent),
+    /// `self.state` was already updated — loop.
+    Moved,
 }
 
 #[cfg(test)]
@@ -987,6 +1350,252 @@ mod tests {
             resolve_link(&pgc, pos, &LinkAction::Cn { cn: 0, hl_bn: 0 }, 1),
             LinkOutcome::NoDestination
         );
+    }
+
+    // ---- PgcRunner -----------------------------------------------------
+
+    use crate::ifo::{NavCommand as NC, PgcCommandTable, StillTime};
+    use crate::vm::Vm;
+
+    fn nc(bytes: [u8; 8]) -> NC {
+        NC { bytes }
+    }
+
+    fn with_commands(mut pgc: Pgc, pre: Vec<NC>, post: Vec<NC>, cell: Vec<NC>) -> Pgc {
+        pgc.commands = Some(PgcCommandTable {
+            pre,
+            post,
+            cell,
+            end_address: 0,
+        });
+        pgc
+    }
+
+    /// Plain n-cell PGC (no angle blocks, one program, no commands).
+    fn plain_pgc(cells: u8) -> Pgc {
+        let mut pgc = Pgc::parse(&[0u8; 0xEC]).unwrap();
+        pgc.number_of_programs = 1;
+        pgc.number_of_cells = cells;
+        pgc.program_map = vec![1];
+        pgc.cells = (0..cells).map(|_| test_cell(0x00)).collect();
+        for (i, c) in pgc.cells.iter_mut().enumerate() {
+            c.first_vobu_start_sector = (i as u32 + 1) * 100;
+            c.last_vobu_end_sector = (i as u32 + 1) * 100 + 99;
+        }
+        pgc
+    }
+
+    #[test]
+    fn runner_plays_cells_then_follows_next_pgcn() {
+        let mut pgc = plain_pgc(2);
+        pgc.next_pgcn = 5;
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        assert_eq!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell {
+                cell: 1,
+                program: 1,
+                first_sector: 100,
+                last_sector: 199,
+                still: StillTime::None,
+            }
+        );
+        assert_eq!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell {
+                cell: 2,
+                program: 1,
+                first_sector: 200,
+                last_sector: 299,
+                still: StillTime::None,
+            }
+        );
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::NextPgc { pgcn: 5 });
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
+    }
+
+    #[test]
+    fn runner_empty_pgc_finishes() {
+        let pgc = Pgc::parse(&[0u8; 0xEC]).unwrap();
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
+    }
+
+    #[test]
+    fn runner_pre_jump_tt_transfers() {
+        // pre = [JumpTT 3] — the disc-insertion FP_PGC shape.
+        let pgc = with_commands(
+            plain_pgc(1),
+            vec![nc([0x30, 0x02, 0, 0, 0, 3, 0, 0])],
+            vec![],
+            vec![],
+        );
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        assert_eq!(
+            r.next_event(&mut vm),
+            PlaybackEvent::Transfer(VmAction::JumpTitle { ttn: 3 })
+        );
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
+    }
+
+    #[test]
+    fn runner_pre_break_enters_cells() {
+        // pre = [Break, JumpTT 9] — the jump must never run.
+        let pgc = with_commands(
+            plain_pgc(1),
+            vec![
+                nc([0x00, 0x02, 0, 0, 0, 0, 0, 0]),
+                nc([0x30, 0x02, 0, 0, 0, 9, 0, 0]),
+            ],
+            vec![],
+            vec![],
+        );
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        assert!(matches!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell { cell: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn runner_cell_command_links_to_other_pgc() {
+        // Cell 2 carries cell command #1 = LinkPGCN 9.
+        let mut pgc = plain_pgc(2);
+        pgc.cells[1].cell_command = 1;
+        let pgc = with_commands(
+            pgc,
+            vec![],
+            vec![],
+            vec![nc([0x20, 0x04, 0, 0, 0, 0, 0, 9])],
+        );
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        assert!(matches!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell { cell: 1, .. }
+        ));
+        assert!(matches!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell { cell: 2, .. }
+        ));
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::NextPgc { pgcn: 9 });
+    }
+
+    #[test]
+    fn runner_pgc_still_event_before_post() {
+        let mut pgc = plain_pgc(1);
+        pgc.still_time = 10;
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        assert!(matches!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell { cell: 1, .. }
+        ));
+        assert_eq!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PgcStill {
+                still: StillTime::Seconds(10)
+            }
+        );
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
+    }
+
+    #[test]
+    fn runner_nav_timer_resumes_pre_list() {
+        // pre = [SetNVTMR 30s → PGC 2 (immediate form), Break].
+        let pgc = with_commands(
+            plain_pgc(1),
+            vec![
+                nc([0x52, 0, 0x00, 0x1E, 0x00, 0x02, 0, 0]),
+                nc([0x00, 0x02, 0, 0, 0, 0, 0, 0]),
+            ],
+            vec![],
+            vec![],
+        );
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        assert_eq!(
+            r.next_event(&mut vm),
+            PlaybackEvent::NavTimer {
+                seconds: 30,
+                pgcn: 2
+            }
+        );
+        // The list resumes after the SetNVTMR word: Break → cells.
+        assert!(matches!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell { cell: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn runner_post_link_applies_highlight_button() {
+        // post = [LinkNextPGC, button=4]; next PGCN = 7.
+        let mut pgc = plain_pgc(1);
+        pgc.next_pgcn = 7;
+        let pgc = with_commands(
+            pgc,
+            vec![],
+            vec![nc([0x20, 0x01, 0, 0, 0, 0, 0x04, 0x0A])],
+            vec![],
+        );
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        assert!(matches!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell { cell: 1, .. }
+        ));
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::NextPgc { pgcn: 7 });
+        // The hl_bn override landed in SPRM 8 bits 15..10.
+        assert_eq!(vm.regs.highlight_button(), 4);
+    }
+
+    #[test]
+    fn runner_angle_walk_follows_sprm3() {
+        // link_test_pgc: cells 1..=2 plain, 3..=5 a 3-angle block,
+        // next PGCN = 7. Angle 2 presents cell 4 for the block.
+        let pgc = link_test_pgc();
+        let mut vm = Vm::new();
+        vm.regs.set_sprm(crate::vm::SPRM_ANGLE, 2);
+        let mut r = PgcRunner::new(&pgc, 2);
+        let cells: Vec<u8> = std::iter::from_fn(|| match r.next_event(&mut vm) {
+            PlaybackEvent::PlayCell { cell, .. } => Some(cell),
+            _ => None,
+        })
+        .collect();
+        assert_eq!(cells, vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn runner_new_at_cell_skips_pre() {
+        // pre = [JumpTT 9] must not run on a chapter entry.
+        let mut pgc = plain_pgc(3);
+        pgc.next_pgcn = 0;
+        let pgc = with_commands(
+            pgc,
+            vec![nc([0x30, 0x02, 0, 0, 0, 9, 0, 0])],
+            vec![],
+            vec![],
+        );
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new_at_cell(&pgc, 1, 2);
+        assert!(matches!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell { cell: 2, .. }
+        ));
+        assert!(matches!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell { cell: 3, .. }
+        ));
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
+        // Out-of-range entry cell falls through to post → Finished.
+        let mut r2 = PgcRunner::new_at_cell(&pgc, 1, 9);
+        assert_eq!(r2.next_event(&mut vm), PlaybackEvent::Finished);
     }
 
     #[test]

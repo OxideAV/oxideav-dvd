@@ -110,7 +110,7 @@ pub use disc::{DvdDisc, DvdFile, DvdFileKind};
 pub use dts::{DtsAudioMode, DtsBitRate, DtsFrameType, DtsHeader, DtsSampleRate, DTS_SYNC_WORD};
 pub use engine::{
     link_highlight_button, resolve_link, target_domain, transition_permitted, Domain, LinkOutcome,
-    PgcPosition,
+    PgcPosition, PgcRunner, PlaybackEvent,
 };
 pub use error::{Error, Result};
 pub use ifo::{

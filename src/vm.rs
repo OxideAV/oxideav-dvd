@@ -1422,7 +1422,16 @@ impl Vm {
     /// the caller can tell "completed cleanly" from "transferred
     /// early".
     pub fn run_list(&mut self, list: &[NavCommand]) -> (VmAction, usize) {
-        self.pc = 0;
+        self.run_list_from(list, 0)
+    }
+
+    /// [`Vm::run_list`] starting at index `start` instead of `0` —
+    /// used by a playback engine to *resume* a list after an
+    /// informational action (e.g. `SetNVTMR` surfaces
+    /// [`VmAction::SetNavTimer`] mid-list; once the engine has armed
+    /// its timer it re-enters the list at `pc + 1`).
+    pub fn run_list_from(&mut self, list: &[NavCommand], start: usize) -> (VmAction, usize) {
+        self.pc = start;
         // A bounded step budget defends against pathological encoded
         // loops (`Goto 1` from line 1, etc.). 128 × 16 = 2048 steps
         // is comfortably above the spec's "≤ 128 commands per list"
