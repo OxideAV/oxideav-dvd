@@ -1229,6 +1229,107 @@ impl PlaybackEvent {
 }
 
 // =====================================================================
+// Navigation timer — the SPRM 9/10 wall clock behind SetNVTMR.
+// =====================================================================
+
+/// Wall-clock model of the navigation timer (SPRM 9 `NVTMR`, seconds,
+/// default `0` = inactive; SPRM 10 `NV_PGCN` = the PGC of the current
+/// title to jump to when it expires, per `mpucoder-sprm.html`).
+///
+/// The `Vm` already wrote SPRM 9/10 when the `SetNVTMR` instruction
+/// executed and surfaced [`PlaybackEvent::NavTimer`]; the engine owns
+/// the actual clock. Build one with [`NavTimerClock::arm`] (or
+/// straight from the event via [`PlaybackEvent::nav_timer_clock`]),
+/// feed it wall-clock progress with [`advance_ms`](Self::advance_ms),
+/// and when it fires perform a `LinkPGCN(pgcn)` — i.e. drop the
+/// current runner and start a `PgcRunner` on the returned PGC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NavTimerClock {
+    remaining_ms: u64,
+    pgcn: u16,
+    armed: bool,
+}
+
+impl NavTimerClock {
+    /// Arm the timer for `seconds`, targeting `pgcn`. `seconds == 0`
+    /// matches the SPRM 9 inactive default — the clock starts
+    /// disarmed and never fires.
+    pub fn arm(seconds: u16, pgcn: u16) -> Self {
+        Self {
+            remaining_ms: u64::from(seconds) * 1000,
+            pgcn,
+            armed: seconds != 0,
+        }
+    }
+
+    /// `true` while the timer is counting down.
+    pub fn is_armed(&self) -> bool {
+        self.armed
+    }
+
+    /// Milliseconds left before the timer fires (`0` when disarmed).
+    pub fn remaining_ms(&self) -> u64 {
+        if self.armed {
+            self.remaining_ms
+        } else {
+            0
+        }
+    }
+
+    /// The PGC the timer will jump to.
+    pub fn target_pgcn(&self) -> u16 {
+        self.pgcn
+    }
+
+    /// Advance the clock by `elapsed_ms`. Returns `Some(pgcn)` on the
+    /// call that crosses zero — exactly once; the timer disarms as it
+    /// fires. Returns `None` while counting or when already disarmed.
+    pub fn advance_ms(&mut self, elapsed_ms: u64) -> Option<u16> {
+        if !self.armed {
+            return None;
+        }
+        self.remaining_ms = self.remaining_ms.saturating_sub(elapsed_ms);
+        if self.remaining_ms == 0 {
+            self.armed = false;
+            return Some(self.pgcn);
+        }
+        None
+    }
+
+    /// Disarm without firing and clear SPRM 9 back to its inactive
+    /// `0` default (a new `SetNVTMR` — including one with `seconds ==
+    /// 0` — replaces any running timer).
+    pub fn cancel(&mut self, vm: &mut Vm) {
+        self.armed = false;
+        self.remaining_ms = 0;
+        vm.regs.set_sprm(crate::vm::SPRM_NV_TIMER, 0);
+    }
+
+    /// Mirror the countdown into SPRM 9 so disc commands that read
+    /// `NVTMR` observe the remaining whole seconds (rounded up — a
+    /// timer with any time left never reads as the inactive `0`).
+    pub fn sync_sprm(&self, vm: &mut Vm) {
+        let secs = if self.armed {
+            self.remaining_ms.div_ceil(1000).min(u64::from(u16::MAX)) as u16
+        } else {
+            0
+        };
+        vm.regs.set_sprm(crate::vm::SPRM_NV_TIMER, secs);
+    }
+}
+
+impl PlaybackEvent {
+    /// An armed [`NavTimerClock`] for a [`PlaybackEvent::NavTimer`]
+    /// event; `None` for every other event.
+    pub fn nav_timer_clock(&self) -> Option<NavTimerClock> {
+        match self {
+            PlaybackEvent::NavTimer { seconds, pgcn } => Some(NavTimerClock::arm(*seconds, *pgcn)),
+            _ => None,
+        }
+    }
+}
+
+// =====================================================================
 // Stream selection — logical → physical audio / sub-picture routing.
 // =====================================================================
 
@@ -3633,5 +3734,69 @@ mod tests {
         let sparse = dsi_with(2000, [4, 0, 0], &[]);
         assert_eq!(reference_frame_span(&sparse, 1), Some((2000, 2004)));
         assert_eq!(reference_frame_span(&sparse, 2), None);
+    }
+
+    // ---- NavTimerClock ----------------------------------------------
+
+    #[test]
+    fn nav_timer_fires_exactly_once_at_zero() {
+        let mut t = NavTimerClock::arm(2, 7);
+        assert!(t.is_armed());
+        assert_eq!(t.remaining_ms(), 2000);
+        assert_eq!(t.target_pgcn(), 7);
+        assert_eq!(t.advance_ms(1999), None);
+        assert_eq!(t.remaining_ms(), 1);
+        assert_eq!(t.advance_ms(1), Some(7));
+        assert!(!t.is_armed());
+        assert_eq!(t.remaining_ms(), 0);
+        // Fired-once: further time never re-fires.
+        assert_eq!(t.advance_ms(10_000), None);
+    }
+
+    #[test]
+    fn nav_timer_zero_seconds_is_inactive() {
+        // SPRM 9's default 0 means "no timer" — arming with 0 stays
+        // disarmed and never fires.
+        let mut t = NavTimerClock::arm(0, 3);
+        assert!(!t.is_armed());
+        assert_eq!(t.advance_ms(u64::MAX), None);
+    }
+
+    #[test]
+    fn nav_timer_cancel_clears_sprm9() {
+        let mut vm = Vm::new();
+        vm.regs.set_sprm(crate::vm::SPRM_NV_TIMER, 30);
+        let mut t = NavTimerClock::arm(30, 2);
+        t.cancel(&mut vm);
+        assert!(!t.is_armed());
+        assert_eq!(t.advance_ms(60_000), None);
+        assert_eq!(vm.regs.sprm(crate::vm::SPRM_NV_TIMER), 0);
+    }
+
+    #[test]
+    fn nav_timer_sync_sprm_rounds_up_remaining_seconds() {
+        let mut vm = Vm::new();
+        let mut t = NavTimerClock::arm(5, 1);
+        assert_eq!(t.advance_ms(2500), None);
+        t.sync_sprm(&mut vm);
+        // 2500 ms left = 3 whole seconds rounded up — never the
+        // inactive 0 while time remains.
+        assert_eq!(vm.regs.sprm(crate::vm::SPRM_NV_TIMER), 3);
+        assert_eq!(t.advance_ms(2500), Some(1));
+        t.sync_sprm(&mut vm);
+        assert_eq!(vm.regs.sprm(crate::vm::SPRM_NV_TIMER), 0);
+    }
+
+    #[test]
+    fn nav_timer_event_accessor() {
+        let ev = PlaybackEvent::NavTimer {
+            seconds: 10,
+            pgcn: 4,
+        };
+        let t = ev.nav_timer_clock().expect("NavTimer event arms a clock");
+        assert!(t.is_armed());
+        assert_eq!(t.remaining_ms(), 10_000);
+        assert_eq!(t.target_pgcn(), 4);
+        assert!(PlaybackEvent::Finished.nav_timer_clock().is_none());
     }
 }

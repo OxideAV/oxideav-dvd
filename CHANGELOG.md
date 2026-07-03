@@ -68,6 +68,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compositing through the PGC palette → trick-play stepping → cell
   still + UOP-guarded infinite PGC still, all via the public API.
 
+- **Navigation-timer wall clock (`engine::NavTimerClock`).** The
+  SPRM 9/10 countdown behind `SetNVTMR`: `arm(seconds, pgcn)`
+  (zero seconds = the SPRM 9 inactive default, never fires),
+  `advance_ms` firing `Some(pgcn)` exactly once at zero, `cancel`
+  clearing SPRM 9, `sync_sprm` mirroring the remaining whole
+  seconds (rounded up) into SPRM 9, and
+  `PlaybackEvent::nav_timer_clock()` arming it straight from the
+  runner's `NavTimer` event. 5 new tests.
+
 - `lib.rs` re-exports for the new engine / lpcm surface plus the
   previously unexported `vob::SriPointer` / `vob::SriDirection`.
 

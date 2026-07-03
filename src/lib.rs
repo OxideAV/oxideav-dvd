@@ -115,8 +115,8 @@ pub use engine::{
     scan_step, select_audio_stream, select_button, select_subpicture_stream,
     subpicture_display_mode, target_domain, transition_permitted, AudioSelection, ButtonMove,
     ButtonPress, Domain, JumpResolution, KaraokeChannelContent, KaraokeChannelRoute, LinkOutcome,
-    PgcPosition, PgcRunner, PlannedCell, PlaybackEvent, ResumeContext, ScanDirection, StillClock,
-    StillPhase, SubpictureSelection, TrickStep,
+    NavTimerClock, PgcPosition, PgcRunner, PlannedCell, PlaybackEvent, ResumeContext,
+    ScanDirection, StillClock, StillPhase, SubpictureSelection, TrickStep,
 };
 pub use error::{Error, Result};
 pub use ifo::{
