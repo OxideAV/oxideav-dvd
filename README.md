@@ -321,10 +321,21 @@ the gain to the decoded samples stays with the audio decoder.
 `unpack_samples_16bit()` reads the PCM tail as big-endian
 channel-interleaved `i16` widened to `i32` (per the
 `mpucoder-lpcm.html` storage order); `frame_stride_bytes()` and
-`sample_frame_count_16bit()` size the buffer. The 20-bit / 24-bit
-sub-byte packing layout is not documented by the staged references,
-so the unpacker covers the 16-bit case and returns `None` for the
-wider widths.
+`sample_frame_count_16bit()` size the buffer.
+
+Above the sample sits the **LPCM audio frame** (150 ticks of the
+90 kHz clock, 600 fps, `FrmNum` modulo 20 — the geometry
+`stnsoft-ass-hdr.html` documents): `audio_frame_size_bytes()`
+evaluates the `rate × quantization × channels / 4800` formula and
+`split_frames()` cuts the PCM tail into whole frames for **all
+three** quantisation widths — a 20-bit sample has no whole-byte
+stride but a 20-bit frame always does (48 kHz 20-bit stereo = 400
+bytes/frame) — with `LpcmFrames::partial_tail()` flagging a
+truncated pack. `access_unit_offset()` applies the
+`3 + FirstAccUnit` PTS-pointer arithmetic (zero = no first access
+unit). The intra-frame 20-bit / 24-bit sub-byte packing layout is
+not documented by the staged references, so the *sample* unpacker
+covers the 16-bit case and returns `None` for the wider widths.
 
 ## Decoding an AC-3 sync-frame header
 
@@ -768,6 +779,39 @@ non-interactive case — a ripper or the `mkv-output` pipeline —
 the title's whole cell schedule (entry PGC → next-PGCN chain,
 loop-safe) as `(pgcn, program, cell, sector-span)` rows without
 executing any commands.
+
+## Playback-runtime helpers (stills, stream selection, trick play)
+
+Around the runner sit the per-frame runtime decisions a player makes:
+
+- **Still time** — `StillClock::start(still)` models the freeze-frame
+  hold a cell's still byte or the PGC still byte (255 = infinite)
+  imposes: `advance_ms()` expires a timed hold exactly once,
+  `try_user_release()` honours the UOP 18 "Still off" prohibition
+  across the merged title/PGC/VOBU masks, and `release()` ends a
+  still-menu hold when a button activation transfers control.
+  `PlaybackEvent::still_clock()` arms it straight from a
+  `PlayCell` / `PgcStill` event.
+- **Stream selection** — `select_audio_stream` resolves SPRM 1 over
+  `PGC_AST_CTL` with SPRM 15 capability gating (karaoke-variant vs
+  plain codec bits) and an SPRM 16/17 language-preference fallback;
+  `select_subpicture_stream` resolves SPRM 2 (display bit, 62/63
+  sentinels) through the SPRM 14 display mode onto the right
+  `PGC_SPST_CTL` column with an SPRM 18 fallback; `karaoke_routing`
+  merges SPRM 11 `AMXMD` mix bits with the VTS multichannel-extension
+  entry into per-channel guide-vocal/melody routes.
+- **Trick play** — `scan_step(dsi, direction, seconds_per_step)`
+  walks VOBUs over the DSI search tables (video brackets for fine
+  strides, the 19-bucket span tables for coarse ones) returning
+  absolute-LBN jumps / `NoMoreVideo` / `CellBoundary`;
+  `scan_permitted` applies the C_PBI restricted flag + UOP 8/9;
+  `reference_frame_span` gives the sector range fast play reads to
+  decode 1–3 reference frames per VOBU.
+
+`tests/playback_integration.rs` drives all of it end-to-end over a
+synthetic six-sector in-memory VOB: runner → stream selection →
+per-cell demux → LPCM bytes → PCM frames → samples → SPU composite
+through the PGC palette → SRI trick-play walk → UOP-guarded stills.
 
 ## Clean-room sources
 

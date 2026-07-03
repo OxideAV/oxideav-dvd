@@ -9,6 +9,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **LPCM frame-granular packing (`lpcm` module).** The documented
+  audio-frame geometry (`stnsoft-ass-hdr.html`: 150 ticks of the
+  90 kHz clock per frame / 600 fps, frame bytes = `rate ×
+  quantization × channels / 4800`, `FrmNum` modulo 20):
+  `LPCM_FRAME_DURATION_90KHZ` / `LPCM_FRAMES_PER_SECOND` /
+  `LPCM_FRAMES_PER_GROUP` / `LPCM_GROUP_DURATION_90KHZ`,
+  `LpcmHeader::samples_per_frame` / `audio_frame_size_bytes` /
+  `split_frames` (bytes → whole PCM audio frames for 16-, 20- **and**
+  24-bit quantisation — a 20-bit sample has no whole-byte stride but
+  a 20-bit frame always does) / `audio_frame_count`, plus the
+  `has_no_first_access_unit` / `access_unit_offset` PTS-pointer
+  semantics (`3 + FirstAccUnit`, zero = none). Intra-frame 20/24-bit
+  sample bit order remains a documented docs gap. 9 new tests
+  including a full quantisation × rate × channel frame-size matrix.
+
+- **Still-time playback semantics (`engine::StillClock`).**
+  `StillPhase` (NotStill / Timed / Infinite / Released) +
+  `StillClock::start(StillTime)` with `advance_ms` wall-clock
+  progression (timed holds expire exactly once, infinite holds never
+  time out), `try_user_release` gated on the UOP 18 "Still off"
+  prohibition across the ORed title / PGC / VOBU mask levels, and an
+  unconditional `release()` for still-menu button activations.
+  `PlaybackEvent::still_time()` / `still_clock()` arm the clock from
+  `PlayCell` / `PgcStill` events. 7 new tests including a
+  runner-driven PGC-still cycle.
+
+- **Audio / sub-picture stream selection + karaoke routing
+  (`engine`).** `audio_stream_playable` (SPRM 15 capability bitmap,
+  karaoke-variant vs plain bits, LPCM always playable outside
+  karaoke), `select_audio_stream` (SPRM 1 direct pick → SPRM 16/17
+  language + extension preference fallback over `PGC_AST_CTL` →
+  lowest available; `15` sentinel → NoAudio) +
+  `note_audio_selection` SPRM 1 write-back,
+  `subpicture_display_mode` (SPRM 14 → `PGC_SPST_CTL` column) and
+  `select_subpicture_stream` (SPRM 2 stream / display bit / 62 / 63
+  sentinels; forced fallback via SPRM 18; no spontaneous subtitle
+  enable), and `karaoke_routing` combining SPRM 11 `AMXMD` mix bits
+  with a stream's `McExtensionEntry` into per-source-channel
+  (2/3/4) routes with unified guide-vocal / melody / effect labels.
+  10 new tests.
+
+- **VOBU-level trick play (`engine`).** `scan_permitted` (C_PBI
+  restricted flag + UOP 8/9 forward/backward scan), `scan_step`
+  (≤ 0.5 s strides ride the `sri_nvwv` / `sri_pvwv` video brackets;
+  coarser strides resolve the 19-bucket span tables with
+  non-overshoot policy + bracket fallback; absolute-LBN jumps with
+  the `0xBFFF_FFFF` → `NoMoreVideo` and unauthored → `CellBoundary`
+  classifications), and `reference_frame_span` (DSI_GI
+  `vobu_{1st,2nd,3rd}ref_ea` → the sector range a fast-play pass
+  reads for 1..=3 reference frames). 7 new tests.
+
+- **End-to-end synthetic-disc playback integration suite**
+  (`tests/playback_integration.rs`): a two-cell title in a
+  six-sector in-memory VOB (nav packs with authored VOBU_SRI, video
+  PES, LPCM PES, SPU PES) driven through PgcRunner → stream
+  selection → per-cell demux → LPCM frames → 16-bit samples → SPU
+  compositing through the PGC palette → trick-play stepping → cell
+  still + UOP-guarded infinite PGC still, all via the public API.
+
+- `lib.rs` re-exports for the new engine / lpcm surface plus the
+  previously unexported `vob::SriPointer` / `vob::SriDirection`.
+
 - **Menu interaction bridge (`engine` module).** `navigate_button()`
   moves the highlight over the `BTN_IT` D-pad adjacency fields
   (`AJBTN_POSI_UP/DN/LT/RT` per `mpucoder-pci_pkt.html`; unauthored
@@ -426,6 +488,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/container/dvd/application/mpucoder-pgc.html` "cell playback
   information table entry". `CellType::is_angle_block()` convenience
   predicate added; raw `category_byte0` retained.
+
+### Fixed
+
+- **Backward VOBU_SRI span indexing.** The 19 backward span entries
+  are stored on disc in the *reverse* of the forward table's order —
+  `sri_bwda1` (0.5 s bucket) first at packet offset `0x142`,
+  `sri_bwda240` (120 s) last at `0x18A`, the two tables mirroring
+  around the central `sri_nv` / `sri_pv` brackets — but
+  `VobuSri::seek_backward` / `backward_span` indexed the table with
+  the descending `SPAN_SECONDS` order, so every rewind mapped to the
+  wrong bucket (a 120 s rewind read the 0.5 s slot and vice versa).
+  `backward_span` keeps forward-compatible bucket indexing (bucket 0
+  = 120 s) and now maps to table entry `18 − index`; the shared span
+  resolver flips per direction.
 
 ### Changed
 
