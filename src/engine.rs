@@ -1578,6 +1578,141 @@ pub fn karaoke_routing(
     ]
 }
 
+// =====================================================================
+// Trick play — VOBU-level scan stepping over the DSI search tables.
+// =====================================================================
+
+/// Scan direction for VOBU-level trick play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanDirection {
+    /// Fast-forward — walks the VOBU_SRI forward spans / `sri_nvwv`.
+    Forward,
+    /// Rewind — walks the backward spans / `sri_pvwv`.
+    Backward,
+}
+
+/// The outcome of one trick-play step — see [`scan_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrickStep {
+    /// Seek to the nav pack at absolute logical block `lbn` and
+    /// decode its first reference frame (see
+    /// [`reference_frame_span`]). `finer_steps_available` mirrors the
+    /// span pointer's bit 30 — one or more VOBUs lie between the
+    /// current position and the target, so a slower scan speed has
+    /// intermediate frames to show.
+    Jump {
+        lbn: u32,
+        finer_steps_available: bool,
+    },
+    /// The `sri_nvwv` / `sri_pvwv` bracket reports no further VOBU
+    /// *containing video* in this direction (`0xBFFF_FFFF`) — the
+    /// scan ran out of pictures before the cell ended.
+    NoMoreVideo,
+    /// No VOBU within this cell serves the requested span (the
+    /// `0x3FFF_FFFF` sentinel / an unauthored table) — the engine
+    /// must move to the neighbouring cell via the PGC cell walk and
+    /// re-enter the scan there.
+    CellBoundary,
+}
+
+/// `true` when trick play may run at all from the current position:
+/// the cell's C_PBI *restricted* flag ("stops trick play",
+/// `mpucoder-pgc.html` cell-playback byte 1) must be clear and the
+/// merged UOP mask must allow the direction's scan operation (UOP 8
+/// *Forward scan* / UOP 9 *Backward scan*, one prohibition bit at
+/// any of the ORed mask levels inhibits it).
+pub fn scan_permitted(
+    direction: ScanDirection,
+    uops: crate::uops::UopMask,
+    cell_restricted: bool,
+) -> bool {
+    if cell_restricted {
+        return false;
+    }
+    let op = match direction {
+        ScanDirection::Forward => crate::uops::UserOp::ForwardScan,
+        ScanDirection::Backward => crate::uops::UserOp::BackwardScan,
+    };
+    uops.is_allowed(op)
+}
+
+/// Resolve one trick-play step from the current VOBU's DSI.
+///
+/// `seconds_per_step` is the nominal scrub distance the playback
+/// cadence wants per displayed step — e.g. an 8× scan showing one
+/// frame every 250 ms asks for 2-second steps. Steps of 0.5 s or
+/// less use the `sri_nvwv` / `sri_pvwv` "next/previous VOBU with
+/// video" bracket pointers (the finest video-to-video stride the DSI
+/// authors); anything coarser resolves through the 19-bucket span
+/// tables with the non-overshooting policy of
+/// [`crate::vob::VobuSri::seek_forward`] /
+/// [`seek_backward`](crate::vob::VobuSri::seek_backward), falling
+/// back to the bracket pointer when no span bucket is authored.
+///
+/// The returned [`TrickStep::Jump`] carries the **absolute** LBN
+/// (current `nv_pck_lbn` ± the pointer's relative sector offset).
+pub fn scan_step(
+    dsi: &crate::vob::DsiPacket,
+    direction: ScanDirection,
+    seconds_per_step: f32,
+) -> TrickStep {
+    use crate::vob::SriPointer;
+    let sri = &dsi.vobu_sri;
+    let bracket = match direction {
+        ScanDirection::Forward => sri.next_video(),
+        ScanDirection::Backward => sri.prev_video(),
+    };
+    let pointer = if seconds_per_step > 0.5 {
+        match direction {
+            ScanDirection::Forward => sri.seek_forward(seconds_per_step),
+            ScanDirection::Backward => sri.seek_backward(seconds_per_step),
+        }
+        .unwrap_or(bracket)
+    } else {
+        bracket
+    };
+    match pointer.offset_sectors() {
+        Some(offset) => {
+            let lbn = dsi.general_info.nv_pck_lbn;
+            let target = match direction {
+                ScanDirection::Forward => lbn.saturating_add(offset),
+                ScanDirection::Backward => lbn.saturating_sub(offset),
+            };
+            TrickStep::Jump {
+                lbn: target,
+                finer_steps_available: pointer.has_intermediate_vobus(),
+            }
+        }
+        None if pointer.raw == SriPointer::NO_VIDEO_VOBU => TrickStep::NoMoreVideo,
+        None => TrickStep::CellBoundary,
+    }
+}
+
+/// The absolute sector span a fast-play pass reads from a VOBU to
+/// decode its first `count` reference frames, per the DSI_GI
+/// `vobu_1stref_ea` / `vobu_2ndref_ea` / `vobu_3rdref_ea` fields
+/// ("reference frame end block, relative — used for fast playing").
+///
+/// Returns the inclusive `(first_sector, last_sector)` absolute LBN
+/// range starting at the nav pack: fast play reads exactly these
+/// sectors, decodes the `count` reference pictures they end with,
+/// and jumps on via [`scan_step`]. `None` when `count` is outside
+/// `1..=3` or the requested end-address field is unauthored (zero —
+/// a VOBU with fewer reference frames than asked for).
+pub fn reference_frame_span(dsi: &crate::vob::DsiPacket, count: u8) -> Option<(u32, u32)> {
+    let gi = &dsi.general_info;
+    let ea = match count {
+        1 => gi.vobu_1stref_ea,
+        2 => gi.vobu_2ndref_ea,
+        3 => gi.vobu_3rdref_ea,
+        _ => return None,
+    };
+    if ea == 0 {
+        return None;
+    }
+    Some((gi.nv_pck_lbn, gi.nv_pck_lbn.saturating_add(ea)))
+}
+
 /// What [`PgcRunner::handle_list_action`] tells the state loop.
 #[derive(Debug)]
 enum ListVerdict {
@@ -3335,5 +3470,168 @@ mod tests {
         assert!(routes[2].to_front && routes[2].to_rear);
         assert!(routes[2].content.guide_melody_primary);
         assert!(!routes[2].content.guide_melody_secondary);
+    }
+
+    // ---- Trick play -------------------------------------------------
+
+    use crate::vob::{DsiPacket, SriPointer, VobuSri};
+
+    /// Build a DSI body (0x222 bytes, all zero) with the given
+    /// nav-pack LBN, reference-frame end addresses, and VOBU_SRI
+    /// entry patches (`(sri_relative_offset, raw_word)`).
+    fn dsi_with(lbn: u32, ref_eas: [u32; 3], sri: &[(usize, u32)]) -> DsiPacket {
+        let mut buf = vec![0u8; DsiPacket::BODY_SIZE];
+        buf[0x04..0x08].copy_from_slice(&lbn.to_be_bytes());
+        buf[0x0C..0x10].copy_from_slice(&ref_eas[0].to_be_bytes());
+        buf[0x10..0x14].copy_from_slice(&ref_eas[1].to_be_bytes());
+        buf[0x14..0x18].copy_from_slice(&ref_eas[2].to_be_bytes());
+        for &(off, word) in sri {
+            let at = VobuSri::PACKET_OFFSET + off;
+            buf[at..at + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        DsiPacket::parse(&buf).expect("synthetic DSI parses")
+    }
+
+    #[test]
+    fn scan_permitted_gates_on_restriction_and_uops() {
+        use crate::uops::{UopMask, UserOp};
+        // Restricted cell stops trick play in both directions.
+        assert!(!scan_permitted(ScanDirection::Forward, UopMask::NONE, true));
+        // UOP 8 blocks forward only; UOP 9 backward only.
+        let fwd_banned = UopMask::NONE.with(UserOp::ForwardScan);
+        assert!(!scan_permitted(ScanDirection::Forward, fwd_banned, false));
+        assert!(scan_permitted(ScanDirection::Backward, fwd_banned, false));
+        let bwd_banned = UopMask::NONE.with(UserOp::BackwardScan);
+        assert!(scan_permitted(ScanDirection::Forward, bwd_banned, false));
+        assert!(!scan_permitted(ScanDirection::Backward, bwd_banned, false));
+        assert!(scan_permitted(ScanDirection::Forward, UopMask::NONE, false));
+    }
+
+    #[test]
+    fn scan_step_fine_stride_uses_video_brackets() {
+        // sri_nvwv (SRI +0x00) says next video VOBU is +25 sectors;
+        // sri_pvwv (SRI +0xA4) says previous is -7.
+        let dsi = dsi_with(
+            1000,
+            [0; 3],
+            &[
+                (0x00, VobuSri::VALID_BIT | 25),
+                (0xA4, VobuSri::VALID_BIT | 7),
+            ],
+        );
+        assert_eq!(
+            scan_step(&dsi, ScanDirection::Forward, 0.5),
+            TrickStep::Jump {
+                lbn: 1025,
+                finer_steps_available: false,
+            }
+        );
+        assert_eq!(
+            scan_step(&dsi, ScanDirection::Backward, 0.5),
+            TrickStep::Jump {
+                lbn: 993,
+                finer_steps_available: false,
+            }
+        );
+    }
+
+    #[test]
+    fn scan_step_coarse_stride_resolves_span_buckets() {
+        // Forward 10 s bucket (table index 3, SRI +0x04 + 3*4) with
+        // the intermediate bit set; backward 10 s bucket lives at
+        // on-disc entry 18-3=15 (SRI +0x58 + 15*4).
+        let dsi = dsi_with(
+            5000,
+            [0; 3],
+            &[
+                (
+                    0x04 + 3 * 4,
+                    VobuSri::VALID_BIT | VobuSri::INTERMEDIATE_BIT | 300,
+                ),
+                (0x58 + 15 * 4, VobuSri::VALID_BIT | 280),
+            ],
+        );
+        assert_eq!(
+            scan_step(&dsi, ScanDirection::Forward, 10.0),
+            TrickStep::Jump {
+                lbn: 5300,
+                finer_steps_available: true,
+            }
+        );
+        assert_eq!(
+            scan_step(&dsi, ScanDirection::Backward, 10.0),
+            TrickStep::Jump {
+                lbn: 4720,
+                finer_steps_available: false,
+            }
+        );
+    }
+
+    #[test]
+    fn scan_step_falls_back_to_bracket_when_no_span_authored() {
+        // No span buckets valid, but sri_nvwv points +2.
+        let dsi = dsi_with(100, [0; 3], &[(0x00, VobuSri::VALID_BIT | 2)]);
+        assert_eq!(
+            scan_step(&dsi, ScanDirection::Forward, 30.0),
+            TrickStep::Jump {
+                lbn: 102,
+                finer_steps_available: false,
+            }
+        );
+    }
+
+    #[test]
+    fn scan_step_no_more_video_and_cell_boundary() {
+        // sri_nvwv carries the 0xBFFF_FFFF "no following VOBU
+        // contains video" sentinel.
+        let no_video = dsi_with(100, [0; 3], &[(0x00, SriPointer::NO_VIDEO_VOBU)]);
+        assert_eq!(
+            scan_step(&no_video, ScanDirection::Forward, 0.5),
+            TrickStep::NoMoreVideo
+        );
+        // An all-zero SRI (nothing authored) reports the cell edge.
+        let empty = dsi_with(100, [0; 3], &[]);
+        assert_eq!(
+            scan_step(&empty, ScanDirection::Forward, 10.0),
+            TrickStep::CellBoundary
+        );
+        assert_eq!(
+            scan_step(&empty, ScanDirection::Backward, 0.5),
+            TrickStep::CellBoundary
+        );
+        // The NO_VOBU span sentinel also lands on the cell edge.
+        let span_sentinel = dsi_with(100, [0; 3], &[(0x04, SriPointer::NO_VOBU)]);
+        assert_eq!(
+            scan_step(&span_sentinel, ScanDirection::Forward, 120.0),
+            TrickStep::CellBoundary
+        );
+    }
+
+    #[test]
+    fn scan_step_backward_saturates_at_zero() {
+        // Backward jump larger than the current LBN clamps to 0
+        // rather than wrapping.
+        let dsi = dsi_with(5, [0; 3], &[(0xA4, VobuSri::VALID_BIT | 50)]);
+        assert_eq!(
+            scan_step(&dsi, ScanDirection::Backward, 0.5),
+            TrickStep::Jump {
+                lbn: 0,
+                finer_steps_available: false,
+            }
+        );
+    }
+
+    #[test]
+    fn reference_frame_span_reads_dsi_gi_end_addresses() {
+        let dsi = dsi_with(2000, [4, 9, 15], &[]);
+        assert_eq!(reference_frame_span(&dsi, 1), Some((2000, 2004)));
+        assert_eq!(reference_frame_span(&dsi, 2), Some((2000, 2009)));
+        assert_eq!(reference_frame_span(&dsi, 3), Some((2000, 2015)));
+        assert_eq!(reference_frame_span(&dsi, 0), None);
+        assert_eq!(reference_frame_span(&dsi, 4), None);
+        // Unauthored (zero) end address → None.
+        let sparse = dsi_with(2000, [4, 0, 0], &[]);
+        assert_eq!(reference_frame_span(&sparse, 1), Some((2000, 2004)));
+        assert_eq!(reference_frame_span(&sparse, 2), None);
     }
 }
