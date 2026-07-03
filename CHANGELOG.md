@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Menu interaction bridge (`engine` module).** `navigate_button()`
+  moves the highlight over the `BTN_IT` D-pad adjacency fields
+  (`AJBTN_POSI_UP/DN/LT/RT` per `mpucoder-pci_pkt.html`; unauthored
+  zero adjacency stays put); `initial_button()` applies the
+  `fosl_btnn` force-select override and clamps a stale SPRM 8
+  selection; `select_button()` stores the highlight in SPRM 8 (bits
+  15..10) and immediately executes an auto-action button's command;
+  `activate_button()` decodes a button's 8-byte command through the
+  shared `nav` disassembler and executes it on the `Vm`, returning
+  the surfaced `VmAction`; and `forced_action()` honours the
+  `foac_btnn` force-action button. 4 new tests over a synthetic
+  3-button highlight (adjacency + stay-put edges, force-select /
+  clamp, select + auto-action + activation through the VM,
+  force-action). Together with `PgcRunner`, this closes the
+  menu-domain input loop: render buttons from PCI HLI, route the
+  D-pad, action a button, feed the resulting `VmAction` back through
+  `transition_permitted` / `resolve_action`.
+
 - **`DvdDisc::plan_title` — disc-level title plan (`disc` module).**
   Composes the whole static-path pipeline in one call: TT_SRPT
   lookup (`ttn` → VTS / VTS_TTN / VTS start sector) → `parse_vts` →

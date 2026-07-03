@@ -724,6 +724,116 @@ impl<'a> PgcRunner<'a> {
 }
 
 // =====================================================================
+// Menu interaction — D-pad navigation + button activation.
+// =====================================================================
+
+/// A D-pad direction over a menu's button table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonMove {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// The result of [`select_button`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonPress {
+    /// The button became the highlighted one (SPRM 8 updated); the
+    /// user still has to action it.
+    Selected,
+    /// The button carries the auto-action flag — selecting it
+    /// executed its command immediately, yielding this [`VmAction`].
+    AutoAction(VmAction),
+    /// No such button in this highlight (0 or past the table).
+    Invalid,
+}
+
+/// The button number a D-pad move lands on, per the `BTN_IT`
+/// adjacency fields (`AJBTN_POSI_UP/DN/LT/RT`,
+/// `mpucoder-pci_pkt.html`). An unauthored (zero) or out-of-range
+/// adjacency keeps the current selection.
+pub fn navigate_button(hli: &crate::vob::HighlightInfo, current: u8, mv: ButtonMove) -> u8 {
+    let Some(btn) = usize::from(current)
+        .checked_sub(1)
+        .and_then(|i| hli.buttons.get(i))
+    else {
+        return current;
+    };
+    let dest = match mv {
+        ButtonMove::Up => btn.up,
+        ButtonMove::Down => btn.down,
+        ButtonMove::Left => btn.left,
+        ButtonMove::Right => btn.right,
+    };
+    if dest >= 1 && usize::from(dest) <= hli.buttons.len() {
+        dest
+    } else {
+        current
+    }
+}
+
+/// The button to highlight when a VOBU's highlight comes up:
+/// a non-zero `fosl_btnn` (force-select, `HLI_GI` per
+/// `mpucoder-pci_pkt.html`) overrides everything; otherwise the
+/// current SPRM 8 selection is kept when it names a real button and
+/// clamped to button 1 (the SPRM 8 default) when it doesn't.
+pub fn initial_button(hli: &crate::vob::HighlightInfo, current: u8) -> u8 {
+    if hli.fosl_btnn != 0 {
+        return hli.fosl_btnn;
+    }
+    if current >= 1 && usize::from(current) <= hli.buttons.len() {
+        current
+    } else {
+        1
+    }
+}
+
+/// Highlight button `btn`: store it in SPRM 8 (button number in
+/// bits 15..10 per `mpucoder-sprm.html`) and, when the `BTN_IT`
+/// entry carries the auto-action flag, immediately execute its
+/// command ([`activate_button`]).
+pub fn select_button(vm: &mut Vm, hli: &crate::vob::HighlightInfo, btn: u8) -> ButtonPress {
+    let Some(info) = usize::from(btn)
+        .checked_sub(1)
+        .and_then(|i| hli.buttons.get(i))
+    else {
+        return ButtonPress::Invalid;
+    };
+    vm.regs
+        .set_sprm(crate::vm::SPRM_HL_BTNN, u16::from(btn) << 10);
+    if info.auto_action {
+        match activate_button(vm, hli, btn) {
+            Some(action) => ButtonPress::AutoAction(action),
+            None => ButtonPress::Selected,
+        }
+    } else {
+        ButtonPress::Selected
+    }
+}
+
+/// Action button `btn`: decode its 8-byte `BTN_IT` command (the
+/// same VM encoding as a PGC command, `mpucoder-pci_pkt.html` +
+/// `mpucoder-vmi.html`) and execute it on `vm`, returning the
+/// surfaced [`VmAction`]. `None` when the button doesn't exist.
+pub fn activate_button(vm: &mut Vm, hli: &crate::vob::HighlightInfo, btn: u8) -> Option<VmAction> {
+    let info = usize::from(btn)
+        .checked_sub(1)
+        .and_then(|i| hli.buttons.get(i))?;
+    Some(vm.step(info.command_instruction()))
+}
+
+/// Execute the highlight's force-action button (`foac_btnn`,
+/// non-zero = the player must action it without user input), if
+/// declared. Returns the resulting [`VmAction`].
+pub fn forced_action(vm: &mut Vm, hli: &crate::vob::HighlightInfo) -> Option<VmAction> {
+    if hli.foac_btnn == 0 {
+        return None;
+    }
+    activate_button(vm, hli, hli.foac_btnn)
+}
+
+// =====================================================================
 // Static title plan — the non-interactive cell schedule of a title.
 // =====================================================================
 
@@ -1860,6 +1970,108 @@ mod tests {
         // Out-of-range entry cell falls through to post → Finished.
         let mut r2 = PgcRunner::new_at_cell(&pgc, 1, 9);
         assert_eq!(r2.next_event(&mut vm), PlaybackEvent::Finished);
+    }
+
+    // ---- menu interaction ----------------------------------------------
+
+    use crate::vob::{ButtonInfo, HighlightInfo, SlColi};
+
+    fn button(up: u8, down: u8, left: u8, right: u8, auto: bool, command: [u8; 8]) -> ButtonInfo {
+        ButtonInfo {
+            btn_coln: 1,
+            start_x: 0,
+            end_x: 10,
+            start_y: 0,
+            end_y: 10,
+            auto_action: auto,
+            up,
+            down,
+            left,
+            right,
+            command,
+        }
+    }
+
+    /// Three-button row: 1 <-> 2 <-> 3. Button 2 auto-actions a
+    /// LinkPGCN 5; button 3 actions a JumpTT 2.
+    fn test_hli() -> HighlightInfo {
+        HighlightInfo {
+            hli_s_ptm: 0,
+            hli_e_ptm: 0,
+            btn_sl_e_ptm: 0,
+            btn_md: 0,
+            btn_sn: 1,
+            btn_ns: 3,
+            nsl_btn_ns: 3,
+            fosl_btnn: 0,
+            foac_btnn: 0,
+            sl_coli: [SlColi::default(); 3],
+            buttons: vec![
+                button(1, 1, 1, 2, false, [0; 8]),
+                button(2, 2, 1, 3, true, [0x20, 0x04, 0, 0, 0, 0, 0, 5]),
+                button(3, 3, 2, 0, false, [0x30, 0x02, 0, 0, 0, 2, 0, 0]),
+            ],
+        }
+    }
+
+    #[test]
+    fn navigate_button_adjacency() {
+        let hli = test_hli();
+        assert_eq!(navigate_button(&hli, 1, ButtonMove::Right), 2);
+        assert_eq!(navigate_button(&hli, 2, ButtonMove::Right), 3);
+        // Unauthored (zero) adjacency stays put.
+        assert_eq!(navigate_button(&hli, 3, ButtonMove::Right), 3);
+        assert_eq!(navigate_button(&hli, 3, ButtonMove::Left), 2);
+        assert_eq!(navigate_button(&hli, 1, ButtonMove::Up), 1);
+        // Out-of-range current button stays put.
+        assert_eq!(navigate_button(&hli, 9, ButtonMove::Left), 9);
+        assert_eq!(navigate_button(&hli, 0, ButtonMove::Down), 0);
+    }
+
+    #[test]
+    fn initial_button_force_select_and_clamp() {
+        let mut hli = test_hli();
+        assert_eq!(initial_button(&hli, 2), 2); // keep a valid selection
+        assert_eq!(initial_button(&hli, 9), 1); // clamp an invalid one
+        assert_eq!(initial_button(&hli, 0), 1);
+        hli.fosl_btnn = 3;
+        assert_eq!(initial_button(&hli, 2), 3); // force-select wins
+    }
+
+    #[test]
+    fn select_and_activate_buttons() {
+        let hli = test_hli();
+        let mut vm = Vm::new();
+        // Plain selection updates SPRM 8 only.
+        assert_eq!(select_button(&mut vm, &hli, 3), ButtonPress::Selected);
+        assert_eq!(vm.regs.highlight_button(), 3);
+        // Auto-action button executes its LinkPGCN immediately.
+        assert_eq!(
+            select_button(&mut vm, &hli, 2),
+            ButtonPress::AutoAction(VmAction::Link(LinkAction::Pgcn { pgcn: 5 }))
+        );
+        assert_eq!(vm.regs.highlight_button(), 2);
+        // Invalid button numbers.
+        assert_eq!(select_button(&mut vm, &hli, 0), ButtonPress::Invalid);
+        assert_eq!(select_button(&mut vm, &hli, 4), ButtonPress::Invalid);
+        // Explicit activation runs the button command through the VM.
+        assert_eq!(
+            activate_button(&mut vm, &hli, 3),
+            Some(VmAction::JumpTitle { ttn: 2 })
+        );
+        assert_eq!(activate_button(&mut vm, &hli, 4), None);
+    }
+
+    #[test]
+    fn forced_action_button() {
+        let mut hli = test_hli();
+        let mut vm = Vm::new();
+        assert_eq!(forced_action(&mut vm, &hli), None);
+        hli.foac_btnn = 3;
+        assert_eq!(
+            forced_action(&mut vm, &hli),
+            Some(VmAction::JumpTitle { ttn: 2 })
+        );
     }
 
     // ---- plan_title_cells ---------------------------------------------

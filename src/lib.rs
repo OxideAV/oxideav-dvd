@@ -109,9 +109,10 @@ pub use ac3::{Ac3AudioCodingMode, Ac3BitstreamMode, Ac3Header, Ac3SampleRate, AC
 pub use disc::{DvdDisc, DvdFile, DvdFileKind, TitlePlan};
 pub use dts::{DtsAudioMode, DtsBitRate, DtsFrameType, DtsHeader, DtsSampleRate, DTS_SYNC_WORD};
 pub use engine::{
-    link_highlight_button, note_title_position, plan_title_cells, resolve_action, resolve_link,
-    target_domain, transition_permitted, Domain, JumpResolution, LinkOutcome, PgcPosition,
-    PgcRunner, PlannedCell, PlaybackEvent, ResumeContext,
+    activate_button, forced_action, initial_button, link_highlight_button, navigate_button,
+    note_title_position, plan_title_cells, resolve_action, resolve_link, select_button,
+    target_domain, transition_permitted, ButtonMove, ButtonPress, Domain, JumpResolution,
+    LinkOutcome, PgcPosition, PgcRunner, PlannedCell, PlaybackEvent, ResumeContext,
 };
 pub use error::{Error, Result};
 pub use ifo::{
