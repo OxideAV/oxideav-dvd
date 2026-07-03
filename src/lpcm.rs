@@ -34,6 +34,20 @@
 //! gain ([`LpcmHeader::linear_gain`] / [`LpcmHeader::gain_db`]) is
 //! exposed as a coefficient the caller applies during mix-down.
 //!
+//! Above the individual sample sits the **LPCM audio frame** — the
+//! unit `number_of_frame_headers` / `audio_frame_number` /
+//! `first_access_unit_pointer` all count in. Its geometry *is*
+//! documented (`stnsoft-ass-hdr.html` "Additional info"): every frame
+//! spans 150 ticks of the 90 kHz clock (1.67 ms, 600 frames/s), its
+//! byte size follows `sample_rate × quantization × channels / 4800`,
+//! and the `FrmNum` counter runs modulo 20 (so 20 frames form one
+//! Group of Audio frames). [`LpcmHeader::audio_frame_size_bytes`] /
+//! [`LpcmHeader::samples_per_frame`] / [`LpcmHeader::split_frames`]
+//! implement that bytes → PCM-frames packing for **all three**
+//! quantisation widths — a 20-bit sample has no whole-byte stride,
+//! but a 20-bit *frame* always does (e.g. 48 kHz 20-bit stereo =
+//! 400 bytes/frame).
+//!
 //! ## Docs gap
 //!
 //! Neither `mpucoder-lpcm.html` nor `stnsoft-LimPcmAud.html`
@@ -42,6 +56,9 @@
 //! bytes). 16-bit packing is unambiguous (big-endian `i16`,
 //! channel-interleaved) and fully covered here; 20/24-bit sample
 //! reconstruction is blocked on a reference that pins the grouping.
+//! Frame-granular splitting ([`LpcmHeader::split_frames`]) is *not*
+//! affected — the frame byte-size formula is documented for every
+//! width — only the intra-frame sample decode remains gated.
 //!
 //! ## Clean-room references
 //!
@@ -224,6 +241,57 @@ pub const LPCM_HEADER_LEN: usize = 7;
 /// table marks them in red.
 pub const DVD_LPCM_MAX_BITRATE_KBPS: u32 = 6144;
 
+/// Duration of one LPCM audio frame in 90 kHz clock ticks — the
+/// `stnsoft-ass-hdr.html` "Additional info" constant ("LPCM frames
+/// are 150 ticks of the 90KHz clock long (1.67ms)").
+pub const LPCM_FRAME_DURATION_90KHZ: u32 = 150;
+
+/// LPCM audio frames per second — `90_000 / 150 = 600` ("giving a
+/// frame rate of 600 fps" per the same page). Rate-independent: at
+/// 96 kHz each frame simply carries twice the samples.
+pub const LPCM_FRAMES_PER_SECOND: u32 = 600;
+
+/// Audio frames per Group of Audio frames. The header's `FrmNum`
+/// field is documented as the "modulo 20 frame number of first
+/// frame" (`stnsoft-ass-hdr.html`), so 20 consecutive frames form
+/// one group.
+pub const LPCM_FRAMES_PER_GROUP: u8 = 20;
+
+/// Duration of one full Group of Audio frames in 90 kHz ticks —
+/// `20 × 150 = 3000` (33.3 ms).
+pub const LPCM_GROUP_DURATION_90KHZ: u32 = LPCM_FRAME_DURATION_90KHZ * LPCM_FRAMES_PER_GROUP as u32;
+
+/// Borrowed iterator over whole LPCM audio frames — see
+/// [`LpcmHeader::split_frames`]. Yields fixed-size byte slices, one
+/// per complete audio frame; any incomplete trailing bytes are left
+/// in [`LpcmFrames::partial_tail`].
+#[derive(Debug, Clone)]
+pub struct LpcmFrames<'a> {
+    inner: std::slice::ChunksExact<'a, u8>,
+}
+
+impl<'a> LpcmFrames<'a> {
+    /// The bytes after the last complete frame (empty when the
+    /// payload divides evenly). A non-empty tail means the PES
+    /// packet was truncated mid-frame or the caller sliced the
+    /// stream off a frame boundary.
+    pub fn partial_tail(&self) -> &'a [u8] {
+        self.inner.remainder()
+    }
+}
+
+impl<'a> Iterator for LpcmFrames<'a> {
+    type Item = &'a [u8];
+    fn next(&mut self) -> Option<&'a [u8]> {
+        self.inner.next()
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl ExactSizeIterator for LpcmFrames<'_> {}
+
 impl LpcmHeader {
     /// Decode a 7-byte LPCM audio-pack header from the start of
     /// `payload` (which starts at the substream-ID byte — i.e. the
@@ -373,6 +441,95 @@ impl LpcmHeader {
             return None;
         }
         Some(num as usize * self.channel_count as usize)
+    }
+
+    /// Samples one audio frame carries **per channel** — `sample_rate
+    /// / 600`. 48 kHz packs 80 samples per frame ("At 48K sample rate
+    /// there are 48000/600 = 80 samples per frame" per
+    /// `stnsoft-ass-hdr.html`), 96 kHz packs 160. `None` for the
+    /// reserved sample-frequency code.
+    pub fn samples_per_frame(self) -> Option<u32> {
+        Some(self.sample_rate_hz()? / LPCM_FRAMES_PER_SECOND)
+    }
+
+    /// Byte size of one LPCM audio frame — the documented
+    /// `(sample rate) × (quantization) × (number of channels) / 4800`
+    /// formula (`stnsoft-ass-hdr.html` "Additional info").
+    ///
+    /// Unlike the per-sample stride, this is a whole number of bytes
+    /// for **every** quantisation width: the worked example's 48 kHz
+    /// 16-bit stereo gives 320 bytes; 48 kHz **20-bit** stereo gives
+    /// 400 (the fractional 2.5-byte samples always group evenly
+    /// across a frame's 80 × channels samples). `None` when either
+    /// the quantisation or sample-frequency code is reserved.
+    pub fn audio_frame_size_bytes(self) -> Option<usize> {
+        let rate = self.sample_rate_hz()?;
+        let bits = self.bits_per_sample()? as u32;
+        Some((rate * bits * self.channel_count as u32 / 4800) as usize)
+    }
+
+    /// Split the raw PCM tail (the bytes after the 7-byte audio-pack
+    /// header — [`peel_lpcm_payload`]'s second return) into whole
+    /// LPCM audio frames of [`Self::audio_frame_size_bytes`] bytes
+    /// each.
+    ///
+    /// This is the bytes → PCM-frames packing boundary the header's
+    /// counters speak in: `number_of_frame_headers` counts frames
+    /// whose first byte lands in this pack, `audio_frame_number` is
+    /// the modulo-[`LPCM_FRAMES_PER_GROUP`] index of the first one,
+    /// and each yielded frame advances the clock by
+    /// [`LPCM_FRAME_DURATION_90KHZ`] ticks. Works for 16-, 20- **and**
+    /// 24-bit quantisation (the frame byte size is documented for all
+    /// three; only intra-frame 20/24-bit sample decode is gated on the
+    /// module-level docs gap). `None` when a reserved quantisation /
+    /// sample-frequency code leaves the frame size undefined.
+    pub fn split_frames(self, pcm: &[u8]) -> Option<LpcmFrames<'_>> {
+        let size = self.audio_frame_size_bytes()?;
+        if size == 0 {
+            return None;
+        }
+        Some(LpcmFrames {
+            inner: pcm.chunks_exact(size),
+        })
+    }
+
+    /// Number of complete audio frames the PCM tail carries —
+    /// `pcm.len() / audio_frame_size_bytes`. `None` under the same
+    /// reserved-code conditions as [`Self::split_frames`].
+    pub fn audio_frame_count(self, pcm: &[u8]) -> Option<usize> {
+        let size = self.audio_frame_size_bytes()?;
+        if size == 0 {
+            return None;
+        }
+        Some(pcm.len() / size)
+    }
+
+    /// `true` when `first_access_unit_pointer == 0` — the reference
+    /// page's "the value 0000 indicates there is no first access
+    /// unit": no audio frame *starts* in this pack, so the PES PTS
+    /// (if any) belongs to a frame carried over from an earlier pack.
+    pub fn has_no_first_access_unit(self) -> bool {
+        self.first_access_unit_pointer == 0
+    }
+
+    /// Payload-relative byte offset of the audio frame the enclosing
+    /// PES PTS applies to, using the reference page's arithmetic:
+    /// "offset 0 is the last byte of FirstAccUnit, ie add the offset
+    /// of byte 2 to get the AU's offset" — the pointer's last byte
+    /// sits at payload offset 3, so the frame starts at
+    /// `3 + first_access_unit_pointer`.
+    ///
+    /// For the `stnsoft-ass-hdr.html` LPCM worked example
+    /// (`FirstAccUnit = 0x0004`) this yields 7 — exactly the first
+    /// byte after the 7-byte audio-pack header, where "first channel
+    /// 0 (left) sample" begins. Returns `None` when
+    /// [`Self::has_no_first_access_unit`] holds.
+    pub fn access_unit_offset(self) -> Option<usize> {
+        if self.has_no_first_access_unit() {
+            None
+        } else {
+            Some(3 + self.first_access_unit_pointer as usize)
+        }
     }
 
     /// Unpack the raw 16-bit PCM tail into channel-interleaved signed
@@ -832,6 +989,137 @@ mod tests {
             );
             assert_eq!(h.bytes_per_sample(), Some((5, 2)));
         }
+    }
+
+    /// Build a header with explicit quantisation / rate / channel
+    /// codes for the frame-geometry tests.
+    fn header_qrc(q: u8, sr: u8, channels: u8) -> LpcmHeader {
+        let mut bytes = baseline_header();
+        bytes[5] = (q << 6) | (sr << 4) | ((channels - 1) & 0b111);
+        LpcmHeader::parse(&bytes).unwrap()
+    }
+
+    #[test]
+    fn frame_timing_constants_match_ass_hdr_page() {
+        // 150 ticks of the 90 kHz clock = 1.67 ms → 600 fps.
+        assert_eq!(LPCM_FRAME_DURATION_90KHZ, 150);
+        assert_eq!(LPCM_FRAMES_PER_SECOND, 600);
+        assert_eq!(90_000 / LPCM_FRAME_DURATION_90KHZ, LPCM_FRAMES_PER_SECOND);
+        // FrmNum is modulo 20 → one group = 20 × 150 = 3000 ticks.
+        assert_eq!(LPCM_FRAMES_PER_GROUP, 20);
+        assert_eq!(LPCM_GROUP_DURATION_90KHZ, 3000);
+        // The 5-bit audio_frame_number field holds every modulo-20
+        // value the page allows: the highest one still parses intact.
+        let mut bytes = baseline_header();
+        bytes[4] = LPCM_FRAMES_PER_GROUP - 1; // frame 19 in low 5 bits
+        let h = LpcmHeader::parse(&bytes).unwrap();
+        assert_eq!(h.audio_frame_number, 19);
+    }
+
+    #[test]
+    fn samples_per_frame_follows_rate() {
+        // "At 48K sample rate there are 48000/600 = 80 samples per frame."
+        assert_eq!(header_qrc(0, 0, 2).samples_per_frame(), Some(80));
+        assert_eq!(header_qrc(0, 1, 2).samples_per_frame(), Some(160));
+        // Reserved rate code → undefined.
+        assert_eq!(header_qrc(0, 2, 2).samples_per_frame(), None);
+    }
+
+    #[test]
+    fn audio_frame_size_matches_formula_across_matrix() {
+        // Frame size = rate × quantization × channels / 4800
+        // (stnsoft-ass-hdr.html). Spot-check the worked example, then
+        // sweep the full defined matrix against the formula.
+        assert_eq!(header_qrc(0, 0, 2).audio_frame_size_bytes(), Some(320));
+        for (q, bits) in [(0u8, 16u32), (1, 20), (2, 24)] {
+            for (sr, rate) in [(0u8, 48_000u32), (1, 96_000)] {
+                for ch in 1u8..=8 {
+                    let h = header_qrc(q, sr, ch);
+                    let expected = (rate * bits * ch as u32 / 4800) as usize;
+                    assert_eq!(
+                        h.audio_frame_size_bytes(),
+                        Some(expected),
+                        "q={q} sr={sr} ch={ch}",
+                    );
+                    // The formula must agree with samples-per-frame ×
+                    // bits: frame bytes × 8 = samples × bits × channels.
+                    let spf = h.samples_per_frame().unwrap();
+                    assert_eq!(expected as u32 * 8, spf * bits * ch as u32);
+                }
+            }
+        }
+        // Reserved quantisation / rate codes leave the size undefined.
+        assert_eq!(header_qrc(3, 0, 2).audio_frame_size_bytes(), None);
+        assert_eq!(header_qrc(0, 2, 2).audio_frame_size_bytes(), None);
+    }
+
+    #[test]
+    fn twenty_bit_frames_are_whole_bytes_despite_fractional_samples() {
+        // 20-bit has no integer per-sample stride (5/2 bytes)…
+        let h = header_qrc(1, 0, 2);
+        assert_eq!(h.frame_stride_bytes(), None);
+        // …but the frame is a whole 400 bytes (48000 × 20 × 2 / 4800),
+        // so bytes → PCM frames still splits exactly.
+        assert_eq!(h.audio_frame_size_bytes(), Some(400));
+        let pcm = vec![0u8; 400 * 3];
+        let frames = h.split_frames(&pcm).unwrap();
+        assert_eq!(frames.len(), 3);
+        for f in frames.clone() {
+            assert_eq!(f.len(), 400);
+        }
+        assert!(frames.clone().partial_tail().is_empty());
+        assert_eq!(h.audio_frame_count(&pcm), Some(3));
+    }
+
+    #[test]
+    fn split_frames_yields_whole_frames_and_partial_tail() {
+        // 16-bit mono 48 kHz → 160-byte frames.
+        let h = header_qrc(0, 0, 1);
+        assert_eq!(h.audio_frame_size_bytes(), Some(160));
+        // Two whole frames + 5 stray bytes.
+        let mut pcm = Vec::new();
+        for i in 0..(160 * 2 + 5) {
+            pcm.push(i as u8);
+        }
+        let mut frames = h.split_frames(&pcm).unwrap();
+        let f0 = frames.next().unwrap();
+        let f1 = frames.next().unwrap();
+        assert!(frames.next().is_none());
+        assert_eq!(f0, &pcm[..160]);
+        assert_eq!(f1, &pcm[160..320]);
+        assert_eq!(frames.partial_tail(), &pcm[320..]);
+        assert_eq!(h.audio_frame_count(&pcm), Some(2));
+    }
+
+    #[test]
+    fn split_frames_none_for_reserved_codes() {
+        assert!(header_qrc(3, 0, 2).split_frames(&[0u8; 64]).is_none());
+        assert!(header_qrc(0, 3, 2).split_frames(&[0u8; 64]).is_none());
+        assert_eq!(header_qrc(3, 0, 2).audio_frame_count(&[0u8; 64]), None);
+    }
+
+    #[test]
+    fn access_unit_offset_matches_ass_hdr_example() {
+        // stnsoft-ass-hdr.html LPCM example: FirstAccUnit = 0x0004 →
+        // the PTS frame begins at packet offset 026, i.e. 7 bytes
+        // after the substream selector — the first byte after the
+        // 7-byte audio-pack header.
+        let mut bytes = baseline_header();
+        bytes[1] = 0x07; // 7 frames begin in this packet
+        bytes[2] = 0x00;
+        bytes[3] = 0x04;
+        let h = LpcmHeader::parse(&bytes).unwrap();
+        assert!(!h.has_no_first_access_unit());
+        assert_eq!(h.access_unit_offset(), Some(7));
+        assert_eq!(h.access_unit_offset(), Some(LPCM_HEADER_LEN));
+    }
+
+    #[test]
+    fn access_unit_offset_none_when_pointer_zero() {
+        // "The value 0000 indicates there is no first access unit."
+        let h = LpcmHeader::parse(&baseline_header()).unwrap();
+        assert!(h.has_no_first_access_unit());
+        assert_eq!(h.access_unit_offset(), None);
     }
 
     #[test]
