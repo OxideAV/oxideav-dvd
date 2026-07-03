@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.3...v0.0.4) - 2026-07-03
+
+### Other
+
+- NavTimerClock — SPRM 9/10 navigation-timer wall clock
+- README + CHANGELOG: document r386 playback-runtime layer
+- synthetic-disc end-to-end playback integration suite + re-exports
+- VOBU-level trick play — scan_step over the DSI search tables
+- fix backward VOBU_SRI span indexing — on-disc order is bwda1-first
+- audio/sub-picture stream selection + karaoke downmix routing
+- StillClock — still-time playback semantics with UOP-18-gated release
+- frame-granular packing — bytes → PCM audio frames for 16/20/24-bit
+- menu interaction bridge — D-pad navigation + button activation
+- DvdDisc::plan_title — end-to-end static title plan with LBA addressing
+- README + CHANGELOG: document the Phase-4 navigation engine
+- plan_title_cells — static cell schedule of a VTS title
+- transfer-action resolution + SPRM position bookkeeping + resume context
+- PgcRunner — one PGC's spec-ordered playback state machine
+- Type-1 Link resolution against the current PGC position
+- angle-aware cell navigation on Pgc (block span / selection / walk)
+- title / chapter / menu-PGC resolution accessors
+- playback domain model + cross-domain transition legality
+- document mpeg module + Program Stream System Header decode
+- VobStreams::video_sequence_info() demux->summary convenience
+- video elementary-stream header scanner + sequence summary
+- typed Program Stream System Header decode (00 00 01 BB)
+- Picture Header + Picture Coding Extension decode
+- Sequence Display Extension + GOP header decode
+- MPEG-2 video sequence-header + sequence-extension decode
+- document PGC stream-control tables + program-map navigation
+- PGC_SPST_CTL display-mode sub-stream resolver
+- PGC program-map navigation + typed StillTime
+- decode PGC_AST_CTL + PGC_SPST_CTL stream-control tables
+- ratio bytes_per_sample + correct 20-bit frame_stride to None
+- capture PCI RECI Recording-Information region as raw bytes
+- document typed DSI nav-pack accessors (VOBU_SRI/SYNCI/SML_PBI)
+- SML_PBI seamless-playback typed accessors (NextIlvu + audio gaps)
+- typed SYNCI A/V-sync pointer decode (SyncPointer)
+- typed VOBU_SRI fast-scrub seek API (SriPointer + span resolvers)
+- *(vob)* typed PCI_GI c_eltm cell-elapsed-time accessors
+- *(lpcm)* unpack 16-bit LPCM samples (big-endian channel-interleaved)
+- *(vob)* decode PCI_GI vobu_isrc (32-byte ISRC royalty field)
+- typed PCI button action-command decode (BTN_IT command_instruction)
+- generic audio-substream header decode (FrmCnt + FirstAccUnit)
+- DTS core frame-header decoder (sync + 9 fields + 5 flags)
+- typed CellCategory decode for PGC cell-playback byte-0
+- refresh to current status, drop per-round changelog cruft
+
 ### Added
 
 - **LPCM frame-granular packing (`lpcm` module).** The documented
