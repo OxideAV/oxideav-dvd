@@ -9,6 +9,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`plan_title_cells` — static title cell schedule (`engine`
+  module).** Computes the non-interactive playback plan of a
+  VTS-internal title: entry PGC (VTS_PGCI category entry flag + title
+  number) → each PGC's angle-aware cell walk as `PlannedCell` rows
+  (pgcn / program / cell + the C_PBI first-VOBU-start /
+  last-VOBU-end sector span) → the header's next-PGCN chain, stopping
+  at chain end, at a would-be PGC revisit (navigation loop), or when
+  the chain crosses into another title's PGC. The command-aware path
+  is `PgcRunner`; the static plan is what a ripper / the
+  `mkv-output` pipeline wants. 3 new tests.
+
+- **Transfer-action resolution + SPRM position bookkeeping + resume
+  context (`engine` module).** `resolve_action()` maps every
+  transfer-class `VmAction` onto a typed `JumpResolution` naming the
+  structure the disc-level engine loads next — `JumpTT` through
+  TT_SRPT into `(vts, vts_ttn, vts_start_sector)`; `JumpVTS_TT` /
+  `JumpVTS_PTT` current-title-set per the `mpucoder-vmi-jmp.html`
+  same-VTS constraint; the `JumpSS` / `CallSS` menu forms decoding
+  the 4-bit menu operand through `MenuType::from_nibble` (the
+  selector shares the PGC-category menu-type code space); `RSM` →
+  `Resume`; `Exit` → `Stop`. `note_title_position()` records a
+  title-domain arrival on SPRM 4 / 5 / 6 / 7 (TTN / VTS_TTN /
+  TT_PGCN / PTTN per `mpucoder-sprm.html`). `ResumeContext` captures
+  the engine-side half of a `CallSS` (domain / vts / pgcn / cell)
+  with `effective_cell()` applying the non-zero-`rsm_cell`-overrides
+  rule from `mpucoder-vmi-sum.html`. 4 new tests.
+
+- **`PgcRunner` — one PGC's spec-ordered playback state machine
+  (`engine` module).** Drives pre commands → angle-aware cell walk
+  (with per-cell cell-command execution through the shared `Vm`) →
+  PGC still time → post commands → next-PGCN chain, emitting one
+  typed `PlaybackEvent` per player-visible step: `PlayCell` (C_PBI
+  sector span + program + typed still; SPRM 3 re-read at every step
+  so an angle change takes effect at the next block), `PgcStill`,
+  `NavTimer` (surfaces `SetNVTMR` mid-list and resumes after the
+  word — backed by the new `Vm::run_list_from(list, start)`),
+  `NextPgc` / `Chapter` / `Transfer` / `Finished`. Link outcomes
+  resolve via `resolve_link` at the current cell position with
+  `hl_bn` overrides applied to SPRM 8; `new_at_cell()` enters at a
+  chapter's cell without running the pre list (the `JumpVTS_PTT`
+  entry shape). 10 new tests.
+
+- **Type-1 Link resolution (`engine` module).** `resolve_link()`
+  turns a `LinkAction` into a typed `LinkOutcome` relative to a
+  `PgcPosition` — the "within the same domain" transfer semantics
+  of `mpucoder-vmi-sum.html` over the 13 `Link*` rows of
+  `stnsoft-vmindx.html`: cell subsets (top / next / prev with
+  post-command fall-through past the final cell and clamping at cell
+  1), program subsets over the program map, PGC subsets over the
+  header linkage words (`next_pgcn` / `prev_pgcn` / `goup_pgcn`,
+  zero = `NoDestination`), `LinkTailPGC` → post commands, `RSM` →
+  `Resume`, and the numbered `LinkPGCN` / `LinkPTTN` / `LinkPGN` /
+  `LinkCN` forms — every destination cell angle-resolved.
+  `link_highlight_button()` extracts the 6-bit `hl_bn` override.
+  5 new tests.
+
+- **Angle-aware cell navigation on `Pgc` (`ifo` module).**
+  `angle_block_span()` (the `[first, last]` cell span of an angle
+  block per the mpucoder-pgc.html cell-category table),
+  `cell_for_angle()` (block cells map one-to-one onto angles,
+  first cell = angle 1 = SPRM 3, out-of-range angles fall back to
+  angle 1), `next_cell()` (sequential successor that skips the other
+  angles' cells and angle-resolves the landing cell), `first_cell()`
+  + `cell_walk(angle)` iterator (the cell sequence one camera angle
+  presents), and `program_containing_cell()` (inverse program-map
+  lookup). 5 new tests.
+
+- **Playback domain model + transition legality (`engine` module).**
+  `Domain` names the four DVD-Video playback domains (First Play /
+  Video Manager / VTS Menu / VTS Title); `target_domain()` classifies
+  a transfer-class `VmAction` by destination; and
+  `transition_permitted()` encodes the four domain-transition tables
+  of `mpucoder-vmi-jmp.html` row by row (rows 1..13 plus the two
+  explicit "not allowed" rows — a `JumpSS VTSM` naming a different
+  VTS is rejected from the VTS Menu domain; `JumpVTS_TT` /
+  `JumpVTS_PTT` are same-VTS by construction). 7 new tests.
+
+- **Title / chapter / menu-PGC resolution accessors (`ifo` module).**
+  `PgciSrp::is_entry_pgc()` / `title_number()` / `parental_mask()`
+  decode the VTS_PGCI category dword; `Pgci::pgc(pgcn)` /
+  `entry_pgcn_for_title()` / `entry_pgc_for_title()` find the PGC a
+  `JumpTT` / `JumpVTS_TT` lands on; `TtSrpt::title(ttn)` looks up the
+  volume-wide title row; `VtsPttSrpt::ptt(vts_ttn, pttn)` +
+  `chapter_count()` resolve a chapter to its `(PGCN, PGN)` pair;
+  `PgciLu::entry_pgc(MenuType)` + `PgciUt::resolve_menu()` resolve a
+  menu selector with SPRM-0 language fallback; and `VtsIfo` now
+  retains the VTS_PGCI search pointers (`pgci_srp`, previously
+  dropped at parse time) plus `pgc()` / `entry_pgcn_for_title()` /
+  `ptt()` conveniences. 5 new tests.
+
 - **`VobStreams::video_sequence_info()` convenience (`vob` module).**
   After a `VobDemuxer` extracts the title's video elementary stream,
   `VobStreams::video_sequence_info()` runs the `mpeg` scanner over the

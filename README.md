@@ -83,7 +83,13 @@ handling (`Goto` / `Break` / runaway-loop bound), and a
 `Vm::step(NavInstruction) -> VmAction` interpreter that surfaces
 `Link` / `JumpTitle` / `JumpVtsTitle` / `JumpVtsPtt` / `JumpSs` /
 `CallSs` / `Resume` / `SetNavTimer` / `Exit` actions to the
-playback engine. **No CSS yet** — CSS authentication / descrambling
+playback engine. The **`engine` module** is that playback
+engine's navigation core: the four-domain model with the
+`mpucoder-vmi-jmp` transition-legality tables, angle-aware cell
+navigation, Type-1 Link resolution, the `PgcRunner` per-PGC
+playback state machine, transfer resolution into typed
+`JumpResolution` destinations with SPRM 4/5/6/7 bookkeeping, and
+the loop-safe `plan_title_cells` static title schedule. **No CSS yet** — CSS authentication / descrambling
 is delegated to the external `oxideav-css` crate.
 
 | Layer | Status |
@@ -133,6 +139,13 @@ is delegated to the external `oxideav-css` crate.
 | Sub-Picture Unit (SPU) decode (SPUH + SP_DCSQT command stream + PXDtf/PXDbf 2-bit RLE) | landed |
 | SPU → RGBA compositor (palette + contrast resolve + BT.601 YCbCr→RGB + field interleave) | landed |
 | VM **execution** (interpreter over SPRMs/GPRMs + RSM stack + PC) | landed |
+| Playback **domain model** + jump/call transition legality (`engine::Domain` / `target_domain` / `transition_permitted` — the four `mpucoder-vmi-jmp` tables incl. the "not allowed" rows) | landed |
+| Angle-aware cell navigation (`Pgc::angle_block_span` / `cell_for_angle` / `next_cell` / `cell_walk` / `program_containing_cell`) | landed |
+| Type-1 **Link resolution** (`engine::resolve_link` — 13 `Link*` subsets + numbered forms → typed `LinkOutcome` at a `PgcPosition`, angle-resolved, `hl_bn` extraction) | landed |
+| **`PgcRunner`** playback state machine (pre → cells + cell commands → PGC still → post → next-PGCN chain; typed `PlaybackEvent` stream; `SetNVTMR` resume via `Vm::run_list_from`; SPRM 3 angle / SPRM 8 button integration; `new_at_cell` chapter entry) | landed |
+| Transfer resolution + SPRM bookkeeping (`resolve_action` → typed `JumpResolution`; `note_title_position` SPRM 4/5/6/7; `ResumeContext::effective_cell` rsm-cell override) | landed |
+| Title / chapter / menu-PGC resolution (`TtSrpt::title`, `VtsPttSrpt::ptt`, VTS_PGCI entry-PGC-by-title via `PgciSrp` category decode, `PgciUt::resolve_menu` language fallback) | landed |
+| Static title plan (`plan_title_cells` — entry PGC → angle walk → next-PGCN chain, loop-safe, per-cell sector spans) | landed |
 | Typed SPRM accessors — language slots + sentinel-typed integer slots (SPRM 0 / 1 / 3 / 12 / 13 / 16 / 17 / 18 / 19) | landed |
 | CSS authentication + descrambling | external `oxideav-css` crate |
 
@@ -708,6 +721,51 @@ Each accessor decomposes the raw `u16` according to the spec
 page's bit allocation and preserves the original word on the
 returned view's `raw` field, so a caller that wants to forward
 the SPRM verbatim can round-trip it bit-for-bit.
+
+## Running a PGC (navigation engine)
+
+The `engine` module composes the IFO parsers, the `nav`
+disassembler, and the `vm` interpreter into player-level
+navigation. `PgcRunner` drives one PGC through its spec-ordered
+flow — pre commands → angle-aware cell walk (each cell optionally
+followed by its cell command) → PGC still → post commands →
+next-PGCN chain — emitting a typed `PlaybackEvent` per step:
+
+```rust,no_run
+use oxideav_dvd::{PgcRunner, PlaybackEvent, Vm, resolve_action, transition_permitted, Domain};
+use oxideav_dvd::ifo::Pgc;
+
+let pgc: Pgc = todo!("VtsIfo::pgc(pgcn) / Pgci::entry_pgc_for_title(ttn)");
+let mut vm = Vm::new();
+let mut runner = PgcRunner::new(&pgc, 1);
+loop {
+    match runner.next_event(&mut vm) {
+        PlaybackEvent::PlayCell { cell, first_sector, last_sector, .. } => {
+            println!("demux cell {cell}: sectors {first_sector}..={last_sector}");
+        }
+        PlaybackEvent::PgcStill { still } => { /* freeze last frame */ }
+        PlaybackEvent::NavTimer { seconds, pgcn } => { /* arm wall clock */ }
+        PlaybackEvent::NextPgc { pgcn } => { /* load PGC `pgcn`, new runner */ }
+        PlaybackEvent::Chapter { pttn } => { /* VtsPttSrpt::ptt(ttn, pttn) */ }
+        PlaybackEvent::Transfer(action) => {
+            // Cross-domain jump/call — check legality, then resolve.
+            assert!(transition_permitted(Domain::VtsTitle, &action, 1));
+            let _dest = resolve_action(&action, None);
+            break;
+        }
+        PlaybackEvent::Finished => break,
+    }
+}
+```
+
+Camera angle comes from SPRM 3 at every step (angle blocks
+contribute exactly one cell each per `mpucoder-pgc.html`);
+`Link*` highlight-button overrides land in SPRM 8. For the
+non-interactive case — a ripper or the `mkv-output` pipeline —
+`plan_title_cells(&vts.pgci_srp, &vts.pgcs, ttn, angle)` returns
+the title's whole cell schedule (entry PGC → next-PGCN chain,
+loop-safe) as `(pgcn, program, cell, sector-span)` rows without
+executing any commands.
 
 ## Clean-room sources
 
