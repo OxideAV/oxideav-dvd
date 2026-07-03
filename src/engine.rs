@@ -1097,6 +1097,137 @@ impl ResumeContext {
     }
 }
 
+// =====================================================================
+// Still-time playback — the freeze-frame hold after a cell / PGC.
+// =====================================================================
+
+/// Where a still hold currently stands — see [`StillClock`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StillPhase {
+    /// No still was authored (`StillTime::None`) — playback proceeds
+    /// immediately.
+    NotStill,
+    /// A finite still is holding the last frame; `remaining_ms`
+    /// milliseconds are left on the authored duration.
+    Timed { remaining_ms: u64 },
+    /// A `255`-authored still (`StillTime::Infinite`) — holds until
+    /// something releases it (user "Still off" when permitted, or a
+    /// menu button activation that transfers control).
+    Infinite,
+    /// The hold ended — timer expired or it was released.
+    Released,
+}
+
+/// Playback-clock model of one DVD still: the freeze-frame hold a
+/// cell's still-time byte or the PGC header's still-time byte
+/// (offset `0x00A2`, `255` = infinite, per `mpucoder-pgc.html`)
+/// imposes after the video runs out.
+///
+/// The engine builds one `StillClock` per still-carrying
+/// [`PlaybackEvent`] (see [`PlaybackEvent::still_time`]), feeds it
+/// wall-clock progress via [`advance_ms`](Self::advance_ms), and
+/// forwards the user's "still off" keypress through
+/// [`try_user_release`](Self::try_user_release) — which honours the
+/// UOP 18 *Still off* prohibition bit exactly as
+/// `mpucoder-uops.html` specifies it ("a set bit in any mask
+/// inhibits the associated control", across the ORed
+/// title / PGC / VOBU mask levels the caller merges with
+/// [`crate::uops::UopMask::merge_or`]).
+///
+/// A *menu* still (still menu = infinite still + highlight buttons)
+/// ends through button activation instead: the activated command
+/// transfers control, so the engine drops the clock. That path is
+/// [`release`](Self::release) — unconditional, for control transfers
+/// that are not the UOP-18-gated user operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StillClock {
+    phase: StillPhase,
+}
+
+impl StillClock {
+    /// Start the hold an authored [`StillTime`] calls for.
+    pub fn start(still: crate::ifo::StillTime) -> Self {
+        let phase = match still {
+            crate::ifo::StillTime::None => StillPhase::NotStill,
+            crate::ifo::StillTime::Seconds(s) => StillPhase::Timed {
+                remaining_ms: u64::from(s) * 1000,
+            },
+            crate::ifo::StillTime::Infinite => StillPhase::Infinite,
+        };
+        Self { phase }
+    }
+
+    /// Current phase.
+    pub fn phase(&self) -> StillPhase {
+        self.phase
+    }
+
+    /// `true` while the last frame must stay frozen (timed hold with
+    /// time left, or an infinite hold).
+    pub fn is_holding(&self) -> bool {
+        matches!(self.phase, StillPhase::Timed { .. } | StillPhase::Infinite)
+    }
+
+    /// Advance the hold by `elapsed_ms` of wall-clock time. Returns
+    /// `true` when this call ended a timed hold (the caller resumes
+    /// playback exactly once). Infinite holds never expire through
+    /// the clock; `NotStill` / `Released` are no-ops.
+    pub fn advance_ms(&mut self, elapsed_ms: u64) -> bool {
+        if let StillPhase::Timed { remaining_ms } = self.phase {
+            let left = remaining_ms.saturating_sub(elapsed_ms);
+            if left == 0 {
+                self.phase = StillPhase::Released;
+                return true;
+            }
+            self.phase = StillPhase::Timed { remaining_ms: left };
+        }
+        false
+    }
+
+    /// The user pressed "still off". Permitted only while the merged
+    /// UOP mask leaves [`crate::uops::UserOp::StillOff`] (bit 18)
+    /// clear — a set bit at any of the three mask levels inhibits
+    /// the control. Returns `true` when the hold was released.
+    pub fn try_user_release(&mut self, uops: crate::uops::UopMask) -> bool {
+        if !self.is_holding() || !uops.is_allowed(crate::uops::UserOp::StillOff) {
+            return false;
+        }
+        self.phase = StillPhase::Released;
+        true
+    }
+
+    /// Unconditional release — for still-menu button activations and
+    /// other control transfers that end the hold without going
+    /// through the UOP-gated user operation.
+    pub fn release(&mut self) {
+        if self.is_holding() {
+            self.phase = StillPhase::Released;
+        }
+    }
+}
+
+impl PlaybackEvent {
+    /// The still hold this event asks the player to honour, if any:
+    /// the after-cell still for [`PlaybackEvent::PlayCell`] and the
+    /// PGC-level still for [`PlaybackEvent::PgcStill`]. `None` for
+    /// every event that carries no freeze-frame semantics.
+    pub fn still_time(&self) -> Option<crate::ifo::StillTime> {
+        match self {
+            PlaybackEvent::PlayCell { still, .. } | PlaybackEvent::PgcStill { still } => {
+                Some(*still)
+            }
+            _ => None,
+        }
+    }
+
+    /// Convenience: a [`StillClock`] pre-armed for this event's
+    /// still, or `None` when the event carries none (equivalent to
+    /// `self.still_time().map(StillClock::start)`).
+    pub fn still_clock(&self) -> Option<StillClock> {
+        self.still_time().map(StillClock::start)
+    }
+}
+
 /// What [`PgcRunner::handle_list_action`] tells the state loop.
 #[derive(Debug)]
 enum ListVerdict {
@@ -2343,5 +2474,119 @@ mod tests {
             link_highlight_button(&LinkAction::Cn { cn: 1, hl_bn: 2 }),
             Some(2)
         );
+    }
+
+    // ---- StillClock -----------------------------------------------
+
+    use crate::uops::{UopMask, UserOp};
+
+    #[test]
+    fn still_clock_not_still_passes_through() {
+        let mut c = StillClock::start(StillTime::None);
+        assert_eq!(c.phase(), StillPhase::NotStill);
+        assert!(!c.is_holding());
+        assert!(!c.advance_ms(10_000));
+        assert!(!c.try_user_release(UopMask::NONE));
+        assert_eq!(c.phase(), StillPhase::NotStill);
+    }
+
+    #[test]
+    fn still_clock_timed_expires_once() {
+        let mut c = StillClock::start(StillTime::Seconds(2));
+        assert_eq!(c.phase(), StillPhase::Timed { remaining_ms: 2000 });
+        assert!(c.is_holding());
+        assert!(!c.advance_ms(1500));
+        assert_eq!(c.phase(), StillPhase::Timed { remaining_ms: 500 });
+        // The call that crosses zero reports the release exactly once.
+        assert!(c.advance_ms(600));
+        assert_eq!(c.phase(), StillPhase::Released);
+        assert!(!c.is_holding());
+        assert!(!c.advance_ms(1000));
+    }
+
+    #[test]
+    fn still_clock_infinite_never_expires_by_time() {
+        let mut c = StillClock::start(StillTime::Infinite);
+        assert_eq!(c.phase(), StillPhase::Infinite);
+        assert!(!c.advance_ms(u64::MAX));
+        assert!(c.is_holding());
+        // …but the user can release it when UOP 18 is clear.
+        assert!(c.try_user_release(UopMask::NONE));
+        assert_eq!(c.phase(), StillPhase::Released);
+    }
+
+    #[test]
+    fn still_clock_user_release_gated_on_uop_18() {
+        // A set "Still off" bit at any merged level inhibits release.
+        let mut c = StillClock::start(StillTime::Infinite);
+        let vobu_mask = UopMask::NONE.with(UserOp::StillOff);
+        let merged = UopMask::merge_or(UopMask::NONE, UopMask::NONE, vobu_mask);
+        assert!(!c.try_user_release(merged));
+        assert!(c.is_holding());
+        // A mask that prohibits *other* ops but leaves bit 18 clear
+        // does not inhibit the release.
+        let other = UopMask::NONE.with(UserOp::PauseOn).with(UserOp::Stop);
+        assert!(c.try_user_release(other));
+        assert!(!c.is_holding());
+        // Released is terminal: further attempts are no-ops.
+        assert!(!c.try_user_release(UopMask::NONE));
+    }
+
+    #[test]
+    fn still_clock_unconditional_release_for_menu_transfer() {
+        // Still-menu path: a button activation transfers control, so
+        // the engine releases the hold without consulting UOP 18.
+        let mut c = StillClock::start(StillTime::Infinite);
+        c.release();
+        assert_eq!(c.phase(), StillPhase::Released);
+        // NotStill stays NotStill (release only ends real holds).
+        let mut n = StillClock::start(StillTime::None);
+        n.release();
+        assert_eq!(n.phase(), StillPhase::NotStill);
+    }
+
+    #[test]
+    fn playback_event_still_accessors() {
+        let cell_ev = PlaybackEvent::PlayCell {
+            cell: 1,
+            program: 1,
+            first_sector: 0,
+            last_sector: 9,
+            still: StillTime::Seconds(5),
+        };
+        assert_eq!(cell_ev.still_time(), Some(StillTime::Seconds(5)));
+        assert_eq!(
+            cell_ev.still_clock().unwrap().phase(),
+            StillPhase::Timed { remaining_ms: 5000 }
+        );
+        let pgc_ev = PlaybackEvent::PgcStill {
+            still: StillTime::Infinite,
+        };
+        assert_eq!(pgc_ev.still_time(), Some(StillTime::Infinite));
+        assert!(pgc_ev.still_clock().unwrap().is_holding());
+        assert_eq!(PlaybackEvent::Finished.still_time(), None);
+        assert!(PlaybackEvent::NextPgc { pgcn: 2 }.still_clock().is_none());
+    }
+
+    #[test]
+    fn runner_still_event_drives_still_clock() {
+        // End-to-end: a PGC whose header authors a 3-second still —
+        // the runner's PgcStill event arms a clock that holds for
+        // exactly 3000 ms.
+        let mut pgc = plain_pgc(1);
+        pgc.still_time = 3;
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        assert!(matches!(
+            r.next_event(&mut vm),
+            PlaybackEvent::PlayCell { .. }
+        ));
+        let ev = r.next_event(&mut vm);
+        assert_eq!(ev.still_time(), Some(StillTime::Seconds(3)));
+        let mut clock = ev.still_clock().unwrap();
+        assert!(!clock.advance_ms(2999));
+        assert!(clock.advance_ms(1));
+        assert!(!clock.is_holding());
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
     }
 }
