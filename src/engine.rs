@@ -724,6 +724,93 @@ impl<'a> PgcRunner<'a> {
 }
 
 // =====================================================================
+// Static title plan — the non-interactive cell schedule of a title.
+// =====================================================================
+
+/// One entry of a static title playback plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlannedCell {
+    /// 1-based PGCN the cell lives in.
+    pub pgcn: u16,
+    /// 1-based program within that PGC.
+    pub program: u8,
+    /// 1-based cell number within that PGC.
+    pub cell: u8,
+    /// C_PBI `first VOBU start sector` (VOB-relative).
+    pub first_sector: u32,
+    /// C_PBI `last VOBU end sector` (VOB-relative).
+    pub last_sector: u32,
+}
+
+/// Compute the **static** cell schedule of a VTS-internal title —
+/// the sector spans a ripper / muxer demuxes, in presentation order,
+/// without executing any navigation commands.
+///
+/// Starting at the title's entry PGC (per the VTS_PGCI category
+/// dword's entry flag + title number), each PGC contributes its
+/// angle-`angle` cell walk ([`Pgc::cell_walk`] — angle blocks
+/// contribute exactly one cell each), then the walk follows the PGC
+/// header's next-PGCN chain (`mpucoder-pgc.html` offset `0x009C`)
+/// until it ends (zero) or would revisit a PGC (a navigation loop a
+/// static plan must break). PGCs belonging to a *different* title
+/// per their category dword stop the chain too — a next-PGCN link
+/// out of the title's own PGC set is menu/authoring territory the
+/// command-aware [`PgcRunner`] handles.
+///
+/// `pgci_srp` and `pgcs` are the parallel arrays of `VTS_PGCI`
+/// (`Pgci::srp` / `Pgci::pgcs`, or `VtsIfo::pgci_srp` /
+/// `VtsIfo::pgcs`). Returns `None` when the title has no entry PGC.
+///
+/// The interactive path — pre/post/cell commands, stills, menu
+/// calls — is [`PgcRunner`]; this plan deliberately ignores them.
+pub fn plan_title_cells(
+    pgci_srp: &[crate::ifo::PgciSrp],
+    pgcs: &[crate::ifo::Pgc],
+    vts_ttn: u8,
+    angle: u8,
+) -> Option<Vec<PlannedCell>> {
+    let entry = pgci_srp
+        .iter()
+        .position(|s| s.is_entry_pgc() && s.title_number() == vts_ttn)
+        .map(|i| (i as u16) + 1)?;
+
+    let mut plan = Vec::new();
+    let mut visited = vec![false; pgcs.len()];
+    let mut pgcn = entry;
+    loop {
+        let idx = usize::from(pgcn.checked_sub(1)?);
+        let (Some(pgc), Some(srp)) = (pgcs.get(idx), pgci_srp.get(idx)) else {
+            break;
+        };
+        // Stop on loops and on PGCs of another title.
+        if visited[idx] || srp.title_number() != vts_ttn {
+            break;
+        }
+        visited[idx] = true;
+        for cell in pgc.cell_walk(angle) {
+            let Some(info) = usize::from(cell)
+                .checked_sub(1)
+                .and_then(|i| pgc.cells.get(i))
+            else {
+                continue;
+            };
+            plan.push(PlannedCell {
+                pgcn,
+                program: pgc.program_containing_cell(cell).unwrap_or(1),
+                cell,
+                first_sector: info.first_vobu_start_sector,
+                last_sector: info.last_vobu_end_sector,
+            });
+        }
+        if pgc.next_pgcn == 0 {
+            break;
+        }
+        pgcn = pgc.next_pgcn;
+    }
+    Some(plan)
+}
+
+// =====================================================================
 // Jump resolution — turning a transfer VmAction into a destination.
 // =====================================================================
 
@@ -1773,6 +1860,81 @@ mod tests {
         // Out-of-range entry cell falls through to post → Finished.
         let mut r2 = PgcRunner::new_at_cell(&pgc, 1, 9);
         assert_eq!(r2.next_event(&mut vm), PlaybackEvent::Finished);
+    }
+
+    // ---- plan_title_cells ---------------------------------------------
+
+    use crate::ifo::PgciSrp;
+
+    fn srp(category: u32) -> PgciSrp {
+        PgciSrp {
+            category,
+            offset: 0,
+        }
+    }
+
+    #[test]
+    fn plan_title_follows_next_pgcn_chain() {
+        // PGC 1: entry for title 1, 2 cells, chains to PGC 2.
+        // PGC 2: continuation of title 1, 1 cell, chain ends.
+        // PGC 3: entry for title 2 (must not appear in the plan).
+        let mut pgc1 = plain_pgc(2);
+        pgc1.next_pgcn = 2;
+        let pgc2 = plain_pgc(1);
+        let pgc3 = plain_pgc(1);
+        let srps = [srp(0x8100_0000), srp(0x0100_0000), srp(0x8200_0000)];
+        let pgcs = [pgc1, pgc2, pgc3];
+
+        let plan = plan_title_cells(&srps, &pgcs, 1, 1).unwrap();
+        let flat: Vec<(u16, u8, u32, u32)> = plan
+            .iter()
+            .map(|p| (p.pgcn, p.cell, p.first_sector, p.last_sector))
+            .collect();
+        assert_eq!(
+            flat,
+            vec![(1, 1, 100, 199), (1, 2, 200, 299), (2, 1, 100, 199)]
+        );
+
+        // Title 2's plan is just PGC 3.
+        let plan2 = plan_title_cells(&srps, &pgcs, 2, 1).unwrap();
+        assert_eq!(plan2.len(), 1);
+        assert_eq!(plan2[0].pgcn, 3);
+
+        // Unknown title -> None.
+        assert!(plan_title_cells(&srps, &pgcs, 3, 1).is_none());
+    }
+
+    #[test]
+    fn plan_title_breaks_navigation_loops_and_foreign_pgcs() {
+        // PGC 1 chains to PGC 2; PGC 2 chains back to PGC 1 (loop).
+        let mut pgc1 = plain_pgc(1);
+        pgc1.next_pgcn = 2;
+        let mut pgc2 = plain_pgc(1);
+        pgc2.next_pgcn = 1;
+        let srps = [srp(0x8100_0000), srp(0x0100_0000)];
+        let plan = plan_title_cells(&srps, &[pgc1, pgc2], 1, 1).unwrap();
+        assert_eq!(plan.len(), 2); // each PGC contributes once
+
+        // A chain into another title's PGC stops the plan.
+        let mut a = plain_pgc(1);
+        a.next_pgcn = 2;
+        let b = plain_pgc(1);
+        let srps2 = [srp(0x8100_0000), srp(0x8200_0000)];
+        let plan2 = plan_title_cells(&srps2, &[a, b], 1, 1).unwrap();
+        assert_eq!(plan2.len(), 1);
+        assert_eq!(plan2[0].pgcn, 1);
+    }
+
+    #[test]
+    fn plan_title_respects_angle() {
+        // link_test_pgc: cells 1..=2 plain + 3..=5 angle block; make
+        // it a self-contained title (no next chain).
+        let mut pgc = link_test_pgc();
+        pgc.next_pgcn = 0;
+        let srps = [srp(0x8100_0000)];
+        let plan = plan_title_cells(&srps, &[pgc], 1, 2).unwrap();
+        let cells: Vec<u8> = plan.iter().map(|p| p.cell).collect();
+        assert_eq!(cells, vec![1, 2, 4]);
     }
 
     // ---- resolve_action / note_title_position / ResumeContext ---------
