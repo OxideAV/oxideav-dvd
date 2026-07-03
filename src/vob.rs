@@ -1963,8 +1963,19 @@ pub struct VobuSri {
     pub sri_nv: u32,
     /// Offset to the previous VOBU with possible video (backward).
     pub sri_pv: u32,
-    /// Backward span entries — 19 fixed scrub distances mirroring the
-    /// forward table (`sri_bwda1` first through `sri_bwda240` last).
+    /// Backward span entries **in on-disc order** — `sri_bwda1`
+    /// (the 0.5-second bucket, packet offset `0x142`) first through
+    /// `sri_bwda240` (the 120-second bucket, offset `0x18A`) last.
+    ///
+    /// Note the on-disc ordering is the *reverse* of the forward
+    /// table's: the two tables mirror each other around the central
+    /// `sri_nv` / `sri_pv` bracket pointers, so the finest step of
+    /// each direction (`sri_fwda1` at `0x136`, `sri_bwda1` at
+    /// `0x142`) sits nearest the middle. The `a<N>` label suffix is
+    /// the nominal span in half-second units (`a1` = 0.5 s, `a240` =
+    /// 120 s), exactly as the forward names run `fwdi240` → `fwda1`.
+    /// Use [`Self::backward_span`] for bucket-indexed access that
+    /// hides the reversal.
     pub backward: [u32; 19],
     /// Offset to the previous VOBU **with video** (backward; bit 31 = valid).
     pub sri_pvwv: u32,
@@ -2084,15 +2095,22 @@ impl VobuSri {
         })
     }
 
-    /// Typed backward-span pointer at table `index` (`0..19`).
+    /// Typed backward-span pointer at **bucket** `index` (`0..19`).
     ///
     /// Index 0 is the 120-second bucket, index 18 the 0.5-second
-    /// bucket, matching [`Self::SPAN_SECONDS`]. Returns `None` for an
-    /// out-of-range index.
+    /// bucket, matching [`Self::SPAN_SECONDS`] — the same bucket
+    /// indexing as [`Self::forward_span`]. Because the backward table
+    /// is stored on disc in the *reverse* order (`sri_bwda1` first —
+    /// see the [`Self::backward`] field docs), bucket `index` maps to
+    /// table entry `18 - index`. Returns `None` for an out-of-range
+    /// index.
     #[inline]
     pub fn backward_span(&self, index: usize) -> Option<SriPointer> {
-        self.backward.get(index).map(|&raw| SriPointer {
-            raw,
+        if index >= 19 {
+            return None;
+        }
+        Some(SriPointer {
+            raw: self.backward[18 - index],
             direction: SriDirection::Backward,
         })
     }
@@ -2135,19 +2153,24 @@ impl VobuSri {
         // `SPAN_SECONDS` is in descending order (index 0 = 120 s,
         // index 18 = 0.5 s). Scan from the coarsest bucket; the first
         // valid entry whose nominal span does not exceed the request is
-        // the largest jump that won't overshoot.
+        // the largest jump that won't overshoot. The forward table is
+        // stored in this same descending order, the backward table in
+        // the reverse (`sri_bwda1` = 0.5 s first — see the `backward`
+        // field docs), so the bucket → table-entry mapping flips per
+        // direction.
         let mut best_below: Option<SriPointer> = None;
         let mut finest_valid: Option<SriPointer> = None;
         for (i, &span) in Self::SPAN_SECONDS.iter().enumerate() {
-            let ptr = SriPointer {
-                raw: table[i],
-                direction,
+            let raw = match direction {
+                SriDirection::Forward => table[i],
+                SriDirection::Backward => table[18 - i],
             };
+            let ptr = SriPointer { raw, direction };
             if !ptr.is_valid() {
                 continue;
             }
             // Track the smallest-span valid pointer as the fallback
-            // (later indices are smaller spans).
+            // (later buckets are smaller spans).
             finest_valid = Some(ptr);
             if span <= seconds && best_below.is_none() {
                 best_below = Some(ptr);
@@ -4170,14 +4193,37 @@ mod tests {
 
     #[test]
     fn sri_seek_backward_mirrors_forward_policy() {
+        // The backward table is stored in on-disc order: entry 0 is
+        // sri_bwda1 (the 0.5 s bucket), entry 18 is sri_bwda240
+        // (120 s). Author a 120 s span and a 1.5 s span at their
+        // on-disc positions.
         let mut sri = empty_vobu_sri();
-        sri.backward[0] = VobuSri::VALID_BIT | 120; // 120 s bucket
-        sri.backward[16] = VobuSri::VALID_BIT | 2; // 1.5 s bucket
+        sri.backward[18] = VobuSri::VALID_BIT | 120; // sri_bwda240 = 120 s
+        sri.backward[2] = VobuSri::VALID_BIT | 2; // sri_bwda3 = 1.5 s
 
         let p = sri.seek_backward(10.0).expect("a valid span exists");
         // 120 overshoots 10; 1.5 s (offset 2) is the only at-or-below.
         assert_eq!(p.offset_sectors(), Some(2));
         assert_eq!(p.direction, SriDirection::Backward);
+
+        // A 200 s rewind takes the coarsest valid bucket (120 s).
+        assert_eq!(
+            sri.seek_backward(200.0).unwrap().offset_sectors(),
+            Some(120)
+        );
+    }
+
+    #[test]
+    fn sri_backward_span_bucket_indexing_reverses_table_order() {
+        // backward_span uses SPAN_SECONDS bucket indices like
+        // forward_span; bucket 0 (120 s) is table entry 18, bucket 18
+        // (0.5 s) is table entry 0.
+        let mut sri = empty_vobu_sri();
+        sri.backward[0] = VobuSri::VALID_BIT | 1; // sri_bwda1 = 0.5 s
+        sri.backward[18] = VobuSri::VALID_BIT | 240; // sri_bwda240 = 120 s
+        assert_eq!(sri.backward_span(18).unwrap().offset_sectors(), Some(1));
+        assert_eq!(sri.backward_span(0).unwrap().offset_sectors(), Some(240));
+        assert!(sri.backward_span(19).is_none());
     }
 
     #[test]
