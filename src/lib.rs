@@ -109,10 +109,14 @@ pub use ac3::{Ac3AudioCodingMode, Ac3BitstreamMode, Ac3Header, Ac3SampleRate, AC
 pub use disc::{DvdDisc, DvdFile, DvdFileKind, TitlePlan};
 pub use dts::{DtsAudioMode, DtsBitRate, DtsFrameType, DtsHeader, DtsSampleRate, DTS_SYNC_WORD};
 pub use engine::{
-    activate_button, forced_action, initial_button, link_highlight_button, navigate_button,
-    note_title_position, plan_title_cells, resolve_action, resolve_link, select_button,
-    target_domain, transition_permitted, ButtonMove, ButtonPress, Domain, JumpResolution,
-    LinkOutcome, PgcPosition, PgcRunner, PlannedCell, PlaybackEvent, ResumeContext,
+    activate_button, audio_stream_playable, forced_action, initial_button, karaoke_routing,
+    link_highlight_button, navigate_button, note_audio_selection, note_title_position,
+    plan_title_cells, reference_frame_span, resolve_action, resolve_link, scan_permitted,
+    scan_step, select_audio_stream, select_button, select_subpicture_stream,
+    subpicture_display_mode, target_domain, transition_permitted, AudioSelection, ButtonMove,
+    ButtonPress, Domain, JumpResolution, KaraokeChannelContent, KaraokeChannelRoute, LinkOutcome,
+    PgcPosition, PgcRunner, PlannedCell, PlaybackEvent, ResumeContext, ScanDirection, StillClock,
+    StillPhase, SubpictureSelection, TrickStep,
 };
 pub use error::{Error, Result};
 pub use ifo::{
@@ -132,8 +136,9 @@ pub use iso9660::{
     VolumeDescriptorType,
 };
 pub use lpcm::{
-    peel_lpcm_payload, LpcmHeader, LpcmQuantisation, LpcmSampleFrequency,
-    DVD_LPCM_MAX_BITRATE_KBPS, LPCM_HEADER_LEN,
+    peel_lpcm_payload, LpcmFrames, LpcmHeader, LpcmQuantisation, LpcmSampleFrequency,
+    DVD_LPCM_MAX_BITRATE_KBPS, LPCM_FRAMES_PER_GROUP, LPCM_FRAMES_PER_SECOND,
+    LPCM_FRAME_DURATION_90KHZ, LPCM_GROUP_DURATION_90KHZ, LPCM_HEADER_LEN,
 };
 pub use mpeg::{
     iter_start_codes, scan_video_sequence, AspectRatioCode, ColourDescription, FrameRateCode,
@@ -177,8 +182,8 @@ pub use vob::{
     demux_vobs, demux_vobs_path, looks_like_nav_pack, AudioSubstreamHeader, ButtonInfo, ButtonMode,
     CellId, DsiGi, DsiPacket, DvdSubstream, ElementaryStream, HighlightInfo, HighlightStatus,
     NavPack, NsmlAgli, NsmlAngleCell, PackHeader, PciPacket, PesPacket, SlColi, SlColiCell,
-    SmlAgli, SmlAngleCell, SmlAudioGap, SmlPbi, StreamBound, Synci, SystemHeader, VobDemuxer,
-    VobId, VobStreams, VobuSri, AUDIO_SUBSTREAM_HEADER_LEN,
+    SmlAgli, SmlAngleCell, SmlAudioGap, SmlPbi, SriDirection, SriPointer, StreamBound, Synci,
+    SystemHeader, VobDemuxer, VobId, VobStreams, VobuSri, AUDIO_SUBSTREAM_HEADER_LEN,
 };
 
 #[cfg(feature = "registry")]
