@@ -447,6 +447,47 @@ impl DvdDisc {
         Pgc::parse(&buf[start..]).map(Some)
     }
 
+    /// Compute the static, command-free cell schedule of the 1-based
+    /// volume-wide title `ttn` for camera angle `angle` — TT_SRPT
+    /// lookup, title-set IFO parse, and
+    /// [`crate::engine::plan_title_cells`] composed into one call.
+    ///
+    /// The returned [`TitlePlan`] carries the angle-resolved
+    /// [`crate::engine::PlannedCell`] rows (VOB-relative sector
+    /// spans) plus the addressing context —
+    /// `TT_SRPT::vts_start_sector` and `VTSI_MAT::title_vob_sector`
+    /// — so [`TitlePlan::absolute_lba`] can turn each span into a
+    /// disc-absolute LBA. Navigation commands / stills / menus are
+    /// deliberately not executed; the interactive path is
+    /// [`crate::engine::PgcRunner`].
+    pub fn plan_title<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        ttn: u8,
+        angle: u8,
+    ) -> Result<TitlePlan> {
+        let srpt = self.parse_vmg_tt_srpt(reader)?;
+        let entry = *srpt
+            .title(ttn)
+            .ok_or(Error::InvalidUdf("TT_SRPT: no such title"))?;
+        let vts = self.parse_vts(reader, entry.vts_number)?;
+        let cells = crate::engine::plan_title_cells(
+            &vts.pgci_srp,
+            &vts.pgcs,
+            entry.vts_title_number,
+            angle,
+        )
+        .ok_or(Error::InvalidUdf("VTS_PGCI: no entry PGC for this title"))?;
+        Ok(TitlePlan {
+            ttn,
+            vts: entry.vts_number,
+            vts_ttn: entry.vts_title_number,
+            vts_start_sector: entry.vts_start_sector,
+            title_vob_sector: vts.mat.title_vob_sector,
+            cells,
+        })
+    }
+
     /// Read `VIDEO_TS.IFO`'s [`PgciUt`] — the VMGM (First-Play / VMG
     /// menu) program-chain table indexed by ISO 639 language unit.
     ///
@@ -797,6 +838,38 @@ fn parse_vts_filename(name: &str) -> Option<DvdFileKind> {
     }
 }
 
+/// The result of [`DvdDisc::plan_title`] — one title's static cell
+/// schedule plus the addressing context that turns its VOB-relative
+/// sector spans into disc-absolute LBAs.
+#[derive(Debug, Clone)]
+pub struct TitlePlan {
+    /// 1-based volume-wide title number (SPRM 4).
+    pub ttn: u8,
+    /// 1-based title set the title lives in.
+    pub vts: u8,
+    /// 1-based title number within that VTS (SPRM 5).
+    pub vts_ttn: u8,
+    /// Disc-absolute start sector of the title set (TT_SRPT entry).
+    pub vts_start_sector: u32,
+    /// Start sector of the title-content VOBs relative to the title
+    /// set (`VTSI_MAT` offset `0x00C4`).
+    pub title_vob_sector: u32,
+    /// The angle-resolved cell schedule in presentation order;
+    /// sector spans are relative to the title-content VOB set.
+    pub cells: Vec<crate::engine::PlannedCell>,
+}
+
+impl TitlePlan {
+    /// Translate a VOB-relative sector (a [`crate::engine::PlannedCell`]
+    /// span endpoint) into a disc-absolute LBA:
+    /// `vts_start_sector + title_vob_sector + vob_relative_sector`.
+    pub fn absolute_lba(&self, vob_relative_sector: u32) -> u32 {
+        self.vts_start_sector
+            .saturating_add(self.title_vob_sector)
+            .saturating_add(vob_relative_sector)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1005,6 +1078,137 @@ mod tests {
             audio_ts_files: Vec::new(),
         };
         (disc, Cursor::new(image))
+    }
+
+    /// Build a disc image with a *complete* one-title VTS so the
+    /// full TT_SRPT → VTSI → VTS_PGCI → plan pipeline runs:
+    /// VMGI MAT @ 0 (TT_SRPT @ 3), TT_SRPT @ 3,
+    /// VTSI MAT @ 4 (PTT_SRPT @ +1, PGCI @ +2, C_ADT @ +3).
+    fn synth_title_disc() -> (DvdDisc, Cursor<Vec<u8>>) {
+        let mut image = vec![0u8; DVD_SECTOR * 8];
+
+        // VMGI MAT @ sector 0.
+        image[0..12].copy_from_slice(VMG_MAGIC);
+        image[0x1C..0x20].copy_from_slice(&3u32.to_be_bytes()); // last_sector_ifo
+        image[0xC4..0xC8].copy_from_slice(&3u32.to_be_bytes()); // TT_SRPT @ 3
+
+        // TT_SRPT @ sector 3: one title → VTS 1 / VTS_TTN 1, VTS
+        // starts at disc LBA 4.
+        {
+            let t = &mut image[3 * DVD_SECTOR..4 * DVD_SECTOR];
+            t[0..2].copy_from_slice(&1u16.to_be_bytes()); // title count
+            t[4..8].copy_from_slice(&19u32.to_be_bytes()); // end address
+            t[8] = 0; // title_type
+            t[9] = 1; // angle count
+            t[10..12].copy_from_slice(&1u16.to_be_bytes()); // chapters
+            t[14] = 1; // VTS number
+            t[15] = 1; // VTS title number
+            t[16..20].copy_from_slice(&4u32.to_be_bytes()); // VTS start sector
+        }
+
+        // VTSI MAT @ sector 4.
+        {
+            let m = &mut image[4 * DVD_SECTOR..5 * DVD_SECTOR];
+            m[0..12].copy_from_slice(VTS_MAGIC);
+            m[0x1C..0x20].copy_from_slice(&3u32.to_be_bytes()); // last_sector_ifo
+            m[0xC4..0xC8].copy_from_slice(&100u32.to_be_bytes()); // title VOB start
+            m[0xC8..0xCC].copy_from_slice(&1u32.to_be_bytes()); // PTT_SRPT @ +1
+            m[0xCC..0xD0].copy_from_slice(&2u32.to_be_bytes()); // PGCI @ +2
+            m[0xE0..0xE4].copy_from_slice(&3u32.to_be_bytes()); // C_ADT @ +3
+        }
+
+        // VTS_PTT_SRPT @ sector 5: 1 title, 1 chapter → (PGC 1, PG 1).
+        {
+            let t = &mut image[5 * DVD_SECTOR..6 * DVD_SECTOR];
+            t[0..2].copy_from_slice(&1u16.to_be_bytes());
+            t[4..8].copy_from_slice(&15u32.to_be_bytes()); // end address
+            t[8..12].copy_from_slice(&12u32.to_be_bytes()); // offset to PTT[1]
+            t[12..14].copy_from_slice(&1u16.to_be_bytes()); // pgcn
+            t[14..16].copy_from_slice(&1u16.to_be_bytes()); // pgn
+        }
+
+        // VTS_PGCI @ sector 6: one entry PGC for title 1, two cells.
+        {
+            let g = &mut image[6 * DVD_SECTOR..7 * DVD_SECTOR];
+            g[0..2].copy_from_slice(&1u16.to_be_bytes()); // 1 PGC
+            g[8..12].copy_from_slice(&0x8100_0000u32.to_be_bytes()); // entry, title 1
+            g[12..16].copy_from_slice(&16u32.to_be_bytes()); // PGC body @ 16
+            let b = 16;
+            g[b + 0x02] = 1; // programs
+            g[b + 0x03] = 2; // cells
+            let off_pmap = 0xECu16;
+            let off_cpbi = 0xEE_u16; // 1-byte map padded to 2
+            let off_cpos = off_cpbi + 48;
+            g[b + 0xE6..b + 0xE8].copy_from_slice(&off_pmap.to_be_bytes());
+            g[b + 0xE8..b + 0xEA].copy_from_slice(&off_cpbi.to_be_bytes());
+            g[b + 0xEA..b + 0xEC].copy_from_slice(&off_cpos.to_be_bytes());
+            g[b + usize::from(off_pmap)] = 1; // program 1 → cell 1
+            for (i, (first, last)) in [(0u32, 99u32), (100, 199)].iter().enumerate() {
+                let c = b + usize::from(off_cpbi) + i * 24;
+                g[c + 8..c + 12].copy_from_slice(&first.to_be_bytes());
+                g[c + 20..c + 24].copy_from_slice(&last.to_be_bytes());
+            }
+            for i in 0..2usize {
+                let cp = b + usize::from(off_cpos) + i * 4;
+                g[cp..cp + 2].copy_from_slice(&1u16.to_be_bytes()); // VOB id
+                g[cp + 3] = (i + 1) as u8; // cell id
+            }
+        }
+
+        // VTS_C_ADT @ sector 7.
+        image[7 * DVD_SECTOR..8 * DVD_SECTOR].copy_from_slice(&synth_c_adt());
+
+        let disc = DvdDisc {
+            volume_id: "SYNTH-TITLE".to_string(),
+            title_set_count: 1,
+            video_ts_files: vec![
+                DvdFile {
+                    kind: DvdFileKind::Vmgi,
+                    name: "VIDEO_TS.IFO".to_string(),
+                    lba: 0,
+                    size: DVD_SECTOR as u64 * 4,
+                    title_set: 0,
+                    vob_index: 0,
+                },
+                DvdFile {
+                    kind: DvdFileKind::Vtsi(1),
+                    name: "VTS_01_0.IFO".to_string(),
+                    lba: 4,
+                    size: DVD_SECTOR as u64 * 4,
+                    title_set: 1,
+                    vob_index: 0,
+                },
+            ],
+            audio_ts_files: Vec::new(),
+        };
+        (disc, Cursor::new(image))
+    }
+
+    #[test]
+    fn plan_title_end_to_end() {
+        let (disc, mut r) = synth_title_disc();
+        let plan = disc.plan_title(&mut r, 1, 1).unwrap();
+        assert_eq!(plan.ttn, 1);
+        assert_eq!(plan.vts, 1);
+        assert_eq!(plan.vts_ttn, 1);
+        assert_eq!(plan.vts_start_sector, 4);
+        assert_eq!(plan.title_vob_sector, 100);
+        let flat: Vec<(u16, u8, u32, u32)> = plan
+            .cells
+            .iter()
+            .map(|c| (c.pgcn, c.cell, c.first_sector, c.last_sector))
+            .collect();
+        assert_eq!(flat, vec![(1, 1, 0, 99), (1, 2, 100, 199)]);
+        // Disc-absolute addressing: VTS @ 4 + title VOB @ 100.
+        assert_eq!(plan.absolute_lba(plan.cells[0].first_sector), 104);
+        assert_eq!(plan.absolute_lba(plan.cells[1].last_sector), 303);
+    }
+
+    #[test]
+    fn plan_title_unknown_title_is_error() {
+        let (disc, mut r) = synth_title_disc();
+        assert!(disc.plan_title(&mut r, 2, 1).is_err());
+        assert!(disc.plan_title(&mut r, 0, 1).is_err());
     }
 
     #[test]

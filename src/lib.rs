@@ -106,7 +106,7 @@ pub mod mkv_writer;
 pub mod pipeline;
 
 pub use ac3::{Ac3AudioCodingMode, Ac3BitstreamMode, Ac3Header, Ac3SampleRate, AC3_SYNC_WORD};
-pub use disc::{DvdDisc, DvdFile, DvdFileKind};
+pub use disc::{DvdDisc, DvdFile, DvdFileKind, TitlePlan};
 pub use dts::{DtsAudioMode, DtsBitRate, DtsFrameType, DtsHeader, DtsSampleRate, DTS_SYNC_WORD};
 pub use engine::{
     link_highlight_button, note_title_position, plan_title_cells, resolve_action, resolve_link,

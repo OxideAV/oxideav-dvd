@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`DvdDisc::plan_title` — disc-level title plan (`disc` module).**
+  Composes the whole static-path pipeline in one call: TT_SRPT
+  lookup (`ttn` → VTS / VTS_TTN / VTS start sector) → `parse_vts` →
+  `engine::plan_title_cells`. The returned `TitlePlan` carries the
+  angle-resolved cell schedule plus the addressing context
+  (`vts_start_sector` + `VTSI_MAT::title_vob_sector`), and
+  `TitlePlan::absolute_lba()` turns a cell span's VOB-relative
+  sector into a disc-absolute LBA. 2 new tests drive a synthetic
+  8-sector disc image (VMGI MAT + TT_SRPT + VTSI MAT + PTT_SRPT +
+  PGCI with a 2-cell entry PGC + C_ADT) end-to-end and check the
+  unknown-title error path.
+
 - **`plan_title_cells` — static title cell schedule (`engine`
   module).** Computes the non-interactive playback plan of a
   VTS-internal title: entry PGC (VTS_PGCI category entry flag + title

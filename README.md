@@ -146,6 +146,7 @@ is delegated to the external `oxideav-css` crate.
 | Transfer resolution + SPRM bookkeeping (`resolve_action` → typed `JumpResolution`; `note_title_position` SPRM 4/5/6/7; `ResumeContext::effective_cell` rsm-cell override) | landed |
 | Title / chapter / menu-PGC resolution (`TtSrpt::title`, `VtsPttSrpt::ptt`, VTS_PGCI entry-PGC-by-title via `PgciSrp` category decode, `PgciUt::resolve_menu` language fallback) | landed |
 | Static title plan (`plan_title_cells` — entry PGC → angle walk → next-PGCN chain, loop-safe, per-cell sector spans) | landed |
+| Disc-level title plan (`DvdDisc::plan_title` → `TitlePlan` with `absolute_lba()` VOB-relative → disc-LBA addressing) | landed |
 | Typed SPRM accessors — language slots + sentinel-typed integer slots (SPRM 0 / 1 / 3 / 12 / 13 / 16 / 17 / 18 / 19) | landed |
 | CSS authentication + descrambling | external `oxideav-css` crate |
 
