@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hostile-input hardening suite (`tests/hostile_input.rs`).** A
+  hermetic, deterministic-PRNG fuzz harness that drives every public
+  parse entry point — the VOB pack/system/audio-substream headers,
+  the nav-pack PCI/DSI packets, the IFO tables (PGC / PGCI / TT_SRPT /
+  VTS_PTT_SRPT / C_ADT / VOBU_ADMAP / TMAPTI / PTL_MAIT / VTS_ATRT /
+  PGCI_UT), the SPU decoder+compositor, the MPEG-2 header scanner, the
+  AC-3 / DTS / LPCM audio headers, the UDF descriptor + File-Entry
+  allocation-descriptor parsers, the ISO 9660 volume / directory /
+  path-table parsers, and the navigation-command VM — with random,
+  truncated, and deliberately size-lying buffers. Magic-gated parsers
+  (VTSI_MAT, UDF File Entry) get valid-seed byte-flip mutation fuzzing
+  so the deep sector-pointer / allocation-descriptor paths are reached
+  past their tag/magic gates. Asserts every parser survives
+  attacker-controlled input with a typed `Err`, never a panic, and
+  that the VM interpreter always terminates on adversarial command
+  lists.
+
 ## [0.0.4](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.3...v0.0.4) - 2026-07-03
 
 ### Other
