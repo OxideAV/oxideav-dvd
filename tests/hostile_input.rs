@@ -179,6 +179,88 @@ fn fuzz_mpeg_headers() {
     });
 }
 
+/// Build a small but well-formed Sub-Picture Unit: SPUH + one DCSQ
+/// carrying SET_COLOR / SET_CONTR / SET_DAREA / SET_DSPXA / STA_DSP /
+/// CMD_END, so `SubPictureUnit::parse` succeeds and `composite` walks
+/// the RLE renderer. Mutating this seed drives attacker-controlled
+/// display areas, pixel-data offsets, and control-sequence offsets
+/// through the decoder + compositor — random data rarely reaches the
+/// renderer because `parse` seldom succeeds on it.
+fn build_valid_spu() -> Vec<u8> {
+    let mut buf = vec![0u8; 0x28];
+    buf[0..2].copy_from_slice(&0x0028u16.to_be_bytes()); // SPDSZ
+    buf[2..4].copy_from_slice(&0x0010u16.to_be_bytes()); // SP_DCSQTA
+    let dcsq = 0x10;
+    buf[dcsq..dcsq + 2].copy_from_slice(&0x0000u16.to_be_bytes()); // start_time
+    buf[dcsq + 2..dcsq + 4].copy_from_slice(&(dcsq as u16).to_be_bytes()); // next = self
+    let mut o = dcsq + 4;
+    buf[o] = 0x03; // SET_COLOR
+    buf[o + 1] = 0xFE;
+    buf[o + 2] = 0xDC;
+    o += 3;
+    buf[o] = 0x04; // SET_CONTR
+    buf[o + 1] = 0xFF;
+    buf[o + 2] = 0x80;
+    o += 3;
+    buf[o] = 0x05; // SET_DAREA: x 0..3, y 0..3
+    buf[o + 1] = 0x00;
+    buf[o + 2] = 0x00;
+    buf[o + 3] = 0x03;
+    buf[o + 4] = 0x00;
+    buf[o + 5] = 0x00;
+    buf[o + 6] = 0x03;
+    o += 7;
+    buf[o] = 0x06; // SET_DSPXA: top=0x0004, bottom=0x0004
+    buf[o + 1..o + 3].copy_from_slice(&0x0004u16.to_be_bytes());
+    buf[o + 3..o + 5].copy_from_slice(&0x0004u16.to_be_bytes());
+    o += 5;
+    buf[o] = 0x01; // STA_DSP
+    o += 1;
+    buf[o] = 0xFF; // CMD_END
+    buf
+}
+
+#[test]
+fn valid_spu_seed_parses() {
+    let buf = build_valid_spu();
+    let unit = SubPictureUnit::parse(&buf).expect("valid SPU seed must parse");
+    assert_eq!(unit.control_sequences.len(), 1);
+}
+
+#[test]
+fn fuzz_spu_seed_mutation() {
+    // Byte-flip the valid SPU and run parse → composite. This drives
+    // attacker-chosen SET_DAREA dimensions, SET_DSPXA pixel offsets,
+    // and DCSQ next-offsets through the RLE decoder + compositor.
+    let seed = build_valid_spu();
+    let palette = [oxideav_dvd::ifo::PaletteEntry::default(); 16];
+    let mut rng = Rng::new(0x59D5);
+    for _ in 0..40_000 {
+        let extra = (rng.next_u64() as usize) % 48;
+        let mut buf = vec![0u8; seed.len() + extra];
+        buf[..seed.len()].copy_from_slice(&seed);
+        let flips = 1 + (rng.next_u64() as usize % 6);
+        for _ in 0..flips {
+            let pos = (rng.next_u64() as usize) % buf.len();
+            buf[pos] = rng.byte();
+        }
+        if let Ok(unit) = SubPictureUnit::parse(&buf) {
+            let _ = unit.composite(&buf, &palette);
+            if let (Some((w, h)), Some((top, bot))) =
+                (unit.display_dimensions(), unit.pixel_data_offsets())
+            {
+                let lines = h.div_ceil(2);
+                if let Some(px) = buf.get(top as usize..) {
+                    let _ = oxideav_dvd::render_field(px, w, lines);
+                }
+                if let Some(px) = buf.get(bot as usize..) {
+                    let _ = oxideav_dvd::render_field(px, w, lines);
+                }
+            }
+        }
+    }
+}
+
 const DVD_SECTOR: usize = 2048;
 
 /// Build a small but structurally valid `VTS_xx_0.IFO` image: a

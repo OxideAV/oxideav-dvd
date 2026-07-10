@@ -18,13 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AC-3 / DTS / LPCM audio headers, the UDF descriptor + File-Entry
   allocation-descriptor parsers, the ISO 9660 volume / directory /
   path-table parsers, and the navigation-command VM — with random,
-  truncated, and deliberately size-lying buffers. Magic-gated parsers
-  (VTSI_MAT, UDF File Entry) get valid-seed byte-flip mutation fuzzing
-  so the deep sector-pointer / allocation-descriptor paths are reached
-  past their tag/magic gates. Asserts every parser survives
+  truncated, and deliberately size-lying buffers. Structure-gated
+  parsers (VTSI_MAT, UDF File Entry, Sub-Picture Unit) get valid-seed
+  byte-flip mutation fuzzing so the deep sector-pointer /
+  allocation-descriptor / RLE-render paths are reached past their
+  tag/magic gates. Asserts every parser survives
   attacker-controlled input with a typed `Err`, never a panic, and
   that the VM interpreter always terminates on adversarial command
   lists.
+- **SPU RLE renderer / compositor mutation fuzz.** A valid Sub-Picture
+  Unit seed is byte-flipped and driven through `SubPictureUnit::parse`
+  → `composite` → `render_field` so attacker-controlled display areas
+  (SET_DAREA), pixel-data offsets (SET_DSPXA), and control-sequence
+  offsets exercise the run-length decoder and the RGBA compositor —
+  the deep image path random data seldom reaches because `parse`
+  rarely succeeds on it.
 
 ## [0.0.4](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.3...v0.0.4) - 2026-07-03
 
