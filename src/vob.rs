@@ -1272,7 +1272,17 @@ impl NsmlAgli {
 pub struct PciPacket {
     /// `PCI_GI 00` — `nv_pck_lbn`: disc-LBA of this NAV pack.
     pub nv_pck_lbn: u32,
-    /// `PCI_GI 04` — `vobu_cat` (APS + reserved flags).
+    /// `PCI_GI 04` — `vobu_cat`: per-VOBU category flags "including
+    /// APS (Analog Protection System)" per `mpucoder-pci_pkt.html`,
+    /// preserved as the raw big-endian 16 bits.
+    ///
+    /// The exact bit position of the APS trigger inside this field
+    /// is fixed only by the member-gated DVD Forum *Part 3* book —
+    /// no staged public source pins it
+    /// (`dvd-substream-ids-and-copy-protection.md` §3b) — so this
+    /// crate deliberately does **not** decode a bit layout here. The
+    /// APS *value* space the trigger selects from is the standard
+    /// [`crate::copyctl::ApsType`] Type 0–3 table.
     pub vobu_cat: u16,
     /// `PCI_GI 08` — `vobu_uop_ctl`: prohibited-UOP bitmask.
     pub vobu_uop_ctl: u32,

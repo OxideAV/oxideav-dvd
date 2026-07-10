@@ -84,6 +84,7 @@
 #![warn(missing_debug_implementations)]
 
 pub mod ac3;
+pub mod copyctl;
 pub mod disc;
 pub mod dts;
 pub mod engine;
@@ -106,6 +107,9 @@ pub mod mkv_writer;
 pub mod pipeline;
 
 pub use ac3::{Ac3AudioCodingMode, Ac3BitstreamMode, Ac3Header, Ac3SampleRate, AC3_SYNC_WORD};
+pub use copyctl::{
+    ApsType, Cgms, CopyControlInfo, CprMai, CPR_MAI_FRAME_OFFSET, CPR_MAI_LEN, DATA_FRAME_LEN,
+};
 pub use disc::{DvdDisc, DvdFile, DvdFileKind, TitlePlan};
 pub use dts::{DtsAudioMode, DtsBitRate, DtsFrameType, DtsHeader, DtsSampleRate, DTS_SYNC_WORD};
 pub use engine::{

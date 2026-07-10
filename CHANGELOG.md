@@ -31,6 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inventory; `VobStreams::unallocated_substreams()` surfaces
   out-of-spec IDs (e.g. the `0x98..=0x9F` gap) that were counted but
   not routed, so a hostile or broken mux stays observable.
+- **Copy-control decode (`copyctl` module).** Typed CGMS-A / APS
+  copy-control per the staged
+  `dvd-substream-ids-and-copy-protection.md` §2–§3 tables: `Cgms`
+  (copy freely / no more / once / never) and `ApsType` (off / AGC /
+  AGC+2-line / AGC+4-line Colorstripe) 2-bit value tables,
+  `CopyControlInfo` with the analog-output field packing (b4–b3
+  CGMS, b2–b1 APS, b0 ASB; exhaustive round-trip tested), and
+  `CprMai` — the 6-byte sector-level Copyright Management
+  Information field of the ECMA-267 §16 Data Frame (`CPM` /
+  `CP_SEC` / `CGMS` byte-0 decode flagged as the community
+  reconstruction, raw bytes preserved verbatim,
+  `from_data_frame` for 2064-byte raw frames,
+  `has_unrecognised_bits` for reserved-bit auditing). The PCI
+  `vobu_cat` field stays a documented **raw** `u16`: the APS
+  trigger's bit offset inside it is only fixed by the member-gated
+  DVD Forum *Part 3* book, so no layout is invented.
 - **Hostile-input hardening suite (`tests/hostile_input.rs`).** A
   hermetic, deterministic-PRNG fuzz harness that drives every public
   parse entry point — the VOB pack/system/audio-substream headers,
