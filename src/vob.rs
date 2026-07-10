@@ -391,6 +391,90 @@ impl DvdSubstream {
             Self::Ac3(_) | Self::Dts(_) | Self::Sdds(_) | Self::Lpcm(_)
         )
     }
+
+    /// The payload family (band) this substream belongs to, without
+    /// the concrete ID byte.
+    pub fn kind(self) -> DvdSubstreamKind {
+        match self {
+            Self::Subpicture(_) => DvdSubstreamKind::Subpicture,
+            Self::Ac3(_) => DvdSubstreamKind::Ac3,
+            Self::Dts(_) => DvdSubstreamKind::Dts,
+            Self::Sdds(_) => DvdSubstreamKind::Sdds,
+            Self::Lpcm(_) => DvdSubstreamKind::Lpcm,
+        }
+    }
+}
+
+/// The payload family of a private_stream_1 substream band — the
+/// taxonomy of `dvd-substream-ids-and-copy-protection.md` §1 with
+/// the concrete ID byte abstracted away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DvdSubstreamKind {
+    /// `0x20..=0x3F` — RLE 4-colour overlay (subtitles, menu
+    /// highlights); 32 tracks.
+    Subpicture,
+    /// `0x80..=0x87` — AC-3 (Dolby Digital); 8 tracks.
+    Ac3,
+    /// `0x88..=0x8F` — DTS (Coherent Acoustics); 8 tracks.
+    Dts,
+    /// `0x90..=0x97` — SDDS (Sony Dynamic Digital Sound); 8 tracks.
+    /// Reserved by the allocation, effectively unused in the wild.
+    Sdds,
+    /// `0xA0..=0xA7` — DVD Linear PCM; 8 tracks.
+    Lpcm,
+}
+
+impl DvdSubstreamKind {
+    /// Every band of the taxonomy, in ascending substream-ID order.
+    pub const ALL: [Self; 5] = [
+        Self::Subpicture,
+        Self::Ac3,
+        Self::Dts,
+        Self::Sdds,
+        Self::Lpcm,
+    ];
+
+    /// The inclusive substream-ID band this kind occupies.
+    pub fn band(self) -> std::ops::RangeInclusive<u8> {
+        match self {
+            Self::Subpicture => 0x20..=0x3F,
+            Self::Ac3 => 0x80..=0x87,
+            Self::Dts => 0x88..=0x8F,
+            Self::Sdds => 0x90..=0x97,
+            Self::Lpcm => 0xA0..=0xA7,
+        }
+    }
+
+    /// Number of tracks the band allocates (32 subpicture, 8 per
+    /// audio codec).
+    pub fn capacity(self) -> u8 {
+        match self {
+            Self::Subpicture => 32,
+            _ => 8,
+        }
+    }
+
+    /// `true` for the four audio bands.
+    pub fn is_audio(self) -> bool {
+        !matches!(self, Self::Subpicture)
+    }
+
+    /// Short human-readable band label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Subpicture => "subpicture",
+            Self::Ac3 => "ac3",
+            Self::Dts => "dts",
+            Self::Sdds => "sdds",
+            Self::Lpcm => "lpcm",
+        }
+    }
+
+    /// Classify a raw substream-ID byte into its band, or `None`
+    /// for a byte outside the DVD-Video allocation.
+    pub fn classify(b: u8) -> Option<Self> {
+        DvdSubstream::from_first_byte(b).map(DvdSubstream::kind)
+    }
 }
 
 /// Generic DVD audio-substream header — the three bytes that
@@ -2582,6 +2666,24 @@ pub struct VobStreams {
     /// Nav-packs consumed during demux — preserved so the Phase 3b
     /// chapter / seek logic can re-use the SRI tables.
     pub nav_packs: Vec<NavPack>,
+    /// Census of every private_stream_1 substream-ID byte seen
+    /// during demux, keyed by the raw ID. IDs **outside** the five
+    /// documented bands are counted here too — their payload bytes
+    /// are not routed to any stream buffer, but an out-of-spec mux
+    /// stays visible instead of vanishing silently.
+    pub substream_census: BTreeMap<u8, SubstreamStat>,
+}
+
+/// Per-substream-ID demux statistics (one row of
+/// [`VobStreams::substream_census`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SubstreamStat {
+    /// Number of private_stream_1 PES packets seen carrying this
+    /// substream-ID byte.
+    pub packets: u64,
+    /// Total payload bytes those packets carried (the substream-ID
+    /// byte itself excluded).
+    pub bytes: u64,
 }
 
 impl VobStreams {
@@ -2594,6 +2696,28 @@ impl VobStreams {
     /// demuxed or no sequence header was found.
     pub fn video_sequence_info(&self) -> crate::mpeg::VideoSequenceInfo {
         crate::mpeg::scan_video_sequence(&self.video)
+    }
+
+    /// Every in-allocation substream observed during demux, in
+    /// ascending substream-ID order — the typed track inventory of
+    /// the demuxed VOB range.
+    pub fn substreams_seen(&self) -> Vec<DvdSubstream> {
+        self.substream_census
+            .keys()
+            .filter_map(|&id| DvdSubstream::from_first_byte(id))
+            .collect()
+    }
+
+    /// Substream-ID bytes observed during demux that fall **outside**
+    /// the DVD-Video allocation (e.g. the `0x98..=0x9F` gap), with
+    /// their packet/byte counts. Non-empty output means the mux is
+    /// out of spec — the payload bytes were counted but not routed.
+    pub fn unallocated_substreams(&self) -> Vec<(u8, SubstreamStat)> {
+        self.substream_census
+            .iter()
+            .filter(|(&id, _)| DvdSubstream::from_first_byte(id).is_none())
+            .map(|(&id, &stat)| (id, stat))
+            .collect()
     }
 }
 
@@ -2679,6 +2803,14 @@ impl VobDemuxer {
             // payload byte is the substream ID; we strip it before
             // appending.
             SC_PRIVATE_STREAM_1 => {
+                // Census first: every substream-ID byte is counted,
+                // in-allocation or not, so the taxonomy accessors can
+                // report exactly what the mux carried.
+                if let Some(&id) = pes.payload.first() {
+                    let stat = self.out.substream_census.entry(id).or_default();
+                    stat.packets += 1;
+                    stat.bytes += (pes.payload.len() - 1) as u64;
+                }
                 if let Some(sub) = pes.dvd_substream() {
                     // The audio bands carry additional substream-
                     // specific framing bytes (frame counter +
@@ -3922,6 +4054,128 @@ mod tests {
         assert!(streams.dts.is_empty());
         assert!(streams.lpcm.is_empty());
         assert!(streams.subpicture.is_empty());
+    }
+
+    // ----- substream taxonomy + census ------------------------------
+
+    /// The five bands are disjoint, cover exactly 64 substream IDs
+    /// (32 + 4 × 8), and every ID in a band classifies to that band
+    /// with a track below the band's capacity.
+    #[test]
+    fn substream_kind_bands_partition_the_allocation() {
+        let mut covered = 0usize;
+        for kind in DvdSubstreamKind::ALL {
+            for id in kind.band() {
+                covered += 1;
+                assert_eq!(DvdSubstreamKind::classify(id), Some(kind), "id {id:#04x}");
+                let sub = DvdSubstream::from_first_byte(id).unwrap();
+                assert_eq!(sub.kind(), kind);
+                assert!(sub.track() < kind.capacity(), "id {id:#04x}");
+                assert_eq!(sub.is_audio(), kind.is_audio());
+            }
+        }
+        assert_eq!(covered, 32 + 4 * 8);
+        // No two bands overlap: classify() is single-valued by
+        // construction, so it suffices that every classified byte
+        // outside the union is None.
+        let in_union = |b: u8| DvdSubstreamKind::ALL.iter().any(|k| k.band().contains(&b));
+        for b in 0..=255u8 {
+            if !in_union(b) {
+                assert_eq!(DvdSubstreamKind::classify(b), None, "id {b:#04x}");
+            }
+        }
+        // Capacity == band width.
+        for kind in DvdSubstreamKind::ALL {
+            assert_eq!(
+                kind.band().count(),
+                kind.capacity() as usize,
+                "{}",
+                kind.label()
+            );
+        }
+    }
+
+    /// The demux census counts every private_stream_1 substream-ID
+    /// byte — packets and payload bytes — including IDs outside the
+    /// allocation, which the taxonomy accessors report as
+    /// unallocated.
+    #[test]
+    fn vobu_demux_census_counts_all_substream_ids() {
+        let mut demuxer = VobDemuxer::new();
+        let pack = build_pack_header(0, 0, 25200, 0);
+
+        // Three packets: AC-3 track 0 (twice, different sizes) and
+        // one unallocated 0x9C.
+        for (id, len) in [(0x80u8, 10usize), (0x80, 6), (0x9C, 4)] {
+            let mut sec = vec![0u8; DVD_SECTOR];
+            sec[..14].copy_from_slice(&pack);
+            let pes = build_pes_private1(id, &vec![0x42; len]);
+            sec[14..14 + pes.len()].copy_from_slice(&pes);
+            demuxer.push_sector(&sec).unwrap();
+        }
+
+        let streams = demuxer.take();
+        assert_eq!(
+            streams.substream_census.get(&0x80),
+            Some(&SubstreamStat {
+                packets: 2,
+                bytes: 16,
+            })
+        );
+        assert_eq!(
+            streams.substream_census.get(&0x9C),
+            Some(&SubstreamStat {
+                packets: 1,
+                bytes: 4,
+            })
+        );
+        assert_eq!(streams.substream_census.len(), 2);
+
+        // Typed inventory: only the in-allocation ID.
+        assert_eq!(streams.substreams_seen(), vec![DvdSubstream::Ac3(0x80)]);
+        // Out-of-spec inventory: only the gap ID, with its counts.
+        assert_eq!(
+            streams.unallocated_substreams(),
+            vec![(
+                0x9C,
+                SubstreamStat {
+                    packets: 1,
+                    bytes: 4,
+                }
+            )]
+        );
+        // The unallocated payload was counted but not routed.
+        assert!(streams.ac3.contains_key(&0));
+        assert!(streams.dts.is_empty() && streams.sdds.is_empty() && streams.lpcm.is_empty());
+    }
+
+    /// A zero-length private_stream_1 payload has no substream-ID
+    /// byte at all: it must neither panic nor pollute the census.
+    #[test]
+    fn vobu_demux_census_skips_empty_private1_payload() {
+        let mut demuxer = VobDemuxer::new();
+        let pack = build_pack_header(0, 0, 25200, 0);
+        let mut sec = vec![0u8; DVD_SECTOR];
+        sec[..14].copy_from_slice(&pack);
+        // build_pes_private1 always emits the substream byte, so
+        // hand-roll a 0xBD PES whose payload is empty (pes_len = 3:
+        // just the extension header, no substream byte).
+        let pes = [
+            0x00,
+            0x00,
+            0x01,
+            SC_PRIVATE_STREAM_1,
+            0x00,
+            0x03,
+            0b1000_0000,
+            0x00,
+            0x00,
+        ];
+        sec[14..14 + pes.len()].copy_from_slice(&pes);
+        demuxer.push_sector(&sec).unwrap();
+        let streams = demuxer.take();
+        assert!(streams.substream_census.is_empty());
+        assert!(streams.substreams_seen().is_empty());
     }
 
     /// Build a minimal NTSC MPEG-2 sequence header (720×480, 16:9,

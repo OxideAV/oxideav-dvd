@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AC-3 / DTS. The unallocated `0x98..=0x9F` gap stays unmapped. An
   exhaustive 256-value band-classification test pins the whole
   substream-ID domain.
+- **Substream taxonomy + demux census.** `DvdSubstreamKind` names the
+  five private_stream_1 bands (subpicture / AC-3 / DTS / SDDS / LPCM)
+  with `band()` / `capacity()` / `is_audio()` / `label()` /
+  `classify()`, and every demux now fills
+  `VobStreams::substream_census` — per-raw-ID packet + payload-byte
+  counts covering **all** substream-ID bytes seen, in-allocation or
+  not. `VobStreams::substreams_seen()` gives the typed track
+  inventory; `VobStreams::unallocated_substreams()` surfaces
+  out-of-spec IDs (e.g. the `0x98..=0x9F` gap) that were counted but
+  not routed, so a hostile or broken mux stays observable.
 - **Hostile-input hardening suite (`tests/hostile_input.rs`).** A
   hermetic, deterministic-PRNG fuzz harness that drives every public
   parse entry point — the VOB pack/system/audio-substream headers,
