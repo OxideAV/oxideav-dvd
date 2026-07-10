@@ -403,6 +403,25 @@ impl DvdSubstream {
             Self::Lpcm(_) => DvdSubstreamKind::Lpcm,
         }
     }
+
+    /// The raw substream-ID selector byte — the exact byte a muxer
+    /// writes as the first private_stream_1 payload byte.
+    pub fn selector(self) -> u8 {
+        match self {
+            Self::Subpicture(b) | Self::Ac3(b) | Self::Dts(b) | Self::Sdds(b) | Self::Lpcm(b) => b,
+        }
+    }
+
+    /// Rebuild a substream selector from its band + normalised track
+    /// number — the exact inverse of [`Self::kind`] + [`Self::track`].
+    /// Returns `None` when `track` is at or beyond the band's
+    /// capacity (8 audio tracks, 32 subpicture tracks).
+    pub fn from_kind_track(kind: DvdSubstreamKind, track: u8) -> Option<Self> {
+        if track >= kind.capacity() {
+            return None;
+        }
+        Self::from_first_byte(kind.band().start() + track)
+    }
 }
 
 /// The payload family of a private_stream_1 substream band — the
@@ -4102,6 +4121,36 @@ mod tests {
                 "{}",
                 kind.label()
             );
+        }
+    }
+
+    /// `(kind, track) -> selector byte -> (kind, track)` is the
+    /// identity for every allocated slot, and out-of-capacity tracks
+    /// reconstruct to `None` — the taxonomy round-trips losslessly.
+    #[test]
+    fn substream_selector_round_trips() {
+        for kind in DvdSubstreamKind::ALL {
+            for track in 0..kind.capacity() {
+                let sub = DvdSubstream::from_kind_track(kind, track).unwrap();
+                assert_eq!(sub.kind(), kind);
+                assert_eq!(sub.track(), track);
+                assert_eq!(sub.selector(), kind.band().start() + track);
+                // The selector byte re-classifies to the same value.
+                assert_eq!(DvdSubstream::from_first_byte(sub.selector()), Some(sub));
+            }
+            assert_eq!(DvdSubstream::from_kind_track(kind, kind.capacity()), None);
+            assert_eq!(DvdSubstream::from_kind_track(kind, 0xFF), None);
+        }
+        // And the other direction: every allocated byte survives
+        // byte -> (kind, track) -> byte.
+        for b in 0..=255u8 {
+            if let Some(sub) = DvdSubstream::from_first_byte(b) {
+                assert_eq!(sub.selector(), b);
+                assert_eq!(
+                    DvdSubstream::from_kind_track(sub.kind(), sub.track()),
+                    Some(sub)
+                );
+            }
         }
     }
 

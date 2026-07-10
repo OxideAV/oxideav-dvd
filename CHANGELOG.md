@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inventory; `VobStreams::unallocated_substreams()` surfaces
   out-of-spec IDs (e.g. the `0x98..=0x9F` gap) that were counted but
   not routed, so a hostile or broken mux stays observable.
+  `DvdSubstream::selector()` returns the raw ID byte and
+  `DvdSubstream::from_kind_track(kind, track)` rebuilds a selector
+  from band + normalised track — the exact inverse of `kind()` +
+  `track()`, round-trip tested over every allocated slot.
 - **Copy-control decode (`copyctl` module).** Typed CGMS-A / APS
   copy-control per the staged
   `dvd-substream-ids-and-copy-protection.md` §2–§3 tables: `Cgms`
