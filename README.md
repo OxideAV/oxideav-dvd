@@ -32,7 +32,9 @@ chapter/program jump to its cell span; and the typed `PlaybackMode`
 sequential/random/shuffle + `StillTime` None/Seconds/Infinite views),
 demux each cell's VOBUs into raw
 MPEG-2 video + AC-3 /
-DTS / LPCM audio + subpicture elementary streams keyed by track ID,
+DTS / SDDS / LPCM audio + subpicture elementary streams keyed by track
+ID (the full four-band private_stream_1 audio allocation, with a
+per-raw-ID substream census that keeps out-of-spec IDs observable),
 answer time-based seek queries through the per-PGC `VTS_TMAPTI` time map
 + the title-set `VTS_VOBU_ADMAP` absolute-sector list, decode subpicture
 overlays to RGBA, and execute the PGC navigation command VM. The
@@ -113,8 +115,10 @@ is delegated to the external `oxideav-css` crate.
 | VTS_VOBU_ADMAP (per-VOBU sector list + partition lookup) | landed |
 | VTS_TMAPTI (per-PGC time map + seconds → VOBU sector seek) | landed |
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed |
-| DVD substream routing (AC-3 / DTS / LPCM / subpicture) | landed |
-| Generic audio-substream header decode (`AudioSubstreamHeader` — FrmCnt + FirstAccUnit prefixing every AC-3 / DTS / LPCM payload; `access_unit_offset()` PTS-aligned-frame locator via the `3 + FirstAccUnit` rule) | landed |
+| DVD substream routing (AC-3 `0x80` / DTS `0x88` / SDDS `0x90` / LPCM `0xA0` audio bands + subpicture `0x20..=0x3F` — the full private_stream_1 allocation; the `0x98..=0x9F` gap stays unmapped) | landed |
+| Substream taxonomy + demux census (`DvdSubstreamKind` five-band map with `band()` / `capacity()` / `classify()`; `VobStreams::substream_census` per-raw-ID packet + byte counts; `substreams_seen()` typed inventory + `unallocated_substreams()` out-of-spec visibility) | landed |
+| Copy-control decode (`copyctl` — `Cgms` / `ApsType` 2-bit value tables, `CopyControlInfo` analog-output field pack/unpack, `CprMai` sector-level CCI parser over the ECMA-267 §16 Data Frame incl. `from_data_frame()`; PCI `vobu_cat` kept raw — the APS trigger's bit offset is member-gated) | landed |
+| Generic audio-substream header decode (`AudioSubstreamHeader` — FrmCnt + FirstAccUnit prefixing every AC-3 / DTS / SDDS / LPCM payload; `access_unit_offset()` PTS-aligned-frame locator via the `3 + FirstAccUnit` rule) | landed |
 | LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed |
 | 16-bit LPCM sample unpacking (`unpack_samples_16bit()` big-endian channel-interleaved `i16`→`i32`; `bytes_per_sample()` ratio 16=`2/1` 20=`5/2` 24=`3/1`; `frame_stride_bytes()` `None` for 20-bit (2.5 B/sample, no integer per-frame stride) + `sample_frame_count_16bit()`; 20/24-bit intra-group packing un-specified by docs) | landed |
 | AC-3 sync-frame header decode (`syncinfo()` fscod / frmsizecod + `bsi()` bsid / bsmod / acmod / mix-level conditionals / lfeon → sample rate + frame size + nominal bitrate + channel layout) | landed |
@@ -813,6 +817,35 @@ synthetic six-sector in-memory VOB: runner → stream selection →
 per-cell demux → LPCM bytes → PCM frames → samples → SPU composite
 through the PGC palette → SRI trick-play walk → UOP-guarded stills.
 
+## Copy control (CGMS / APS)
+
+The `copyctl` module types the two analog copy-control fields:
+
+```rust
+use oxideav_dvd::{ApsType, Cgms, CopyControlInfo, CprMai};
+
+// Decode a raw 6-byte sector CPR_MAI field (raw-frame tooling only —
+// ordinary 2048-byte user-sector reads / .iso images don't carry it).
+let mai = CprMai::parse(&[0xF0, 0x00, 0, 0, 0, 0]).unwrap();
+assert!(mai.cpm && mai.cp_sec);            // protected + CSS-scrambled
+assert_eq!(mai.cgms, Cgms::CopyNever);
+
+// Pack the player-facing CCI into the analog-output field
+// (b4-b3 CGMS, b2-b1 APS, b0 ASB).
+let cci = CopyControlInfo {
+    cgms: Cgms::CopyOnce,
+    aps: ApsType::Agc,
+    analog_source: true,
+};
+assert_eq!(cci.to_analog_field(), 0b0001_0011);
+assert_eq!(CopyControlInfo::from_analog_field(0b0001_0011), cci);
+```
+
+The per-VOBU APS trigger rides in the PCI `vobu_cat` flags, which this
+crate preserves as a raw `u16` (`PciPacket::vobu_cat`): the trigger's
+exact bit offset is fixed only by the member-gated DVD Forum *Part 3*
+book, so no bit layout is invented for it.
+
 ## Clean-room sources
 
 This crate was written entirely against:
@@ -879,10 +912,20 @@ This crate was written entirely against:
   P-STD buffer entries).
 - `docs/container/dvd/application/stnsoft-ass-hdr.html` — the generic
   DVD audio-substream header (`FrmCnt` + `FirstAccUnit`) that prefixes
-  every private_stream_1 AC-3 / DTS / LPCM payload after the substream
-  number, including the worked AC-3 / DTS / LPCM offset examples that
-  pin the `access_unit_offset()` = `3 + FirstAccUnit` arithmetic in the
-  `vob` module's `AudioSubstreamHeader` decoder.
+  every private_stream_1 AC-3 / DTS / SDDS / LPCM payload after the
+  substream number, including the worked AC-3 / DTS / LPCM offset
+  examples that pin the `access_unit_offset()` = `3 + FirstAccUnit`
+  arithmetic in the `vob` module's `AudioSubstreamHeader` decoder.
+- `docs/container/dvd/application/dvd-substream-ids-and-copy-protection.md`
+  — the full private_stream_1 substream-ID map (the four 8-entry audio
+  bands including the reserved SDDS `0x90..=0x97` band, refining the
+  coarser `dvdmpeg` table) feeding `DvdSubstream` / `DvdSubstreamKind`,
+  plus the CGMS / APS copy-control value tables, the analog-output CCI
+  field packing, and the sector `CPR_MAI` byte-0 community
+  reconstruction feeding the `copyctl` module (§3a flags that byte-0
+  layout as a reconstruction, not an ECMA definition; the `vobu_cat`
+  APS bit offset is noted as member-gated and is deliberately left
+  undecoded).
 - `docs/container/dvd/application/mpucoder-lpcm.html` — the 7-byte
   LPCM audio-pack header layout (quantisation / sample-rate /
   channel-count fields, first-access-unit pointer, the X/Y

@@ -582,3 +582,116 @@ fn fuzz_vm_interpreter() {
         }
     }
 }
+
+#[test]
+fn fuzz_copy_control() {
+    use oxideav_dvd::copyctl::{CopyControlInfo, CprMai};
+    // CPR_MAI: undersized, exact, oversized.
+    fuzz_slice(46, ITERS, 16, |b| {
+        let _ = CprMai::parse(b);
+    });
+    fuzz_slice(47, ITERS / 4, 2100, |b| {
+        let _ = CprMai::from_data_frame(b);
+    });
+    // The analog-output field decoder is total over u8 — sweep the
+    // whole domain and require encode -> decode stability.
+    for f in 0..=255u8 {
+        let cci = CopyControlInfo::from_analog_field(f);
+        assert_eq!(
+            CopyControlInfo::from_analog_field(cci.to_analog_field()),
+            cci
+        );
+    }
+}
+
+/// A wire-valid 14-byte pack header (SCR 0, mux_rate 25200, no
+/// stuffing) — the gate random data almost never passes, so seeding
+/// it lets the fuzz reach the PES walker behind it.
+const VALID_PACK_HEADER: [u8; 14] = [
+    0x00, 0x00, 0x01, 0xBA, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x01, 0x89, 0xC3, 0x00,
+];
+
+#[test]
+fn fuzz_vob_demuxer_push_sector() {
+    use oxideav_dvd::vob::VobDemuxer;
+
+    // Phase 1: pure random sectors — virtually all rejected at the
+    // pack-header gate; must never panic.
+    let mut rng = Rng::new(0xD3D);
+    let mut demuxer = VobDemuxer::new();
+    let mut sec = vec![0u8; 2048];
+    for _ in 0..1500 {
+        for b in sec.iter_mut() {
+            *b = rng.byte();
+        }
+        let _ = demuxer.push_sector(&sec);
+    }
+
+    // Phase 2: valid pack header + attacker-controlled PES area, so
+    // the in-sector PES walker, the substream router, and the census
+    // all run on hostile payloads. Splice in 0x000001BD start codes
+    // with lying lengths and arbitrary substream-ID bytes.
+    for _ in 0..1500 {
+        sec[..14].copy_from_slice(&VALID_PACK_HEADER);
+        for b in sec[14..].iter_mut() {
+            *b = rng.byte();
+        }
+        let splices = rng.next_u64() % 4;
+        for _ in 0..splices {
+            let pos = 14 + (rng.next_u64() as usize % (2048 - 14 - 6));
+            sec[pos..pos + 3].copy_from_slice(&[0x00, 0x00, 0x01]);
+            // Weighted towards private_stream_1 / padding / system.
+            sec[pos + 3] = match rng.next_u64() % 4 {
+                0 => 0xBD,
+                1 => 0xBE,
+                2 => 0xBB,
+                _ => rng.byte(),
+            };
+        }
+        let _ = demuxer.push_sector(&sec);
+    }
+
+    // Phase 3: byte-flip mutation of a fully valid audio sector
+    // (SDDS track 0, generic FrmCnt + FirstAccUnit prefix) so the
+    // routing/census paths see near-valid input too.
+    let mut valid = vec![0u8; 2048];
+    valid[..14].copy_from_slice(&VALID_PACK_HEADER);
+    let payload_len = 32usize;
+    let pes_len = 3 + 1 + payload_len; // ext header + substream + body
+    valid[14..20].copy_from_slice(&[0x00, 0x00, 0x01, 0xBD, (pes_len >> 8) as u8, pes_len as u8]);
+    valid[20] = 0b1000_0000;
+    valid[21] = 0x00;
+    valid[22] = 0x00; // header_data_len
+    valid[23] = 0x90; // SDDS substream 0
+    valid[24] = 0x01; // FrmCnt
+    valid[25] = 0x00;
+    valid[26] = 0x01; // FirstAccUnit
+    {
+        let mut d = VobDemuxer::new();
+        d.push_sector(&valid).expect("valid SDDS seed must demux");
+        let s = d.take();
+        // Routed body = everything after the substream-ID byte
+        // (FrmCnt + FirstAccUnit + codec bytes) = payload_len.
+        assert_eq!(s.sdds.get(&0).map(Vec::len), Some(payload_len));
+    }
+    for _ in 0..2000 {
+        let mut mutated = valid.clone();
+        let flips = 1 + (rng.next_u64() as usize % 6);
+        for _ in 0..flips {
+            let pos = (rng.next_u64() as usize) % mutated.len();
+            mutated[pos] = rng.byte();
+        }
+        let _ = demuxer.push_sector(&mutated);
+    }
+
+    // The accumulated state and taxonomy accessors must stay
+    // well-formed after the firehose.
+    let streams = demuxer.take();
+    for sub in streams.substreams_seen() {
+        assert!(sub.track() < sub.kind().capacity());
+    }
+    for (id, stat) in streams.unallocated_substreams() {
+        assert!(oxideav_dvd::DvdSubstreamKind::classify(id).is_none());
+        assert!(stat.packets > 0);
+    }
+}

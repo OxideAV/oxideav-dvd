@@ -47,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `vobu_cat` field stays a documented **raw** `u16`: the APS
   trigger's bit offset inside it is only fixed by the member-gated
   DVD Forum *Part 3* book, so no layout is invented.
+- **Hostile-input fuzz over the demuxer + copy-control parsers.**
+  `VobDemuxer::push_sector` now takes the firehose too: pure-random
+  sectors, valid-pack-header sectors with spliced lying PES start
+  codes, and byte-flip mutations of a valid SDDS audio sector, so the
+  in-sector PES walker, the five-band router, and the substream
+  census run on attacker-controlled input and the taxonomy accessors
+  stay well-formed afterwards. `CprMai::parse` /
+  `CprMai::from_data_frame` get truncation/oversize fuzz and the
+  analog CCI field decoder is swept over its whole domain.
 - **Hostile-input hardening suite (`tests/hostile_input.rs`).** A
   hermetic, deterministic-PRNG fuzz harness that drives every public
   parse entry point — the VOB pack/system/audio-substream headers,
