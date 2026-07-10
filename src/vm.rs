@@ -2446,7 +2446,7 @@ mod tests {
         // "en" — high byte 'e' = 0x65, low byte 'n' = 0x6E.
         r.set_sprm(SPRM_MENU_LANG, 0x656E);
         let lc = r.menu_language();
-        assert_eq!(lc.ascii_bytes(), Some([b'e', b'n']));
+        assert_eq!(lc.ascii_bytes(), Some(*b"en"));
         assert_eq!(lc.as_string().as_deref(), Some("en"));
         assert_eq!(lc.raw, 0x656E);
     }
@@ -2469,7 +2469,7 @@ mod tests {
         // `ascii_bytes`.
         r.set_sprm(SPRM_PREF_SUBP_LANG, 0x4A41);
         let lc = r.preferred_subpicture_language();
-        assert_eq!(lc.ascii_bytes(), Some([b'J', b'A']));
+        assert_eq!(lc.ascii_bytes(), Some(*b"JA"));
         assert_eq!(lc.as_string().as_deref(), Some("ja"));
     }
 
