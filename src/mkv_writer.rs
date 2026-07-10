@@ -128,11 +128,15 @@ impl DvdMkvStream {
     fn from_pes(pes: &PesPacket<'_>) -> Option<Self> {
         match pes.stream_id {
             0xE0..=0xEF => Some(Self::Video),
-            SC_PRIVATE_STREAM_1 => pes.dvd_substream().map(|s| match s {
-                DvdSubstream::Ac3(_) => Self::Ac3(s.track()),
-                DvdSubstream::Dts(_) => Self::Dts(s.track()),
-                DvdSubstream::Lpcm(_) => Self::Lpcm(s.track()),
-                DvdSubstream::Subpicture(_) => Self::Subpicture(s.track()),
+            SC_PRIVATE_STREAM_1 => pes.dvd_substream().and_then(|s| match s {
+                DvdSubstream::Ac3(_) => Some(Self::Ac3(s.track())),
+                DvdSubstream::Dts(_) => Some(Self::Dts(s.track())),
+                DvdSubstream::Lpcm(_) => Some(Self::Lpcm(s.track())),
+                DvdSubstream::Subpicture(_) => Some(Self::Subpicture(s.track())),
+                // The reserved SDDS band has no Matroska codec
+                // mapping (no decoder exists to consume it), so a
+                // track in that band is not written to the output.
+                DvdSubstream::Sdds(_) => None,
             }),
             _ => None,
         }

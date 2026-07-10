@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SDDS substream band (`0x90..=0x97`) in the private_stream_1
+  router.** The demuxer now implements the full four-band audio
+  allocation from the staged
+  `docs/container/dvd/application/dvd-substream-ids-and-copy-protection.md`
+  §1 map: `DvdSubstream::Sdds` classifies the reserved SDDS (Sony
+  Dynamic Digital Sound) band, `VobStreams::sdds` collects its
+  payload per normalised track ID (0..=7), and
+  `AudioSubstreamHeader::parse` accepts SDDS selectors — SDDS
+  carries the same generic FrmCnt + FirstAccUnit audio prefix as
+  AC-3 / DTS. The unallocated `0x98..=0x9F` gap stays unmapped. An
+  exhaustive 256-value band-classification test pins the whole
+  substream-ID domain.
 - **Hostile-input hardening suite (`tests/hostile_input.rs`).** A
   hermetic, deterministic-PRNG fuzz harness that drives every public
   parse entry point — the VOB pack/system/audio-substream headers,

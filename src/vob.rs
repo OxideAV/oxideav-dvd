@@ -54,7 +54,8 @@ pub const SC_PACK_HEADER: u8 = 0xBA;
 pub const SC_SYSTEM_HEADER: u8 = 0xBB;
 /// `0x000001BC` — Program Stream Map (unused on DVD).
 pub const SC_PROGRAM_STREAM_MAP: u8 = 0xBC;
-/// `0x000001BD` — Private Stream 1 (AC-3 / DTS / LPCM / subpicture).
+/// `0x000001BD` — Private Stream 1 (AC-3 / DTS / SDDS / LPCM /
+/// subpicture).
 pub const SC_PRIVATE_STREAM_1: u8 = 0xBD;
 /// `0x000001BE` — Padding Stream.
 pub const SC_PADDING_STREAM: u8 = 0xBE;
@@ -326,6 +327,13 @@ impl SystemHeader {
 
 /// One DVD substream identifier carried inside a private_stream_1
 /// (0xBD) PES payload's first byte.
+///
+/// The full allocation splits the audio space into four 8-entry
+/// bands (per `dvd-substream-ids-and-copy-protection.md` §1, which
+/// refines the coarser `mpucoder-dvdmpeg.html` table): the band the
+/// selector byte falls in *is* the codec — there is no in-band magic
+/// to disambiguate, and the disc's IFO audio-attribute table records
+/// the same coding mode independently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DvdSubstream {
     /// `0x20..=0x3F` — subpicture track (1 of 32).
@@ -334,47 +342,64 @@ pub enum DvdSubstream {
     Ac3(u8),
     /// `0x88..=0x8F` — DTS audio track (1 of 8).
     Dts(u8),
+    /// `0x90..=0x97` — SDDS (Sony Dynamic Digital Sound) audio track
+    /// (1 of 8). The band is reserved by the DVD-Video allocation but
+    /// effectively unused in the wild — no consumer decoder shipped
+    /// SDDS support and no known retail disc carries an SDDS track —
+    /// so treat it as "allocate, but do not expect content"
+    /// (`dvd-substream-ids-and-copy-protection.md` §1).
+    Sdds(u8),
     /// `0xA0..=0xA7` — LPCM audio track (1 of 8).
     Lpcm(u8),
 }
 
 impl DvdSubstream {
     /// Classify the leading payload byte of a 0xBD packet per
-    /// mpucoder-dvdmpeg.html.
+    /// `dvd-substream-ids-and-copy-protection.md` §1.
     pub fn from_first_byte(b: u8) -> Option<Self> {
         match b {
             0x20..=0x3F => Some(Self::Subpicture(b)),
             0x80..=0x87 => Some(Self::Ac3(b)),
             0x88..=0x8F => Some(Self::Dts(b)),
+            0x90..=0x97 => Some(Self::Sdds(b)),
             0xA0..=0xA7 => Some(Self::Lpcm(b)),
             _ => None,
         }
     }
 
-    /// Storage track ID `(0..=7)` for audio/subpicture, normalised
-    /// to the substream's local range.
+    /// Storage track ID (`0..=7` audio, `0..=31` subpicture),
+    /// normalised to the substream's local range.
     pub fn track(self) -> u8 {
         match self {
             Self::Subpicture(b) => b - 0x20,
             Self::Ac3(b) => b - 0x80,
             Self::Dts(b) => b - 0x88,
+            Self::Sdds(b) => b - 0x90,
             Self::Lpcm(b) => b - 0xA0,
         }
     }
 
-    /// `true` for the three audio substream kinds (AC-3 / DTS /
+    /// `true` for the four audio substream kinds (AC-3 / DTS / SDDS /
     /// LPCM). Each is prefixed by the generic [`AudioSubstreamHeader`]
-    /// (FrmCnt + FirstAccUnit) per `stnsoft-ass-hdr.html`; subpicture
+    /// (FrmCnt + FirstAccUnit) per `stnsoft-ass-hdr.html` "All
+    /// methods" (SDDS inclusion per
+    /// `dvd-substream-ids-and-copy-protection.md` §1); subpicture
     /// substreams are not.
     pub fn is_audio(self) -> bool {
-        matches!(self, Self::Ac3(_) | Self::Dts(_) | Self::Lpcm(_))
+        matches!(
+            self,
+            Self::Ac3(_) | Self::Dts(_) | Self::Sdds(_) | Self::Lpcm(_)
+        )
     }
 }
 
-/// Generic DVD audio-substream header — the two bytes that
+/// Generic DVD audio-substream header — the three bytes that
 /// immediately follow the substream-number byte at the start of
-/// **every** private_stream_1 audio payload (AC-3 / DTS / LPCM),
-/// per `docs/container/dvd/application/stnsoft-ass-hdr.html`.
+/// **every** private_stream_1 audio payload (AC-3 / DTS / SDDS /
+/// LPCM), per `docs/container/dvd/application/stnsoft-ass-hdr.html`
+/// ("All methods"; only LPCM *extends* the prefix with the extra
+/// quantisation / channel / sample-rate bytes — see
+/// [`crate::lpcm::LpcmHeader`]).
 ///
 /// This header is a DVD-Video invention: it is part of neither the
 /// MPEG Program Stream nor the wrapped audio-codec bitstream. It
@@ -391,7 +416,7 @@ impl DvdSubstream {
 ///
 /// | Off | Field              | Bytes | Meaning                                    |
 /// |-----|--------------------|-------|--------------------------------------------|
-/// | 0   | `sub_stream_id`    | 1     | substream number (`0x80..` / `0x88..` / `0xA0..`) |
+/// | 0   | `sub_stream_id`    | 1     | substream number (`0x80..` / `0x88..` / `0x90..` / `0xA0..`) |
 /// | 1   | `FrmCnt`           | 1     | number of frames beginning in this packet  |
 /// | 2-3 | `FirstAccUnit`     | 2     | offset to the PTS-aligned frame; `0` = none |
 ///
@@ -407,7 +432,8 @@ impl DvdSubstream {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioSubstreamHeader {
     /// Substream-number byte (`0x80..=0x87` AC-3, `0x88..=0x8F` DTS,
-    /// `0xA0..=0xA7` LPCM) — mirrored from payload byte 0.
+    /// `0x90..=0x97` SDDS, `0xA0..=0xA7` LPCM) — mirrored from
+    /// payload byte 0.
     pub sub_stream_id: u8,
     /// `FrmCnt` — number of audio frames whose first byte begins in
     /// this PES packet's payload.
@@ -420,14 +446,15 @@ pub struct AudioSubstreamHeader {
 }
 
 /// Length of the generic audio-substream header that prefixes every
-/// AC-3 / DTS / LPCM payload (substream byte + FrmCnt + FirstAccUnit).
+/// AC-3 / DTS / SDDS / LPCM payload (substream byte + FrmCnt +
+/// FirstAccUnit).
 pub const AUDIO_SUBSTREAM_HEADER_LEN: usize = 4;
 
 impl AudioSubstreamHeader {
     /// Decode the generic audio-substream header from the start of a
     /// private_stream_1 audio payload (which begins at the substream
     /// selector byte — i.e. [`PesPacket::payload`] for an AC-3 / DTS
-    /// / LPCM substream).
+    /// / SDDS / LPCM substream).
     ///
     /// Rejects a payload shorter than [`AUDIO_SUBSTREAM_HEADER_LEN`]
     /// bytes or one whose first byte is not an audio substream
@@ -444,7 +471,7 @@ impl AudioSubstreamHeader {
             Some(s) if s.is_audio() => {}
             _ => {
                 return Err(Error::InvalidUdf(
-                    "audio substream header: byte 0 is not an AC-3 / DTS / LPCM selector",
+                    "audio substream header: byte 0 is not an AC-3 / DTS / SDDS / LPCM selector",
                 ))
             }
         }
@@ -2523,6 +2550,9 @@ pub enum ElementaryStream {
     Ac3(u8),
     /// DTS audio track `0..=7`.
     Dts(u8),
+    /// SDDS audio track `0..=7` (reserved band — see
+    /// [`DvdSubstream::Sdds`]).
+    Sdds(u8),
     /// LPCM audio track `0..=7`.
     Lpcm(u8),
     /// Subpicture track `0..=31`.
@@ -2539,6 +2569,12 @@ pub struct VobStreams {
     pub ac3: BTreeMap<u8, Vec<u8>>,
     /// DTS elementary streams, keyed by track ID (0..=7).
     pub dts: BTreeMap<u8, Vec<u8>>,
+    /// SDDS elementary streams, keyed by track ID (0..=7). The
+    /// `0x90..=0x97` band is reserved by the DVD-Video allocation
+    /// and effectively unused in the wild, but a conforming demux
+    /// still routes it so an out-of-the-ordinary disc surfaces its
+    /// payload instead of silently losing it.
+    pub sdds: BTreeMap<u8, Vec<u8>>,
     /// LPCM elementary streams, keyed by track ID (0..=7).
     pub lpcm: BTreeMap<u8, Vec<u8>>,
     /// Subpicture elementary streams, keyed by track ID (0..=31).
@@ -2644,12 +2680,12 @@ impl VobDemuxer {
             // appending.
             SC_PRIVATE_STREAM_1 => {
                 if let Some(sub) = pes.dvd_substream() {
-                    // LPCM and AC-3 carry additional substream-
+                    // The audio bands carry additional substream-
                     // specific framing bytes (frame counter +
-                    // first-access pointer, etc.) that downstream
-                    // codec decoders handle. Phase 3a writes the
-                    // substream payload verbatim so a Phase 3b
-                    // codec wrapper can interpret it.
+                    // first-access pointer, plus LPCM's extension)
+                    // that downstream codec decoders handle. Phase
+                    // 3a writes the substream payload verbatim so a
+                    // Phase 3b codec wrapper can interpret it.
                     let body = &pes.payload[1..];
                     match sub {
                         DvdSubstream::Ac3(_) => {
@@ -2662,6 +2698,13 @@ impl VobDemuxer {
                         DvdSubstream::Dts(_) => {
                             self.out
                                 .dts
+                                .entry(sub.track())
+                                .or_default()
+                                .extend_from_slice(body);
+                        }
+                        DvdSubstream::Sdds(_) => {
+                            self.out
+                                .sdds
                                 .entry(sub.track())
                                 .or_default()
                                 .extend_from_slice(body);
@@ -2682,9 +2725,10 @@ impl VobDemuxer {
                         }
                     }
                 }
-                // Unknown private-stream-1 substreams (e.g. SDDS at
-                // 0x88..) are dropped silently — they don't map to
-                // any Phase 3b decoder.
+                // Substream IDs outside the five documented bands
+                // (subpicture / AC-3 / DTS / SDDS / LPCM) are not
+                // part of the DVD-Video allocation; their bytes are
+                // not routed anywhere.
             }
             // Private stream 2 (NAV) inside a non-nav-pack would
             // be ill-formed; ignore silently.
@@ -3770,6 +3814,114 @@ mod tests {
         );
         assert_eq!(streams.nav_packs.len(), 1);
         assert_eq!(streams.nav_packs[0].pci.nv_pck_lbn, 100);
+    }
+
+    // ----- substream-ID map (dvd-substream-ids-…md §1) --------------
+
+    /// Exhaustive sweep of the 256-value substream-ID domain: every
+    /// byte must classify into exactly the band the allocation table
+    /// gives it, with the right normalised track number, and every
+    /// byte outside the five bands must classify as `None`.
+    #[test]
+    fn substream_id_map_is_exhaustive() {
+        for b in 0..=255u8 {
+            let got = DvdSubstream::from_first_byte(b);
+            let want = match b {
+                0x20..=0x3F => Some(DvdSubstream::Subpicture(b)),
+                0x80..=0x87 => Some(DvdSubstream::Ac3(b)),
+                0x88..=0x8F => Some(DvdSubstream::Dts(b)),
+                0x90..=0x97 => Some(DvdSubstream::Sdds(b)),
+                0xA0..=0xA7 => Some(DvdSubstream::Lpcm(b)),
+                _ => None,
+            };
+            assert_eq!(got, want, "substream byte {b:#04x}");
+            if let Some(s) = got {
+                let base = match s {
+                    DvdSubstream::Subpicture(_) => 0x20,
+                    DvdSubstream::Ac3(_) => 0x80,
+                    DvdSubstream::Dts(_) => 0x88,
+                    DvdSubstream::Sdds(_) => 0x90,
+                    DvdSubstream::Lpcm(_) => 0xA0,
+                };
+                assert_eq!(s.track(), b - base, "track for {b:#04x}");
+                assert_eq!(
+                    s.is_audio(),
+                    !matches!(s, DvdSubstream::Subpicture(_)),
+                    "is_audio for {b:#04x}"
+                );
+            }
+        }
+        // The band split around 0x8x/0x9x is the load-bearing part:
+        // low half of 0x8x = AC-3, high half = DTS, low half of 0x9x
+        // = SDDS, and 0x98..=0x9F is NOT part of the allocation.
+        assert_eq!(
+            DvdSubstream::from_first_byte(0x87),
+            Some(DvdSubstream::Ac3(0x87))
+        );
+        assert_eq!(
+            DvdSubstream::from_first_byte(0x88),
+            Some(DvdSubstream::Dts(0x88))
+        );
+        assert_eq!(
+            DvdSubstream::from_first_byte(0x90),
+            Some(DvdSubstream::Sdds(0x90))
+        );
+        assert_eq!(DvdSubstream::from_first_byte(0x98), None);
+        assert_eq!(DvdSubstream::from_first_byte(0x9F), None);
+    }
+
+    /// SDDS is an ordinary audio substream: the generic FrmCnt +
+    /// FirstAccUnit prefix parses on it exactly as for AC-3 / DTS.
+    #[test]
+    fn audio_substream_header_accepts_sdds() {
+        // Substream 0x92 (SDDS track 2), FrmCnt = 3, FirstAccUnit = 5.
+        let payload = [0x92, 0x03, 0x00, 0x05, 0xEE, 0xEE];
+        let hdr = AudioSubstreamHeader::parse(&payload).unwrap();
+        assert_eq!(hdr.substream(), Some(DvdSubstream::Sdds(0x92)));
+        assert_eq!(hdr.track(), Some(2));
+        assert_eq!(hdr.frame_count, 3);
+        assert_eq!(hdr.access_unit_offset(), Some(8)); // 3 + 5
+    }
+
+    /// A private_stream_1 PES in the SDDS band routes into
+    /// `VobStreams::sdds` under its normalised track ID, byte-exact.
+    #[test]
+    fn vobu_demux_routes_sdds_band() {
+        let mut demuxer = VobDemuxer::new();
+        let pack = build_pack_header(0, 0, 25200, 0);
+
+        // One SDDS PES on track 5 (substream 0x95).
+        let mut sec = vec![0u8; DVD_SECTOR];
+        sec[..14].copy_from_slice(&pack);
+        let sdds_payload: Vec<u8> = vec![0x5D; 24];
+        let sdds_pes = build_pes_private1(0x95, &sdds_payload);
+        sec[14..14 + sdds_pes.len()].copy_from_slice(&sdds_pes);
+        demuxer.push_sector(&sec).unwrap();
+
+        // A second packet on the same track must append.
+        let mut sec2 = vec![0u8; DVD_SECTOR];
+        sec2[..14].copy_from_slice(&pack);
+        let sdds_pes2 = build_pes_private1(0x95, &[0x11, 0x22]);
+        sec2[14..14 + sdds_pes2.len()].copy_from_slice(&sdds_pes2);
+        demuxer.push_sector(&sec2).unwrap();
+
+        // A packet in the unallocated 0x98..=0x9F gap must NOT land
+        // in any stream map.
+        let mut sec3 = vec![0u8; DVD_SECTOR];
+        sec3[..14].copy_from_slice(&pack);
+        let gap_pes = build_pes_private1(0x98, &[0xDE, 0xAD]);
+        sec3[14..14 + gap_pes.len()].copy_from_slice(&gap_pes);
+        demuxer.push_sector(&sec3).unwrap();
+
+        let streams = demuxer.take();
+        let mut want = sdds_payload.clone();
+        want.extend_from_slice(&[0x11, 0x22]);
+        assert_eq!(streams.sdds.get(&5).map(Vec::as_slice), Some(&want[..]));
+        assert_eq!(streams.sdds.len(), 1);
+        assert!(streams.ac3.is_empty());
+        assert!(streams.dts.is_empty());
+        assert!(streams.lpcm.is_empty());
+        assert!(streams.subpicture.is_empty());
     }
 
     /// Build a minimal NTSC MPEG-2 sequence header (720×480, 16:9,
