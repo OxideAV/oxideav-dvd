@@ -786,6 +786,8 @@ fn sort_kind_priority(k: DvdFileKind) -> u8 {
 }
 
 /// Classify a VIDEO_TS file name (case-insensitive).
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub fn classify_video_ts_file(e: &UdfFile) -> Option<DvdFileKind> {
     let upper = e.name.to_uppercase();
     match upper.as_str() {
@@ -800,6 +802,8 @@ pub fn classify_video_ts_file(e: &UdfFile) -> Option<DvdFileKind> {
 /// `AUDIO_TS/` empty. DVD-Audio uses it; we don't claim DVD-Audio
 /// support here so we surface unknowns as `None` and let the caller
 /// drop them.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub fn classify_audio_ts_file(_e: &UdfFile) -> Option<DvdFileKind> {
     None
 }

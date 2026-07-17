@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Marked internal plumbing helpers `#[doc(hidden)]` (filesystem
+  string/path-table decoders, AVDP probe + sector-location constants,
+  VIDEO_TS filename classifiers, the `dvd://` registry driver
+  callback) so semver tooling tracks only the documented API; no
+  behavioural or signature changes.
+
 ### Added
 
 - **SDDS substream band (`0x90..=0x97`) in the private_stream_1

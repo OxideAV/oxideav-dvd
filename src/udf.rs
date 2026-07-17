@@ -48,14 +48,20 @@ use std::io::{Read, Seek, SeekFrom};
 use crate::error::{Error, Result};
 
 /// Logical sector size on a DVD: mandatory 2048 bytes (ECMA-268 §6.1).
+// internal — exposed for tests/fuzz; not part of the stable API (use `ifo::DVD_SECTOR`)
+#[doc(hidden)]
 pub const SECTOR_SIZE: u64 = 2048;
 /// First sector at which we look for the Anchor Volume Descriptor
 /// Pointer per ECMA-167 §3/10.2.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub const AVDP_SECTOR_PRIMARY: u64 = 256;
 /// Conventional secondary AVDP location used by DVD-Video authoring
 /// tools. The actual ECMA-167 rule is "last sector or last-sector-
 /// minus-256" but DVDs commonly mirror the AVDP at sector 512 too;
 /// we probe both.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub const AVDP_SECTOR_SECONDARY: u64 = 512;
 
 // ─────────────────────── Descriptor tag (§7.2) ───────────────────────
@@ -375,6 +381,8 @@ impl ExtAd {
 /// Decode an OSTA Compressed Unicode `d-string` per UDF 1.02 §2.1.3.
 /// First byte is the compression ID (8 = 8-bit per char, 16 = 16-bit
 /// BE). Returns the decoded `String`; null bytes truncate.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub fn decode_dstring(payload: &[u8]) -> Result<String> {
     if payload.is_empty() {
         return Ok(String::new());
@@ -414,6 +422,8 @@ pub fn decode_dstring(payload: &[u8]) -> Result<String> {
 
 /// Decode a fixed-length d-string field; the last byte of the field
 /// holds the payload length in bytes.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub fn decode_dstring_field(field: &[u8]) -> Result<String> {
     if field.is_empty() {
         return Ok(String::new());
@@ -1090,6 +1100,8 @@ impl<R: Read + Seek> UdfVolume<R> {
 
 /// Probe the conventional AVDP sector locations (256, 512) for a
 /// well-formed AVDP. Returns the first valid one.
+// internal — exposed for tests/fuzz; not part of the stable API (use `UdfVolume::mount`)
+#[doc(hidden)]
 pub fn find_avdp<R: Read + Seek>(reader: &mut R) -> Result<AnchorVolumeDescriptorPointer> {
     for sec in [AVDP_SECTOR_PRIMARY, AVDP_SECTOR_SECONDARY] {
         let Ok(buf) = read_sector(reader, sec) else {

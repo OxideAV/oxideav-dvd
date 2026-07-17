@@ -77,6 +77,8 @@ impl DvdDiscSource {
 }
 
 /// `dvd://` source-registry entry point.
+// internal — registry driver callback handed to `register_bytes`; not part of the stable API
+#[doc(hidden)]
 #[cfg(feature = "registry")]
 pub fn open_dvd(uri: &str) -> oxideav_core::Result<Box<dyn oxideav_core::BytesSource>> {
     use oxideav_core::Error as CoreError;

@@ -32,10 +32,16 @@ use std::io::{Read, Seek, SeekFrom};
 use crate::error::{Error, Result};
 
 /// 2048-byte sector — DVD-Video mandates this value (ECMA-268 §6.1).
+// internal — exposed for tests/fuzz; not part of the stable API (use `ifo::DVD_SECTOR`)
+#[doc(hidden)]
 pub const SECTOR_SIZE: u64 = 2048;
 /// The Primary Volume Descriptor lives at LBA 16 per ECMA-119 §6.7.1.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub const PVD_SECTOR: u64 = 16;
 /// 5-byte magic at offset 1 of every Volume Descriptor (§8.1.2).
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub const STANDARD_ID: &[u8; 5] = b"CD001";
 
 /// Volume Descriptor types (ECMA-119 §8.1.1).
@@ -104,12 +110,16 @@ fn read_both_le_u16(bytes: &[u8]) -> Result<u16> {
 /// Decode an `a-string` field per §7.4. The character set is the
 /// printable ASCII subset (0x20..=0x7E) with trailing 0x20 padding
 /// stripped.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub fn decode_a_string(field: &[u8]) -> String {
     decode_ascii_with_pad(field)
 }
 
 /// Decode a `d-string` field per §7.5. The d-character subset is
 /// `A-Z 0-9 _` plus space-padding to the field length.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub fn decode_d_string(field: &[u8]) -> String {
     decode_ascii_with_pad(field)
 }
@@ -414,6 +424,8 @@ pub struct PathTableEntry {
 }
 
 /// Parse the L-Path table (little-endian) byte buffer.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub fn parse_l_path_table(bytes: &[u8]) -> Result<Vec<PathTableEntry>> {
     let mut out = Vec::new();
     let mut o = 0usize;
