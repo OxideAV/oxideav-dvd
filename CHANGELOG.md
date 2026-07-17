@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.4...v0.0.5) - 2026-07-17
+
+### Fixed
+
+- fix clippy::byte_char_slices in vm.rs language-code tests
+
+### Other
+
+- doc(hidden) internal plumbing — filesystem decoders, AVDP probe, VIDEO_TS classifiers, registry callback
+- DvdSubstream selector inverse — from_kind_track + selector() round-trip
+- hostile-input fuzz for the demuxer + copy-control; README substream/CCI coverage
+- copyctl — typed CGMS-A / APS copy-control decode + sector CPR_MAI parser
+- substream taxonomy + demux census — typed band inventory over private_stream_1
+- SDDS substream band 0x90-0x97 — full four-band private_stream_1 audio routing
+- extend hostile-input fuzz to the SPU RLE renderer + compositor
+- hostile-input hardening suite over every public parser + the VM
+
 ### Changed
 
 - Marked internal plumbing helpers `#[doc(hidden)]` (filesystem
