@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.4...v0.0.5) - 2026-08-01
+
+### Fixed
+
+- fix clippy::byte_char_slices in vm.rs language-code tests
+
+### Other
+
+- LPCM 20/24-bit sample unpacking per the staged bit-packing trace
+- pack-structure classifier — one-pack-per-sector rules typed, with fuzz
+- shuffle-mode walk + PES wire metadata + demux-to-compliance audit
+- hostile-input fuzz for the PES header walker + GOP census; demux-side compliance shortcut
+- non-sequential PGC playback — program-boundary events for random/shuffle mode
+- DVD-compliance validator over the video ES — restriction-table audit with typed violations
+- PES header-extension typed decode — flags, ESCR, ES-rate, copy-info, CRC, extension group
+- second-pass reconciliation — vobu_cat + CPR_MAI raw-preserve ratified, pinned by tests
+- doc(hidden) internal plumbing — filesystem decoders, AVDP probe, VIDEO_TS classifiers, registry callback
+- DvdSubstream selector inverse — from_kind_track + selector() round-trip
+- hostile-input fuzz for the demuxer + copy-control; README substream/CCI coverage
+- copyctl — typed CGMS-A / APS copy-control decode + sector CPR_MAI parser
+- substream taxonomy + demux census — typed band inventory over private_stream_1
+- SDDS substream band 0x90-0x97 — full four-band private_stream_1 audio routing
+- extend hostile-input fuzz to the SPU RLE renderer + compositor
+- hostile-input hardening suite over every public parser + the VM
+
 ### Documentation
 
 - **Second-pass reconciliation for `vobu_cat` APS + `CPR_MAI` byte
