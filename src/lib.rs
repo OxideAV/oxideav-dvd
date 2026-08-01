@@ -184,8 +184,9 @@ pub use vm::{
 };
 pub use vob::{
     demux_vobs, demux_vobs_path, looks_like_nav_pack, AudioSubstreamHeader, ButtonInfo, ButtonMode,
-    CellId, DsiGi, DsiPacket, DvdSubstream, DvdSubstreamKind, ElementaryStream, HighlightInfo,
-    HighlightStatus, NavPack, NsmlAgli, NsmlAngleCell, PackHeader, PciPacket, PesPacket, SlColi,
+    CellId, DsiGi, DsiPacket, DvdSubstream, DvdSubstreamKind, ElementaryStream, Escr,
+    HighlightInfo, HighlightStatus, NavPack, NsmlAgli, NsmlAngleCell, PackHeader, PciPacket,
+    PesExtension, PesHeaderExt, PesPacket, PesPstdBuffer, ProgramPacketSequenceCounter, SlColi,
     SlColiCell, SmlAgli, SmlAngleCell, SmlAudioGap, SmlPbi, SriDirection, SriPointer, StreamBound,
     SubstreamStat, Synci, SystemHeader, VobDemuxer, VobId, VobStreams, VobuSri,
     AUDIO_SUBSTREAM_HEADER_LEN,

@@ -32,6 +32,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Full PES header-extension decode.** `PesPacket::parse` previously
+  extracted only PTS/DTS; it now types every header-data group the
+  staged `mpucoder-pes-hdr.html` documents for the DVD stream subset,
+  surfaced as `PesPacket::header_ext` (`PesHeaderExt`): the byte-6
+  flag bits (2-bit PES scrambling control, priority, data-alignment
+  indicator, copyright, original-or-copy), the 6-byte ESCR
+  (`Escr { base, ext }` with `to_27mhz()`), the 22-bit ES rate
+  (50-byte/s units), the 7-bit additional-copy-info (raw — the
+  reference names the field without assigning internal bits), the
+  previous-PES-packet CRC-16, and the PES-extension group
+  (`PesExtension`: 16-byte private data, pack-header field,
+  `ProgramPacketSequenceCounter`, per-PES `PesPstdBuffer` with
+  `buffer_bytes()`, and the raw extension-field-2), plus the count of
+  trailing stuffing bytes. Every group is bounds-checked against
+  `PES_header_data_length` and its marker/prefix bits are validated.
+  A set DSM-trick-mode flag is rejected: the reference marks it "not
+  used by DVD" and assigns no layout, so the following group
+  boundaries would be undecodable. The padding-stream /
+  private_stream_2 no-extension rule is pinned by test.
+
 - **SDDS substream band (`0x90..=0x97`) in the private_stream_1
   router.** The demuxer now implements the full four-band audio
   allocation from the staged

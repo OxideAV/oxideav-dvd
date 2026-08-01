@@ -622,6 +622,118 @@ impl AudioSubstreamHeader {
     }
 }
 
+/// Elementary Stream Clock Reference — the optional 6-byte per-PES
+/// clock field (mpucoder-pes-hdr.html "ESCR"), used when the
+/// elementary stream is not synchronised to the system level (i.e.
+/// the ESCR differs from the [`PackHeader`] SCR).
+///
+/// On-wire layout mirrors the pack-header SCR: 2 reserved bits,
+/// `base[32..30]`, marker, `base[29..15]`, marker, `base[14..0]`,
+/// marker, 9-bit extension, marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Escr {
+    /// 33-bit ESCR base (90 kHz units; ESCR / 300).
+    pub base: u64,
+    /// 9-bit ESCR extension (27 MHz remainder; ESCR mod 300).
+    pub ext: u16,
+}
+
+impl Escr {
+    /// The full 27 MHz clock value: `base × 300 + ext`.
+    pub fn to_27mhz(self) -> u64 {
+        self.base * 300 + self.ext as u64
+    }
+}
+
+/// The 2-byte `program packet sequence counter` group of a
+/// [`PesExtension`] (mpucoder-pes-hdr.html).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProgramPacketSequenceCounter {
+    /// 7-bit packet sequence counter.
+    pub counter: u8,
+    /// `MPEG1_MPEG2 identifier` bit.
+    pub mpeg1_mpeg2: bool,
+    /// 6-bit `original stuffing length`.
+    pub original_stuffing_length: u8,
+}
+
+/// The 2-byte per-PES `P-STD buffer` group of a [`PesExtension`]
+/// (mpucoder-pes-hdr.html): `01` + scale bit + 13-bit size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PesPstdBuffer {
+    /// `P-STD buffer scale` — `false` = 128-byte units, `true` =
+    /// 1024-byte units.
+    pub scale_1024: bool,
+    /// 13-bit `P-STD buffer size` in scale units.
+    pub size_units: u16,
+}
+
+impl PesPstdBuffer {
+    /// Buffer size in bytes (`size × 128` or `size × 1024` per the
+    /// scale bit).
+    pub fn buffer_bytes(self) -> u32 {
+        self.size_units as u32 * if self.scale_1024 { 1024 } else { 128 }
+    }
+}
+
+/// The optional PES-extension group flagged by bit 0 of PES header
+/// byte 7 (mpucoder-pes-hdr.html "PES extension flag"). Each member
+/// is independently flagged by the extension's own first byte and
+/// appended to the header data field in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PesExtension<'a> {
+    /// 16 bytes of user-defined PES private data (if flagged).
+    pub private_data: Option<&'a [u8]>,
+    /// The pack-header field: the 8-bit `pack field length` value
+    /// followed by that many bytes, surfaced raw (if flagged).
+    pub pack_header_field: Option<&'a [u8]>,
+    /// Program packet sequence counter group (if flagged).
+    pub sequence_counter: Option<ProgramPacketSequenceCounter>,
+    /// Per-PES P-STD buffer bound (if flagged).
+    pub pstd_buffer: Option<PesPstdBuffer>,
+    /// `PES extension field` 2 — the bytes indicated by the 7-bit
+    /// `PES extension field length`, surfaced raw (if flagged).
+    pub extension_field_2: Option<&'a [u8]>,
+}
+
+/// The decoded MPEG-2 PES header extension — bytes 6..8 flag fields
+/// plus every optional header-data group mpucoder-pes-hdr.html
+/// documents for the DVD stream subset. Present on every
+/// DVD-relevant stream except the padding stream and
+/// private_stream_2 (which carry no extension).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PesHeaderExt<'a> {
+    /// 2-bit `PES scrambling control` — `00` = not scrambled, other
+    /// values are user-defined (on DVD: CSS).
+    pub scrambling_control: u8,
+    /// `PES priority` bit (two priority levels, 0 and 1).
+    pub priority: bool,
+    /// `data alignment indicator` — `true` means the header is
+    /// immediately followed by a video start code / audio syncword.
+    pub data_alignment: bool,
+    /// `copyright` — `true` = packet contains copyrighted material.
+    pub copyright: bool,
+    /// `original or copy` — `true` = original, `false` = copy.
+    pub original: bool,
+    /// Elementary Stream Clock Reference (if flagged).
+    pub escr: Option<Escr>,
+    /// 22-bit `ES rate` in 50-byte/s units (if flagged) — the rate
+    /// at which data is delivered for this stream.
+    pub es_rate: Option<u32>,
+    /// 7-bit `additional copy info` (if flagged), preserved raw —
+    /// the staged reference names the field without assigning its
+    /// internal bits.
+    pub additional_copy_info: Option<u8>,
+    /// `previous PES packet CRC` (if flagged) — CRC-16 polynomial
+    /// x¹⁶ + x¹² + x⁵ + 1 over the previous packet.
+    pub prev_pes_crc: Option<u16>,
+    /// The PES-extension group (if flagged).
+    pub extension: Option<PesExtension<'a>>,
+    /// Number of `0xFF` stuffing bytes that padded the header data
+    /// field after all flagged groups.
+    pub stuffing_len: usize,
+}
+
 /// Parsed PES packet — header + raw payload slice (zero-copy into
 /// the caller's buffer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -632,6 +744,10 @@ pub struct PesPacket<'a> {
     pub pts: Option<u64>,
     /// 33-bit Decode Time Stamp in 90 kHz units (if present).
     pub dts: Option<u64>,
+    /// The full MPEG-2 header extension (flag bits + optional
+    /// header-data groups). `None` only for the two DVD streams
+    /// that carry no extension (padding stream, private_stream_2).
+    pub header_ext: Option<PesHeaderExt<'a>>,
     /// Payload bytes (after the PES header). For private_stream_1
     /// (`stream_id == 0xBD`) the first byte of `payload` is the DVD
     /// substream identifier.
@@ -669,6 +785,7 @@ impl<'a> PesPacket<'a> {
                 stream_id,
                 pts: None,
                 dts: None,
+                header_ext: None,
                 payload: &buf[6..wire_size],
                 wire_size,
             });
@@ -689,7 +806,23 @@ impl<'a> PesPacket<'a> {
                 "PES: byte-6 top bits != 10 (MPEG-1 framing not supported)",
             ));
         }
+        // Byte 6 low bits: scrambling control + priority + data
+        // alignment + copyright + original_or_copy.
+        let scrambling_control = (buf[6] >> 4) & 0b11;
+        let priority = buf[6] & 0b0000_1000 != 0;
+        let data_alignment = buf[6] & 0b0000_0100 != 0;
+        let copyright = buf[6] & 0b0000_0010 != 0;
+        let original = buf[6] & 0b0000_0001 != 0;
+
+        // Byte 7: the seven header-data group flags.
         let pts_dts_flags = (buf[7] >> 6) & 0b11;
+        let escr_flag = buf[7] & 0b0010_0000 != 0;
+        let es_rate_flag = buf[7] & 0b0001_0000 != 0;
+        let dsm_trick_flag = buf[7] & 0b0000_1000 != 0;
+        let add_copy_flag = buf[7] & 0b0000_0100 != 0;
+        let crc_flag = buf[7] & 0b0000_0010 != 0;
+        let ext_flag = buf[7] & 0b0000_0001 != 0;
+
         let header_data_len = buf[8] as usize;
         let payload_start = 9 + header_data_len;
         if payload_start > wire_size {
@@ -697,34 +830,162 @@ impl<'a> PesPacket<'a> {
                 "PES: PES_header_data_length exceeds packet length",
             ));
         }
+        // The header data field the flagged groups live in.
+        let hd = &buf[9..payload_start];
+        let mut pos = 0usize;
+        let take = |pos: &mut usize, n: usize| -> Result<&'a [u8]> {
+            if *pos + n > hd.len() {
+                return Err(Error::InvalidUdf(
+                    "PES: flagged header group exceeds PES_header_data_length",
+                ));
+            }
+            let s = &hd[*pos..*pos + n];
+            *pos += n;
+            Ok(s)
+        };
 
         let (pts, dts) = match pts_dts_flags {
             0b00 => (None, None),
             0b01 => return Err(Error::InvalidUdf("PES: PTS_DTS_flags == 01 is forbidden")),
-            0b10 => {
-                // PTS only — 5-byte field starting at byte 9.
-                if header_data_len < 5 {
-                    return Err(Error::InvalidUdf("PES: PTS flagged but data_len < 5"));
-                }
-                let pts_v = parse_timestamp(&buf[9..14], 0b0010)?;
-                (Some(pts_v), None)
-            }
+            0b10 => (Some(parse_timestamp(take(&mut pos, 5)?, 0b0010)?), None),
             0b11 => {
-                // PTS + DTS — 10 bytes starting at byte 9.
-                if header_data_len < 10 {
-                    return Err(Error::InvalidUdf("PES: PTS+DTS flagged but data_len < 10"));
-                }
-                let pts_v = parse_timestamp(&buf[9..14], 0b0011)?;
-                let dts_v = parse_timestamp(&buf[14..19], 0b0001)?;
+                let pts_v = parse_timestamp(take(&mut pos, 5)?, 0b0011)?;
+                let dts_v = parse_timestamp(take(&mut pos, 5)?, 0b0001)?;
                 (Some(pts_v), Some(dts_v))
             }
             _ => unreachable!(),
         };
 
+        let escr = if escr_flag {
+            Some(parse_escr(take(&mut pos, 6)?)?)
+        } else {
+            None
+        };
+
+        let es_rate = if es_rate_flag {
+            // 3 bytes: `1 rate[21..0] 1` (units of 50 bytes/second).
+            let b = take(&mut pos, 3)?;
+            if b[0] & 0x80 == 0 || b[2] & 0x01 == 0 {
+                return Err(Error::InvalidUdf("PES: ES-rate marker bit missing"));
+            }
+            Some((((b[0] as u32) & 0x7F) << 15) | ((b[1] as u32) << 7) | ((b[2] as u32) >> 1))
+        } else {
+            None
+        };
+
+        // DSM trick mode is "not used by DVD" (mpucoder-pes-hdr.html)
+        // and the staged reference gives no field layout, so a set
+        // flag makes the following group boundaries undecodable.
+        if dsm_trick_flag {
+            return Err(Error::InvalidUdf(
+                "PES: DSM-trick-mode flag set (not used by DVD)",
+            ));
+        }
+
+        let additional_copy_info = if add_copy_flag {
+            // 1 byte: `1 additional-copy-info[6..0]`.
+            let b = take(&mut pos, 1)?;
+            if b[0] & 0x80 == 0 {
+                return Err(Error::InvalidUdf(
+                    "PES: additional-copy-info marker bit missing",
+                ));
+            }
+            Some(b[0] & 0x7F)
+        } else {
+            None
+        };
+
+        let prev_pes_crc = if crc_flag {
+            let b = take(&mut pos, 2)?;
+            Some(((b[0] as u16) << 8) | b[1] as u16)
+        } else {
+            None
+        };
+
+        let extension = if ext_flag {
+            let flags = take(&mut pos, 1)?[0];
+            let private_data = if flags & 0x80 != 0 {
+                Some(take(&mut pos, 16)?)
+            } else {
+                None
+            };
+            let pack_header_field = if flags & 0x40 != 0 {
+                let len = take(&mut pos, 1)?[0] as usize;
+                Some(take(&mut pos, len)?)
+            } else {
+                None
+            };
+            let sequence_counter = if flags & 0x20 != 0 {
+                // 2 bytes: `1 counter[6..0]` +
+                // `1 MPEG1_MPEG2 original-stuffing-length[5..0]`.
+                let b = take(&mut pos, 2)?;
+                if b[0] & 0x80 == 0 || b[1] & 0x80 == 0 {
+                    return Err(Error::InvalidUdf(
+                        "PES: sequence-counter marker bit missing",
+                    ));
+                }
+                Some(ProgramPacketSequenceCounter {
+                    counter: b[0] & 0x7F,
+                    mpeg1_mpeg2: b[1] & 0x40 != 0,
+                    original_stuffing_length: b[1] & 0x3F,
+                })
+            } else {
+                None
+            };
+            let pstd_buffer = if flags & 0x10 != 0 {
+                // 2 bytes: `01 scale size[12..0]`.
+                let b = take(&mut pos, 2)?;
+                if (b[0] >> 6) != 0b01 {
+                    return Err(Error::InvalidUdf("PES: P-STD buffer prefix bits != 01"));
+                }
+                Some(PesPstdBuffer {
+                    scale_1024: b[0] & 0x20 != 0,
+                    size_units: (((b[0] as u16) & 0x1F) << 8) | b[1] as u16,
+                })
+            } else {
+                None
+            };
+            let extension_field_2 = if flags & 0x01 != 0 {
+                // 1 byte `1 length[6..0]` then that many bytes.
+                let b = take(&mut pos, 1)?[0];
+                if b & 0x80 == 0 {
+                    return Err(Error::InvalidUdf("PES: extension-2 marker bit missing"));
+                }
+                Some(take(&mut pos, (b & 0x7F) as usize)?)
+            } else {
+                None
+            };
+            Some(PesExtension {
+                private_data,
+                pack_header_field,
+                sequence_counter,
+                pstd_buffer,
+                extension_field_2,
+            })
+        } else {
+            None
+        };
+
+        // Whatever remains of the header data field is stuffing.
+        let stuffing_len = hd.len() - pos;
+
         Ok(Self {
             stream_id,
             pts,
             dts,
+            header_ext: Some(PesHeaderExt {
+                scrambling_control,
+                priority,
+                data_alignment,
+                copyright,
+                original,
+                escr,
+                es_rate,
+                additional_copy_info,
+                prev_pes_crc,
+                extension,
+                stuffing_len,
+            }),
             payload: &buf[payload_start..wire_size],
             wire_size,
         })
@@ -766,6 +1027,36 @@ fn parse_timestamp(buf: &[u8], expected_tag: u8) -> Result<u64> {
     let ts_mid = (((buf[1] as u64) << 7) | ((buf[2] as u64) >> 1)) & 0x7FFF;
     let ts_low = (((buf[3] as u64) << 7) | ((buf[4] as u64) >> 1)) & 0x7FFF;
     Ok((ts_high << 30) | (ts_mid << 15) | ts_low)
+}
+
+/// Decode the 6-byte ESCR header group (mpucoder-pes-hdr.html).
+///
+/// 48-bit layout, MSB first: 2 reserved bits, `base[32..30]`,
+/// marker, `base[29..15]`, marker, `base[14..0]`, marker, 9-bit
+/// extension, marker — the same base/extension split as the pack
+/// header SCR, shifted by the two leading reserved bits.
+fn parse_escr(buf: &[u8]) -> Result<Escr> {
+    if buf.len() < 6 {
+        return Err(Error::InvalidUdf("ESCR field shorter than 6 bytes"));
+    }
+    let v = ((buf[0] as u64) << 40)
+        | ((buf[1] as u64) << 32)
+        | ((buf[2] as u64) << 24)
+        | ((buf[3] as u64) << 16)
+        | ((buf[4] as u64) << 8)
+        | buf[5] as u64;
+    // Marker bits at 48-bit positions 42, 26, 10 and 0.
+    if v & (1 << 42) == 0 || v & (1 << 26) == 0 || v & (1 << 10) == 0 || v & 1 == 0 {
+        return Err(Error::InvalidUdf("ESCR marker bit missing"));
+    }
+    let base_high = (v >> 43) & 0b111;
+    let base_mid = (v >> 27) & 0x7FFF;
+    let base_low = (v >> 11) & 0x7FFF;
+    let ext = ((v >> 1) & 0x1FF) as u16;
+    Ok(Escr {
+        base: (base_high << 30) | (base_mid << 15) | base_low,
+        ext,
+    })
 }
 
 // ------------------------------------------------------------------
@@ -3184,6 +3475,42 @@ mod tests {
         v
     }
 
+    /// Build a video-stream PES packet with explicit extension bytes
+    /// 6/7 (byte 6 must already carry the `10` top bits) and a raw
+    /// header-data field.
+    fn build_pes_with_header(byte6: u8, byte7: u8, header_data: &[u8], payload: &[u8]) -> Vec<u8> {
+        let pes_len = 3 + header_data.len() + payload.len();
+        let mut v = vec![
+            0x00,
+            0x00,
+            0x01,
+            0xE0,
+            (pes_len >> 8) as u8,
+            (pes_len & 0xFF) as u8,
+            byte6,
+            byte7,
+            header_data.len() as u8,
+        ];
+        v.extend_from_slice(header_data);
+        v.extend_from_slice(payload);
+        v
+    }
+
+    /// Encode a 6-byte ESCR header group for `base` / `ext`.
+    fn encode_escr(base: u64, ext: u16) -> [u8; 6] {
+        let mut v: u64 = 0;
+        v |= ((base >> 30) & 0b111) << 43;
+        v |= 1 << 42;
+        v |= ((base >> 15) & 0x7FFF) << 27;
+        v |= 1 << 26;
+        v |= (base & 0x7FFF) << 11;
+        v |= 1 << 10;
+        v |= ((ext as u64) & 0x1FF) << 1;
+        v |= 1;
+        let b = v.to_be_bytes();
+        [b[2], b[3], b[4], b[5], b[6], b[7]]
+    }
+
     // ----- pack header ---------------------------------------------
 
     #[test]
@@ -3298,6 +3625,190 @@ mod tests {
         let mut bytes = build_pes_video(&[0xAA], None);
         bytes[2] = 0x02;
         assert!(PesPacket::parse(&bytes).is_err());
+    }
+
+    // ----- PES header extension (mpucoder-pes-hdr.html) ------------
+
+    #[test]
+    fn pes_byte6_flag_bits_decode() {
+        // scrambling=01, priority, alignment, copyright, original.
+        let bytes = build_pes_with_header(0b1001_1111, 0, &[], &[0xAA]);
+        let ext = PesPacket::parse(&bytes).unwrap().header_ext.unwrap();
+        assert_eq!(ext.scrambling_control, 0b01);
+        assert!(ext.priority);
+        assert!(ext.data_alignment);
+        assert!(ext.copyright);
+        assert!(ext.original);
+        assert_eq!(ext.stuffing_len, 0);
+        // All clear.
+        let bytes = build_pes_with_header(0b1000_0000, 0, &[], &[0xAA]);
+        let ext = PesPacket::parse(&bytes).unwrap().header_ext.unwrap();
+        assert_eq!(ext.scrambling_control, 0);
+        assert!(!ext.priority && !ext.data_alignment && !ext.copyright && !ext.original);
+        assert_eq!(ext.escr, None);
+        assert_eq!(ext.es_rate, None);
+        assert_eq!(ext.additional_copy_info, None);
+        assert_eq!(ext.prev_pes_crc, None);
+        assert_eq!(ext.extension, None);
+    }
+
+    #[test]
+    fn pes_no_extension_streams_have_no_header_ext() {
+        // Padding stream and private_stream_2 carry no extension per
+        // the stream-ID table.
+        for sid in [SC_PADDING_STREAM, SC_PRIVATE_STREAM_2] {
+            let bytes = vec![0x00, 0x00, 0x01, sid, 0x00, 0x02, 0xFF, 0xFF];
+            let pes = PesPacket::parse(&bytes).unwrap();
+            assert_eq!(pes.header_ext, None);
+            assert_eq!(pes.payload, &[0xFF, 0xFF]);
+        }
+    }
+
+    #[test]
+    fn pes_escr_decodes_and_round_trips() {
+        let base = 0x1_2345_6789u64; // exercises bit 32
+        let ext = 0x155u16;
+        let bytes = build_pes_with_header(0x80, 0b0010_0000, &encode_escr(base, ext), &[0x00]);
+        let h = PesPacket::parse(&bytes).unwrap().header_ext.unwrap();
+        let escr = h.escr.unwrap();
+        assert_eq!(escr.base, base);
+        assert_eq!(escr.ext, ext);
+        assert_eq!(escr.to_27mhz(), base * 300 + ext as u64);
+        // A cleared marker bit is rejected.
+        let mut bad = encode_escr(base, ext);
+        bad[5] &= !0x01; // final marker
+        let bytes = build_pes_with_header(0x80, 0b0010_0000, &bad, &[0x00]);
+        assert!(PesPacket::parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn pes_es_rate_decodes() {
+        // rate = 0x2ABCD (22 bits), units of 50 bytes/second.
+        // 3 bytes: 1 rate[21..15] | rate[14..7] | rate[6..0] 1.
+        let rate: u32 = 0x2A_BCD;
+        let b = [
+            0x80 | ((rate >> 15) & 0x7F) as u8,
+            ((rate >> 7) & 0xFF) as u8,
+            (((rate & 0x7F) << 1) | 1) as u8,
+        ];
+        let bytes = build_pes_with_header(0x80, 0b0001_0000, &b, &[0x00]);
+        let h = PesPacket::parse(&bytes).unwrap().header_ext.unwrap();
+        assert_eq!(h.es_rate, Some(rate));
+        // Missing leading marker bit is rejected.
+        let bad = [b[0] & 0x7F, b[1], b[2]];
+        let bytes = build_pes_with_header(0x80, 0b0001_0000, &bad, &[0x00]);
+        assert!(PesPacket::parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn pes_dsm_trick_mode_is_rejected() {
+        // "DSM trick mode - not used by DVD": the staged reference
+        // assigns the flag no field layout, so a set flag makes the
+        // rest of the header data undecodable.
+        let bytes = build_pes_with_header(0x80, 0b0000_1000, &[0xFF], &[0x00]);
+        assert!(PesPacket::parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn pes_additional_copy_info_and_crc() {
+        // additional copy info = 0x55 (marker + 7 bits), then a
+        // previous-PES CRC of 0xBEEF.
+        let hd = [0x80 | 0x55, 0xBE, 0xEF];
+        let bytes = build_pes_with_header(0x80, 0b0000_0110, &hd, &[0x00]);
+        let h = PesPacket::parse(&bytes).unwrap().header_ext.unwrap();
+        assert_eq!(h.additional_copy_info, Some(0x55));
+        assert_eq!(h.prev_pes_crc, Some(0xBEEF));
+        // Missing additional-copy-info marker bit is rejected.
+        let bytes = build_pes_with_header(0x80, 0b0000_0100, &[0x55], &[0x00]);
+        assert!(PesPacket::parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn pes_extension_group_full_decode() {
+        // Extension flags: private data + sequence counter + P-STD +
+        // ext-2 (0b1011_0001 — bits 3..1 are the reserved `111` in
+        // the on-wire byte, but the decoder keys only on the five
+        // documented flag positions).
+        let mut hd = vec![0b1011_0001u8];
+        let private: [u8; 16] = *b"0123456789ABCDEF";
+        hd.extend_from_slice(&private);
+        // Sequence counter: counter=0x33, MPEG2 (bit clear), original
+        // stuffing length = 5.
+        hd.push(0x80 | 0x33);
+        hd.push(0x80 | 0x05);
+        // P-STD: prefix 01, scale=1024, size=0x1234 units.
+        hd.push(0b0100_0000 | 0b0010_0000 | 0x12);
+        hd.push(0x34);
+        // Extension field 2: 3 bytes.
+        hd.push(0x80 | 3);
+        hd.extend_from_slice(&[0xA1, 0xA2, 0xA3]);
+        // Two stuffing bytes after all groups.
+        hd.extend_from_slice(&[0xFF, 0xFF]);
+        let bytes = build_pes_with_header(0x80, 0b0000_0001, &hd, &[0x00]);
+        let h = PesPacket::parse(&bytes).unwrap().header_ext.unwrap();
+        let ext = h.extension.unwrap();
+        assert_eq!(ext.private_data.unwrap(), &private);
+        assert_eq!(ext.pack_header_field, None);
+        let sc = ext.sequence_counter.unwrap();
+        assert_eq!(sc.counter, 0x33);
+        assert!(!sc.mpeg1_mpeg2);
+        assert_eq!(sc.original_stuffing_length, 5);
+        let pstd = ext.pstd_buffer.unwrap();
+        assert!(pstd.scale_1024);
+        assert_eq!(pstd.size_units, 0x1234);
+        assert_eq!(pstd.buffer_bytes(), 0x1234 * 1024);
+        assert_eq!(ext.extension_field_2.unwrap(), &[0xA1, 0xA2, 0xA3]);
+        assert_eq!(h.stuffing_len, 2);
+    }
+
+    #[test]
+    fn pes_extension_pack_header_field() {
+        // pack-header-field flag: 8-bit length then that many bytes.
+        let hd = [0b0100_0000, 0x03, 0x01, 0x02, 0x03];
+        let bytes = build_pes_with_header(0x80, 0b0000_0001, &hd, &[0x00]);
+        let h = PesPacket::parse(&bytes).unwrap().header_ext.unwrap();
+        assert_eq!(
+            h.extension.unwrap().pack_header_field.unwrap(),
+            &[0x01, 0x02, 0x03]
+        );
+    }
+
+    #[test]
+    fn pes_pstd_bad_prefix_rejected() {
+        // P-STD group must start with `01` bits.
+        let hd = [0b0001_0000, 0b1000_0000, 0x00];
+        let bytes = build_pes_with_header(0x80, 0b0000_0001, &hd, &[0x00]);
+        assert!(PesPacket::parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn pes_flagged_group_beyond_header_len_rejected() {
+        // ESCR flagged but only 3 header-data bytes present: the
+        // group must not read past PES_header_data_length.
+        let bytes = build_pes_with_header(0x80, 0b0010_0000, &[0x04, 0x00, 0x01], &[0x00]);
+        assert!(PesPacket::parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn pes_pts_with_escr_and_stuffing() {
+        // PTS + ESCR + trailing stuffing all in one header.
+        let pts = 0x0_0FF3_4567u64;
+        let mut hd = vec![
+            0x20 | (((pts >> 29) & 0xE) as u8) | 1,
+            ((pts >> 22) & 0xFF) as u8,
+            (((pts >> 14) & 0xFE) as u8) | 1,
+            ((pts >> 7) & 0xFF) as u8,
+            (((pts << 1) & 0xFE) as u8) | 1,
+        ];
+        hd.extend_from_slice(&encode_escr(1234, 5));
+        hd.extend_from_slice(&[0xFF; 3]);
+        let bytes = build_pes_with_header(0x80, 0b1010_0000, &hd, &[0x7E]);
+        let pes = PesPacket::parse(&bytes).unwrap();
+        assert_eq!(pes.pts, Some(pts));
+        let h = pes.header_ext.unwrap();
+        assert_eq!(h.escr, Some(Escr { base: 1234, ext: 5 }));
+        assert_eq!(h.stuffing_len, 3);
+        assert_eq!(pes.payload, &[0x7E]);
     }
 
     // ----- DVD substream classification -----------------------------

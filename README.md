@@ -115,6 +115,7 @@ is delegated to the external `oxideav-css` crate.
 | VTS_VOBU_ADMAP (per-VOBU sector list + partition lookup) | landed |
 | VTS_TMAPTI (per-PGC time map + seconds → VOBU sector seek) | landed |
 | VOB demux (MPEG-PS pack + nav-pack + PES) | landed |
+| PES header-extension typed decode (`PesHeaderExt` — scrambling control / priority / data alignment / copyright / original bits + ESCR base·ext + ES-rate + additional-copy-info + previous-PES CRC + the `PesExtension` group: 16-byte private data / pack-header field / program packet sequence counter / per-PES P-STD buffer / extension-field-2 + stuffing count; DSM-trick-mode rejected as not-used-by-DVD) | landed |
 | DVD substream routing (AC-3 `0x80` / DTS `0x88` / SDDS `0x90` / LPCM `0xA0` audio bands + subpicture `0x20..=0x3F` — the full private_stream_1 allocation; the `0x98..=0x9F` gap stays unmapped) | landed |
 | Substream taxonomy + demux census (`DvdSubstreamKind` five-band map with `band()` / `capacity()` / `classify()`; `VobStreams::substream_census` per-raw-ID packet + byte counts; `substreams_seen()` typed inventory + `unallocated_substreams()` out-of-spec visibility) | landed |
 | Copy-control decode (`copyctl` — `Cgms` / `ApsType` 2-bit value tables, `CopyControlInfo` analog-output field pack/unpack, `CprMai` sector-level CCI parser over the ECMA-267 §16 Data Frame incl. `from_data_frame()`; PCI `vobu_cat` kept raw — the APS trigger's bit offset is member-gated) | landed |
