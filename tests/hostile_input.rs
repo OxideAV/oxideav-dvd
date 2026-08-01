@@ -153,6 +153,32 @@ fn fuzz_pes_header_extension() {
 }
 
 #[test]
+fn fuzz_pack_classifier() {
+    // Raw random 2048-byte sectors plus off-size buffers.
+    fuzz_slice(63, ITERS / 2, 2100, |b| {
+        let _ = oxideav_dvd::classify_pack(b);
+    });
+    // Structured: valid nav-pack prefix with random tail mutations.
+    let mut rng = Rng::new(64);
+    let mut sector = vec![0u8; 2048];
+    // Minimal valid-looking pack header (zero SCR, mux rate 1).
+    sector[..4].copy_from_slice(&[0x00, 0x00, 0x01, 0xBA]);
+    sector[4] = 0b0100_0100;
+    sector[6] = 0b0000_0100;
+    sector[8] = 0b0000_0100;
+    sector[9] = 0b0000_0001;
+    sector[12] = 0b0000_0111; // mux rate low bits + '11'
+    for _ in 0..ITERS / 2 {
+        let mut s = sector.clone();
+        for _ in 0..8 {
+            let at = 14 + (rng.next_u64() as usize % (s.len() - 14));
+            s[at] = rng.byte();
+        }
+        let _ = oxideav_dvd::classify_pack(&s);
+    }
+}
+
+#[test]
 fn fuzz_gop_stats_and_compliance() {
     fuzz_slice(62, ITERS / 2, 1024, |b| {
         let g = scan_gop_stats(b);

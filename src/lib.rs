@@ -185,13 +185,13 @@ pub use vm::{
     SPRM_VIDEO_PREF, SPRM_VTS_TITLE,
 };
 pub use vob::{
-    demux_vobs, demux_vobs_path, looks_like_nav_pack, AudioSubstreamHeader, ButtonInfo, ButtonMode,
-    CellId, DsiGi, DsiPacket, DvdSubstream, DvdSubstreamKind, ElementaryStream, Escr,
-    HighlightInfo, HighlightStatus, NavPack, NsmlAgli, NsmlAngleCell, PackHeader, PciPacket,
-    PesExtension, PesHeaderExt, PesPacket, PesPstdBuffer, ProgramPacketSequenceCounter, SlColi,
-    SlColiCell, SmlAgli, SmlAngleCell, SmlAudioGap, SmlPbi, SriDirection, SriPointer, StreamBound,
-    SubstreamStat, Synci, SystemHeader, VobDemuxer, VobId, VobStreams, VobuSri,
-    AUDIO_SUBSTREAM_HEADER_LEN,
+    classify_pack, demux_vobs, demux_vobs_path, looks_like_nav_pack, AudioSubstreamHeader,
+    ButtonInfo, ButtonMode, CellId, DsiGi, DsiPacket, DvdSubstream, DvdSubstreamKind,
+    ElementaryStream, Escr, HighlightInfo, HighlightStatus, NavPack, NsmlAgli, NsmlAngleCell,
+    PackClass, PackHeader, PackKind, PciPacket, PesExtension, PesHeaderExt, PesPacket,
+    PesPstdBuffer, ProgramPacketSequenceCounter, SlColi, SlColiCell, SmlAgli, SmlAngleCell,
+    SmlAudioGap, SmlPbi, SriDirection, SriPointer, StreamBound, SubstreamStat, Synci, SystemHeader,
+    VobDemuxer, VobId, VobStreams, VobuSri, AUDIO_SUBSTREAM_HEADER_LEN, VOB_FILE_SPLIT_SECTORS,
 };
 
 #[cfg(feature = "registry")]

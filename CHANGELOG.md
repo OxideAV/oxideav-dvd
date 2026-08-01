@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pack-structure classifier.** `classify_pack(sector)` types one
+  2048-byte sector against the pack rules of the staged VOB-overview
+  reference: each sector is exactly one pack; a pack holds one or
+  two packets and no more; the information in one pack is all of one
+  kind (`PackKind::Nav` / `Video` / `MpegAudio` / `Private1` with a
+  typed `dvd_substream()` view / `Padding`); the only permitted
+  second packet is a padding packet; and private_stream_2 appears
+  only inside a NAV pack. Returns a `PackClass` census (kind, packet
+  count, padded flag) or an error naming the violated rule — zero
+  fill after the final packet is tolerated, a further start code is
+  not. `VOB_FILE_SPLIT_SECTORS` (`0x7FFFF` = 1 073 739 776 bytes)
+  records the 1 GB `VTS_xx_N.VOB` split geometry. Classifier fuzzed
+  alongside the other pack parsers.
+
 - **Shuffle-walk + wire-metadata + compliance integration test.**
   `tests/playback_integration.rs` gains a second end-to-end pass over
   the synthetic six-sector VOB: the two-program title re-authored as

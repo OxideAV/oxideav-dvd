@@ -2948,6 +2948,164 @@ pub fn looks_like_nav_pack(sector: &[u8]) -> bool {
 }
 
 // ------------------------------------------------------------------
+// Pack-level structure (stnsoft-vobov.html)
+// ------------------------------------------------------------------
+
+/// Sector count at which a title set's contiguous VOB content is
+/// split into `VTS_xx_N.VOB` files in the computer-compatible file
+/// systems: 524 287 sectors (`0x7FFFF`, 1 073 739 776 bytes) per
+/// `stnsoft-vobov.html` "Several 1GB files". The content itself is
+/// contiguous on disc — only later files "most likely will not start
+/// at a VOBU".
+pub const VOB_FILE_SPLIT_SECTORS: u32 = 0x7_FFFF;
+
+/// The single content kind a DVD pack carries — "The information in
+/// one pack is all of one kind" (`stnsoft-vobov.html`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackKind {
+    /// NAV pack: system header + the PCI and DSI packets.
+    Nav,
+    /// One video PES (`stream_id` `0xE0..=0xEF`).
+    Video {
+        /// The pack's PES stream id.
+        stream_id: u8,
+    },
+    /// One MPEG-audio PES (`stream_id` `0xC0..=0xDF`).
+    MpegAudio {
+        /// The pack's PES stream id.
+        stream_id: u8,
+    },
+    /// One private_stream_1 PES — AC-3 / DTS / SDDS / LPCM /
+    /// subpicture, selected by the substream byte.
+    Private1 {
+        /// The first payload byte (the DVD substream selector).
+        substream: u8,
+    },
+    /// A pack consisting solely of a padding packet.
+    Padding,
+}
+
+impl PackKind {
+    /// The typed substream view of a [`PackKind::Private1`] pack, or
+    /// `None` for other kinds / out-of-allocation selectors.
+    pub fn dvd_substream(self) -> Option<DvdSubstream> {
+        match self {
+            Self::Private1 { substream } => DvdSubstream::from_first_byte(substream),
+            _ => None,
+        }
+    }
+}
+
+/// The result of [`classify_pack`] on a structurally valid sector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackClass {
+    /// The pack's single content kind.
+    pub kind: PackKind,
+    /// Number of PES packets in the pack (1 or 2; the NAV pack's
+    /// system header is not a PES packet and is not counted).
+    pub packet_count: u8,
+    /// `true` when the pack ends in a padding packet after its
+    /// content packet ("The last video pack in each VOBU is padded
+    /// if needed with either a padding stream or stuffing bytes").
+    pub padded: bool,
+}
+
+/// Classify one 2048-byte sector against the pack-structure rules of
+/// `stnsoft-vobov.html`: each sector is exactly one pack, a pack
+/// holds one or two packets and no more, the information in one pack
+/// is all of one kind (nav / video / audio / subpicture), and the
+/// only permitted second packet is a padding packet.
+///
+/// Returns the pack's kind + packet census, or an error naming the
+/// violated rule. Zero fill after the final packet is tolerated (a
+/// stuffing tail); a further start code is not.
+pub fn classify_pack(sector: &[u8]) -> Result<PackClass> {
+    if sector.len() != DVD_SECTOR {
+        return Err(Error::InvalidUdf("pack: sector is not 2048 bytes"));
+    }
+    let hdr = PackHeader::parse(sector)?;
+    let mut off = PackHeader::SIZE + hdr.stuffing_bytes as usize;
+
+    // A system header right after the pack header makes this a NAV
+    // pack — delegate the fixed PCI/DSI layout to `NavPack::parse`.
+    if sector.len() >= off + 4 && sector[off..off + 3] == [0x00, 0x00, 0x01] {
+        if sector[off + 3] == SC_SYSTEM_HEADER {
+            NavPack::parse(sector)?;
+            return Ok(PackClass {
+                kind: PackKind::Nav,
+                packet_count: 2,
+                padded: false,
+            });
+        }
+    } else {
+        return Err(Error::InvalidUdf("pack: no packet after pack header"));
+    }
+
+    // Content pack: first PES packet fixes the kind.
+    let first = PesPacket::parse(&sector[off..])?;
+    let kind = match first.stream_id {
+        0xE0..=0xEF => PackKind::Video {
+            stream_id: first.stream_id,
+        },
+        0xC0..=0xDF => PackKind::MpegAudio {
+            stream_id: first.stream_id,
+        },
+        SC_PRIVATE_STREAM_1 => PackKind::Private1 {
+            substream: *first.payload.first().ok_or(Error::InvalidUdf(
+                "pack: private_stream_1 packet with empty payload",
+            ))?,
+        },
+        SC_PADDING_STREAM => PackKind::Padding,
+        SC_PRIVATE_STREAM_2 => {
+            return Err(Error::InvalidUdf(
+                "pack: private_stream_2 outside a NAV pack",
+            ));
+        }
+        _ => {
+            return Err(Error::InvalidUdf(
+                "pack: stream id outside the DVD allocation",
+            ));
+        }
+    };
+    off += first.wire_size;
+    let mut packet_count = 1u8;
+    let mut padded = false;
+
+    // Optional second packet — a padding packet only.
+    if sector.len() >= off + 4 && sector[off..off + 3] == [0x00, 0x00, 0x01] {
+        if kind == PackKind::Padding {
+            return Err(Error::InvalidUdf("pack: packet after a padding-only pack"));
+        }
+        if sector[off + 3] != SC_PADDING_STREAM {
+            return Err(Error::InvalidUdf(
+                "pack: second packet is not a padding packet",
+            ));
+        }
+        let pad = PesPacket::parse(&sector[off..])?;
+        off += pad.wire_size;
+        packet_count = 2;
+        padded = true;
+    }
+
+    // "One or two packets, and no more": anything further is a
+    // violation; zero fill is tolerated as stuffing.
+    if sector[off..].windows(3).any(|w| w == [0x00, 0x00, 0x01]) {
+        return Err(Error::InvalidUdf("pack: more than two packets"));
+    }
+    if sector[off..].iter().any(|&b| b != 0) {
+        return Err(Error::InvalidUdf(
+            "pack: non-zero trailing bytes after the final packet",
+        ));
+    }
+
+    Ok(PackClass {
+        kind,
+        packet_count,
+        padded,
+    })
+}
+
+// ------------------------------------------------------------------
 // Elementary stream routing
 // ------------------------------------------------------------------
 
@@ -3636,6 +3794,112 @@ mod tests {
         let mut bytes = build_pes_video(&[0xAA], None);
         bytes[2] = 0x02;
         assert!(PesPacket::parse(&bytes).is_err());
+    }
+
+    // ----- pack classification (stnsoft-vobov.html) ----------------
+
+    /// Content sector: pack header + the given packets, zero-filled
+    /// to one DVD sector.
+    fn build_content_sector(packets: &[Vec<u8>]) -> Vec<u8> {
+        let mut s = Vec::with_capacity(DVD_SECTOR);
+        s.extend_from_slice(&build_pack_header(0, 0, 25_200, 0));
+        for p in packets {
+            s.extend_from_slice(p);
+        }
+        assert!(s.len() <= DVD_SECTOR);
+        s.resize(DVD_SECTOR, 0);
+        s
+    }
+
+    /// Padding-stream packet of `len` payload bytes (0xFF fill).
+    fn padding_packet(len: usize) -> Vec<u8> {
+        let mut v = vec![
+            0x00,
+            0x00,
+            0x01,
+            SC_PADDING_STREAM,
+            (len >> 8) as u8,
+            (len & 0xFF) as u8,
+        ];
+        v.extend(std::iter::repeat_n(0xFF, len));
+        v
+    }
+
+    #[test]
+    fn classify_pack_kinds() {
+        // NAV pack.
+        let nav = build_nav_sector(1, 0, 0);
+        let c = classify_pack(&nav).unwrap();
+        assert_eq!(c.kind, PackKind::Nav);
+        assert_eq!(c.packet_count, 2);
+        assert!(!c.padded);
+        // Video pack, zero-fill tail.
+        let sec = build_content_sector(&[build_pes_video(&[0xAA, 0xBB], None)]);
+        let c = classify_pack(&sec).unwrap();
+        assert_eq!(c.kind, PackKind::Video { stream_id: 0xE0 });
+        assert_eq!((c.packet_count, c.padded), (1, false));
+        // Video + padding = 2 packets, padded.
+        let sec = build_content_sector(&[build_pes_video(&[0xAA], None), padding_packet(16)]);
+        let c = classify_pack(&sec).unwrap();
+        assert_eq!(c.kind, PackKind::Video { stream_id: 0xE0 });
+        assert_eq!((c.packet_count, c.padded), (2, true));
+        // private_stream_1 AC-3 pack, typed substream view.
+        let sec = build_content_sector(&[build_pes_private1(0x81, &[0x0B, 0x77])]);
+        let c = classify_pack(&sec).unwrap();
+        assert_eq!(c.kind, PackKind::Private1 { substream: 0x81 });
+        assert_eq!(c.kind.dvd_substream(), Some(DvdSubstream::Ac3(0x81)));
+        // Padding-only pack.
+        let sec = build_content_sector(&[padding_packet(32)]);
+        let c = classify_pack(&sec).unwrap();
+        assert_eq!(c.kind, PackKind::Padding);
+        assert_eq!((c.packet_count, c.padded), (1, false));
+        assert_eq!(c.kind.dvd_substream(), None);
+    }
+
+    #[test]
+    fn classify_pack_rejects_structural_violations() {
+        // Not a sector.
+        assert!(classify_pack(&[]).is_err());
+        assert!(classify_pack(&build_nav_sector(1, 0, 0)[..2047]).is_err());
+        // Two content packets of different kinds — "all of one kind".
+        let sec = build_content_sector(&[
+            build_pes_video(&[0xAA], None),
+            build_pes_private1(0xA0, &[0x00]),
+        ]);
+        assert!(classify_pack(&sec).is_err());
+        // Three packets — "one or two packets, and no more".
+        let sec = build_content_sector(&[
+            build_pes_video(&[0xAA], None),
+            padding_packet(4),
+            padding_packet(4),
+        ]);
+        assert!(classify_pack(&sec).is_err());
+        // A packet after a padding-only pack.
+        let sec = build_content_sector(&[padding_packet(4), padding_packet(4)]);
+        assert!(classify_pack(&sec).is_err());
+        // private_stream_2 outside a NAV pack.
+        let mut p2 = vec![0x00, 0x00, 0x01, SC_PRIVATE_STREAM_2, 0x00, 0x01, 0x00];
+        p2.resize(7, 0);
+        let sec = build_content_sector(&[p2]);
+        assert!(classify_pack(&sec).is_err());
+        // Non-zero trailing garbage after the final packet.
+        let mut sec = build_content_sector(&[build_pes_video(&[0xAA], None)]);
+        let n = sec.len();
+        sec[n - 1] = 0x55;
+        assert!(classify_pack(&sec).is_err());
+        // No packet at all after the pack header.
+        let sec = build_content_sector(&[]);
+        assert!(classify_pack(&sec).is_err());
+    }
+
+    #[test]
+    fn vob_split_constant_matches_reference() {
+        // 0x7FFFF sectors = 1 073 739 776 bytes per stnsoft-vobov.
+        assert_eq!(VOB_FILE_SPLIT_SECTORS, 524_287);
+        assert_eq!(
+            VOB_FILE_SPLIT_SECTORS as u64 * DVD_SECTOR as u64,
+            1_073_739_776
+        );
     }
 
     // ----- PES header extension (mpucoder-pes-hdr.html) ------------
