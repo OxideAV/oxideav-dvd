@@ -26,12 +26,13 @@
 
 use std::io::Cursor;
 
+use oxideav_dvd::vob::PesPacket;
 use oxideav_dvd::{
     peel_lpcm_payload, scan_permitted, scan_step, select_audio_stream, select_subpicture_stream,
     AudioSelection, AudioStreamControl, CellPlaybackInfo, PaletteEntry, Pgc, PgcRunner, PgcTime,
     PlaybackEvent, ScanDirection, SriPointer, StillPhase, StillTime, SubPictureUnit,
-    SubpictureSelection, SubpictureStreamControl, TrickStep, UopMask, UserOp, Vm, VobDemuxer,
-    VobuSri, DVD_SECTOR, SPRM_AUDIO_STREAM, SPRM_SUBPICTURE_STREAM,
+    SubpictureSelection, SubpictureStreamControl, TrickStep, TvSystem, UopMask, UserOp, Vm,
+    VobDemuxer, VobuSri, DVD_SECTOR, SPRM_AUDIO_STREAM, SPRM_SUBPICTURE_STREAM,
 };
 
 // ---------------------------------------------------------------------
@@ -424,4 +425,167 @@ fn synthetic_title_plays_end_to_end() {
     assert_eq!(pgc_still.phase(), StillPhase::Released);
 
     assert_eq!(runner.next_event(&mut vm), PlaybackEvent::Finished);
+}
+
+// ---------------------------------------------------------------------
+// Shuffle-mode walk + PES header metadata + demux → compliance audit.
+// ---------------------------------------------------------------------
+
+/// A minimal, well-formed MPEG-2 video ES opening: NTSC 720×480 16:9
+/// 29.97 fps MP\@ML sequence header + sequence extension + closed GOP
+/// + one I-frame picture header + frame-picture coding extension.
+fn mpeg2_video_opening() -> Vec<u8> {
+    let mut s = Vec::new();
+    // Sequence header: 720×480, aspect 16:9 (3), 29.97 (4),
+    // bit_rate 24_500 × 400 = 9.8 Mbps, vbv 112.
+    s.extend_from_slice(&[0x00, 0x00, 0x01, 0xB3]);
+    let (w, h, br, vbv) = (720u16, 480u16, 24_500u32, 112u16);
+    s.push((w >> 4) as u8);
+    s.push((((w & 0x0F) << 4) | (h >> 8)) as u8);
+    s.push((h & 0xFF) as u8);
+    s.push((3 << 4) | 4);
+    s.push((br >> 10) as u8);
+    s.push((br >> 2) as u8);
+    s.push((((br & 0b11) as u8) << 6) | (1 << 5) | (vbv >> 5) as u8);
+    s.push(((vbv & 0x1F) as u8) << 3);
+    // Sequence extension: MP@ML (0x48), chroma 4:2:0, no low delay.
+    s.extend_from_slice(&[0x00, 0x00, 0x01, 0xB5]);
+    s.push(0x14); // id(0001) + prof_level hi(0100)
+    s.push(0x82); // prof_level lo(1000) prog(0) chroma(01) hs(0)
+    s.push(0x00);
+    s.push(0x01); // marker
+    s.push(0x00);
+    s.push(0x00);
+    // Closed GOP at 00:00:00:00.
+    s.extend_from_slice(&[0x00, 0x00, 0x01, 0xB8]);
+    s.push(0x00);
+    s.push(0x08); // marker bit
+    s.push(0x00);
+    s.push(0x40); // closed_gop
+                  // I-picture header (TR 0, coding type 1, vbv_delay 0).
+    s.extend_from_slice(&[0x00, 0x00, 0x01, 0x00]);
+    s.push(0x00);
+    s.push(0b0000_1000);
+    s.push(0x00);
+    s.push(0x00);
+    // Picture coding extension: frame picture.
+    s.extend_from_slice(&[0x00, 0x00, 0x01, 0xB5]);
+    s.push(0x87); // id(1000) f_fwd_h(0111)
+    s.push(0x7F);
+    s.push(0xF3); // f_bwd_v(1111) intra_dc(00) frame(11)
+    s.push(0xC0);
+    s.push(0x00);
+    s
+}
+
+/// Video PES packet carrying copy-control metadata in its header
+/// extension: copyright + original bits set, plus an ESCR group.
+fn pes_video_with_metadata(payload: &[u8], escr_base: u64, escr_ext: u16) -> Vec<u8> {
+    // ESCR group: 2 reserved bits, base[32..30], marker, base[29..15],
+    // marker, base[14..0], marker, 9-bit ext, marker.
+    let mut e: u64 = 0;
+    e |= ((escr_base >> 30) & 0b111) << 43;
+    e |= 1 << 42;
+    e |= ((escr_base >> 15) & 0x7FFF) << 27;
+    e |= 1 << 26;
+    e |= (escr_base & 0x7FFF) << 11;
+    e |= 1 << 10;
+    e |= ((escr_ext as u64) & 0x1FF) << 1;
+    e |= 1;
+    let eb = e.to_be_bytes();
+    let pes_len = 3 + 6 + payload.len();
+    let mut v = vec![0x00, 0x00, 0x01, 0xE0];
+    v.push((pes_len >> 8) as u8);
+    v.push((pes_len & 0xFF) as u8);
+    v.push(0b1000_0011); // marker + copyright + original
+    v.push(0b0010_0000); // ESCR flag
+    v.push(6); // header data = the 6 ESCR bytes
+    v.extend_from_slice(&eb[2..8]);
+    v.extend_from_slice(payload);
+    v
+}
+
+#[test]
+fn shuffle_walk_pes_metadata_and_compliance() {
+    // The same two-program title authored as a shuffle PGC.
+    let mut pgc = build_pgc();
+    pgc.playback_mode = 0x82; // shuffle, 2 programs
+    let video_es = mpeg2_video_opening();
+
+    // Cell-2 video sector: a compliant MPEG-2 opening inside a PES
+    // whose header carries copyright/original + ESCR metadata.
+    let flagged_pes = pes_video_with_metadata(&video_es, 0x1_0000_1234, 0x42);
+    let mut vob = build_vob();
+    let lbn5 = 5 * DVD_SECTOR;
+    let replacement = content_sector(std::slice::from_ref(&flagged_pes));
+    vob[lbn5..lbn5 + DVD_SECTOR].copy_from_slice(&replacement);
+
+    // The PES header metadata survives the wire image (the sector
+    // starts with the 14-byte pack header).
+    let pes = PesPacket::parse(&vob[lbn5 + 14..]).expect("flagged PES parses");
+    let ext = pes.header_ext.expect("video PES carries the extension");
+    assert!(ext.copyright && ext.original);
+    let escr = ext.escr.expect("ESCR present");
+    assert_eq!(escr.base, 0x1_0000_1234);
+    assert_eq!(escr.ext, 0x42);
+    assert_eq!(escr.to_27mhz(), 0x1_0000_1234 * 300 + 0x42);
+
+    // -- Shuffle walk: the runner stops at every program boundary. --
+    let mut vm = Vm::new();
+    let mut runner = PgcRunner::new(&pgc, 1);
+    let ev = runner.next_event(&mut vm);
+    let PlaybackEvent::PlayCell { cell: 1, .. } = ev else {
+        panic!("expected cell 1, got {ev:?}");
+    };
+    assert_eq!(
+        runner.next_event(&mut vm),
+        PlaybackEvent::ProgramBoundary {
+            finished_program: 1
+        }
+    );
+    // Player policy: play program 2 next.
+    assert!(runner.jump_to_program(2));
+    let ev = runner.next_event(&mut vm);
+    let PlaybackEvent::PlayCell {
+        cell: 2,
+        first_sector: c2_first,
+        last_sector: c2_last,
+        ..
+    } = ev
+    else {
+        panic!("expected cell 2, got {ev:?}");
+    };
+    assert_eq!(
+        runner.next_event(&mut vm),
+        PlaybackEvent::ProgramBoundary {
+            finished_program: 2
+        }
+    );
+    // Both programs played — end the phase; the infinite PGC still
+    // surfaces exactly like the sequential transition.
+    assert_eq!(
+        runner.end_programs(),
+        Some(PlaybackEvent::PgcStill {
+            still: StillTime::Infinite,
+        })
+    );
+    assert_eq!(runner.next_event(&mut vm), PlaybackEvent::Finished);
+
+    // -- Demux cell 2 and audit the video ES. -----------------------
+    let mut cursor = Cursor::new(&vob);
+    let mut demux = VobDemuxer::new();
+    demux
+        .demux_range(&mut cursor, c2_first, c2_last - c2_first + 1)
+        .expect("cell 2 demuxes");
+    let streams = demux.take();
+    assert_eq!(streams.video, video_es);
+    let info = streams.video_sequence_info();
+    assert!(info.is_mpeg2());
+    assert_eq!(info.coded_size(), Some((720, 480)));
+    assert_eq!(TvSystem::infer(&info), Some(TvSystem::Ntsc));
+    // The synthetic opening satisfies every DVD restriction …
+    assert_eq!(streams.dvd_compliance(TvSystem::Ntsc), vec![]);
+    // … and the validator catches the system mismatch when the same
+    // stream is judged as PAL.
+    assert!(!streams.dvd_compliance(TvSystem::Pal).is_empty());
 }

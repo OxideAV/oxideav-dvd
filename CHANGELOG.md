@@ -32,6 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Shuffle-walk + wire-metadata + compliance integration test.**
+  `tests/playback_integration.rs` gains a second end-to-end pass over
+  the synthetic six-sector VOB: the two-program title re-authored as
+  a shuffle PGC drives `PgcRunner` through both program boundaries
+  (`jump_to_program` → `end_programs` → the same infinite PGC still
+  as the sequential walk); the cell-2 sector is rebuilt around a PES
+  packet whose header extension carries copyright / original bits +
+  an ESCR group (asserted straight off the sector image); and the
+  cell-2 payload is a minimal fully-compliant MPEG-2 opening that
+  flows demux → `video_sequence_info` → `TvSystem::infer` →
+  `VobStreams::dvd_compliance` returning zero violations on NTSC
+  (and a non-empty list when judged as PAL).
+
 - **Hostile-input fuzz for the PES header walker + GOP census.**
   `tests/hostile_input.rs` gains a structured-seed fuzz that drives
   attacker-controlled flag bytes, header-data lengths, and
