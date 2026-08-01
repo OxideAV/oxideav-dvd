@@ -846,6 +846,16 @@ crate preserves as a raw `u16` (`PciPacket::vobu_cat`): the trigger's
 exact bit offset is fixed only by the member-gated DVD Forum *Part 3*
 book, so no bit layout is invented for it.
 
+A second targeted search pass over the staged corpus
+(`dvd-substream-ids-and-copy-protection.md` §5, 2026-07-31) confirmed
+that **both** open items stay open — no citable source pins the
+`vobu_cat` APS bit offset, and ECMA-267 §16.3 (two sentences in full)
+fixes only the `CPR_MAI` field's position / width / all-ZERO default.
+The pass ratifies this crate's behaviour as the settled one:
+`vobu_cat` raw-preserved verbatim, `CprMai` carrying all six on-wire
+bytes (`CprMai::raw`) with the byte-0 decode permanently flagged as a
+community reconstruction. Both properties are pinned by tests.
+
 ## Clean-room sources
 
 This crate was written entirely against:
@@ -925,7 +935,8 @@ This crate was written entirely against:
   reconstruction feeding the `copyctl` module (§3a flags that byte-0
   layout as a reconstruction, not an ECMA definition; the `vobu_cat`
   APS bit offset is noted as member-gated and is deliberately left
-  undecoded).
+  undecoded; the §5 second search pass, 2026-07-31, records the
+  negative result that ratifies both behaviours as settled).
 - `docs/container/dvd/application/mpucoder-lpcm.html` — the 7-byte
   LPCM audio-pack header layout (quantisation / sample-rate /
   channel-count fields, first-access-unit pointer, the X/Y

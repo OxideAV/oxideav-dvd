@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Second-pass reconciliation for `vobu_cat` APS + `CPR_MAI` byte
+  0.** The staged corpus recorded a second, targeted search pass
+  (`dvd-substream-ids-and-copy-protection.md` §5) over both open
+  copy-control items; it found no citable source for either and
+  ratifies this crate's existing behaviour as settled — the PCI
+  `vobu_cat` field stays a raw big-endian `u16` and `CprMai` keeps
+  all six on-wire bytes verbatim with the byte-0 decode flagged as a
+  community reconstruction. New tests pin both properties:
+  `pci_vobu_cat_preserved_raw` (verbatim survival of arbitrary bit
+  patterns) and `cpr_mai_preserves_undocumented_bytes_verbatim`
+  (lossless six-byte round-trip even with data the reconstruction
+  does not explain).
+
 ### Changed
 
 - Marked internal plumbing helpers `#[doc(hidden)]` (filesystem

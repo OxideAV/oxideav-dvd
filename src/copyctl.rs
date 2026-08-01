@@ -38,6 +38,24 @@
 //!   §16 — Data Frame layout (ID 4 B + IED 2 B + CPR_MAI 6 B +
 //!   2048 Main Data + EDC 4 B) and §16.3 (`CPR_MAI` is 6 bytes,
 //!   application-dependent, default all-ZERO).
+//!
+//! ## Second search pass (settled 2026-07-31)
+//!
+//! A second, targeted documentation pass
+//! (`dvd-substream-ids-and-copy-protection.md` §5) looked for (1) a
+//! citable bit position for the APS trigger inside PCI `vobu_cat`
+//! and (2) a normative `CPR_MAI` byte-0 layout. **Neither exists in
+//! any staged public source.** ECMA-267 §16.3 is two sentences in
+//! full — it fixes only the field's position, width, and all-ZERO
+//! default, and no sibling ECMA standard adds DVD-Video application
+//! semantics. The pass therefore *ratifies* this module's behaviour
+//! as the settled one:
+//!
+//! * `CPR_MAI` — round-trip all six bytes verbatim ([`CprMai::raw`])
+//!   and keep the byte-0 `CPM` / `CP_SEC` / `CGMS` decode flagged as
+//!   a community reconstruction, never an ECMA definition.
+//! * `vobu_cat` — preserve the raw big-endian `u16` and do not
+//!   invent an APS bit layout.
 
 use crate::error::{Error, Result};
 
@@ -467,6 +485,24 @@ mod tests {
         assert_eq!(mai.rmi, 0x2A);
         // A 2048-byte user sector is NOT a data frame.
         assert!(CprMai::from_data_frame(&frame[..2048]).is_err());
+    }
+
+    /// §5a second-pass ratification: ECMA-267 fixes only position /
+    /// width / all-ZERO default, so a conforming reader must carry
+    /// all six bytes verbatim even when they hold data the §3a
+    /// reconstruction does not explain.
+    #[test]
+    fn cpr_mai_preserves_undocumented_bytes_verbatim() {
+        let src = [0x0F, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
+        let mai = CprMai::parse(&src).unwrap();
+        assert!(mai.has_unrecognised_bits());
+        assert_eq!(mai.raw, src);
+        // Re-parsing the preserved bytes is lossless.
+        assert_eq!(CprMai::parse(&mai.raw).unwrap(), mai);
+        // The all-ZERO ECMA default is NOT "unrecognised" — it is the
+        // documented no-copy-management state.
+        let mai = CprMai::parse(&[0u8; CPR_MAI_LEN]).unwrap();
+        assert!(mai.is_all_zero() && !mai.has_unrecognised_bits());
     }
 
     #[test]

@@ -1302,6 +1302,13 @@ pub struct PciPacket {
     /// crate deliberately does **not** decode a bit layout here. The
     /// APS *value* space the trigger selects from is the standard
     /// [`crate::copyctl::ApsType`] Type 0–3 table.
+    ///
+    /// A second targeted search pass over the staged material
+    /// (`dvd-substream-ids-and-copy-protection.md` §5b, 2026-07-31)
+    /// confirmed the staged reference is the ceiling of public
+    /// documentation for this field: the item stays open and the
+    /// raw-`u16`-preserve behaviour here is the settled, correct one
+    /// — every bit pattern must survive parse verbatim.
     pub vobu_cat: u16,
     /// `PCI_GI 08` — `vobu_uop_ctl`: prohibited-UOP bitmask.
     pub vobu_uop_ctl: u32,
@@ -3394,6 +3401,22 @@ mod tests {
     /// at sector 0x2D per mpucoder-pci_pkt.html).
     fn pci(p: usize) -> usize {
         0x2D + p
+    }
+
+    // ----- PCI_GI vobu_cat raw preservation ------------------------
+
+    /// Second-pass ruling (`dvd-substream-ids-and-copy-protection.md`
+    /// §5b): no public source pins the APS trigger's bit offset
+    /// inside `vobu_cat`, so the 16-bit field must survive parse
+    /// verbatim for every bit pattern — no decode, no masking.
+    #[test]
+    fn pci_vobu_cat_preserved_raw() {
+        for cat in [0x0000u16, 0xFFFF, 0xA5C3, 0x0001, 0x8000, 0x5A5A] {
+            let mut sector = build_nav_sector(1, 0, 0);
+            sector[pci(0x04)..pci(0x06)].copy_from_slice(&cat.to_be_bytes());
+            let nav = NavPack::parse(&sector).unwrap();
+            assert_eq!(nav.pci.vobu_cat, cat, "vobu_cat {cat:#06x}");
+        }
     }
 
     // ----- PCI NSML_AGLI (non-seamless angle table) ----------------
