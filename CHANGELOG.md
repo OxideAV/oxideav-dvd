@@ -32,6 +32,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **20-bit / 24-bit LPCM sample unpacking.** The staged
+  `dvd-lpcm-sample-packing.md` trace pins the intra-frame layout the
+  sample unpacker previously refused as undocumented:
+  `unpack_samples_20bit` / `unpack_samples_24bit` decode the
+  two-sample-frame group (all high `T M` bytes of frame *n* then
+  frame *n+1*, followed by the low parts — nibbles packed
+  two-channels-per-byte for 20-bit, whole low bytes for 24-bit),
+  sign-extended to `i32`, and `unpack_samples` dispatches on the
+  header's quantisation. Whole-group arithmetic is enforced (a
+  truncated final group returns `None`), and the trace's recorded
+  uncertainty is honoured: an odd channel count at 20-bit is refused
+  because no reference pins the trailing-nibble position. Round-trip
+  tests cover the reference stereo byte maps, a whole 400-byte
+  20-bit frame (40 groups, matching the staged frame-size figure),
+  24-bit mono, and every refusal condition.
+
 - **Pack-structure classifier.** `classify_pack(sector)` types one
   2048-byte sector against the pack rules of the staged VOB-overview
   reference: each sector is exactly one pack; a pack holds one or

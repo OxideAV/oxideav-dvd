@@ -122,7 +122,7 @@ is delegated to the external `oxideav-css` crate.
 | Copy-control decode (`copyctl` — `Cgms` / `ApsType` 2-bit value tables, `CopyControlInfo` analog-output field pack/unpack, `CprMai` sector-level CCI parser over the ECMA-267 §16 Data Frame incl. `from_data_frame()`; PCI `vobu_cat` kept raw — the APS trigger's bit offset is member-gated) | landed |
 | Generic audio-substream header decode (`AudioSubstreamHeader` — FrmCnt + FirstAccUnit prefixing every AC-3 / DTS / SDDS / LPCM payload; `access_unit_offset()` PTS-aligned-frame locator via the `3 + FirstAccUnit` rule) | landed |
 | LPCM 7-byte audio-pack header decode (quantisation / sample rate / channels / dynamic range) | landed |
-| 16-bit LPCM sample unpacking (`unpack_samples_16bit()` big-endian channel-interleaved `i16`→`i32`; `bytes_per_sample()` ratio 16=`2/1` 20=`5/2` 24=`3/1`; `frame_stride_bytes()` `None` for 20-bit (2.5 B/sample, no integer per-frame stride) + `sample_frame_count_16bit()`; 20/24-bit intra-group packing un-specified by docs) | landed |
+| LPCM sample unpacking, all three widths (`unpack_samples_16bit()` big-endian channel-interleaved `i16`→`i32`; `unpack_samples_20bit()` / `unpack_samples_24bit()` two-sample-frame group decode per the staged `dvd-lpcm-sample-packing.md` trace — all-highs-then-all-lows, 20-bit low nibbles packed two-channels-per-byte, 24-bit low bytes; `unpack_samples()` dispatcher; `bytes_per_sample()` ratio 16=`2/1` 20=`5/2` 24=`3/1`; odd-channel 20-bit refused — trailing-nibble position unverified) | landed |
 | AC-3 sync-frame header decode (`syncinfo()` fscod / frmsizecod + `bsi()` bsid / bsmod / acmod / mix-level conditionals / lfeon → sample rate + frame size + nominal bitrate + channel layout) | landed |
 | DTS core frame-header decode (10-byte sync frame — ftype / short / cpf / nblks / fsize + amode channel arrangement + sfreq sample rate + rate targeted bitrate + mix/dynf/timef/auxf/hdcd flags) | landed |
 | User Operation flag decoder (TT_SRPT / PGC / PCI-VOBU three-level OR-merged `UopMask`) | landed |
@@ -341,9 +341,15 @@ stride but a 20-bit frame always does (48 kHz 20-bit stereo = 400
 bytes/frame) — with `LpcmFrames::partial_tail()` flagging a
 truncated pack. `access_unit_offset()` applies the
 `3 + FirstAccUnit` PTS-pointer arithmetic (zero = no first access
-unit). The intra-frame 20-bit / 24-bit sub-byte packing layout is
-not documented by the staged references, so the *sample* unpacker
-covers the 16-bit case and returns `None` for the wider widths.
+unit). The intra-frame 20-bit / 24-bit sub-byte packing is pinned
+by the staged `dvd-lpcm-sample-packing.md` trace — groups of two
+sample-frames storing all the high `T M` bytes first, then the low
+parts (nibbles packed two-channels-per-byte for 20-bit, whole low
+bytes for 24-bit) — and `unpack_samples_20bit()` /
+`unpack_samples_24bit()` (or the `unpack_samples()` dispatcher)
+decode it, sign-extended to `i32`. The one recorded edge stays
+refused: an **odd** channel count at 20-bit returns `None`, because
+the trace marks the trailing-nibble position unverified.
 
 ## Decoding an AC-3 sync-frame header
 
@@ -961,6 +967,13 @@ This crate was written entirely against:
   channel-count fields, first-access-unit pointer, the X/Y
   dynamic-range coefficients) feeding the `lpcm` module's
   `LpcmHeader` decoder.
+- `docs/container/dvd/application/dvd-lpcm-sample-packing.md` — the
+  intra-frame 16/20/24-bit sample bit-packing trace (the
+  two-sample-frame group, all-highs-then-all-lows, the 20-bit `L01`
+  nibble rule and the 24-bit trailing `B` bytes, plus the 400 B/frame
+  arithmetic cross-check) feeding `unpack_samples_20bit` /
+  `unpack_samples_24bit`; its odd-channel-20-bit uncertainty note is
+  honoured as a refusal.
 - `docs/container/dvd/application/stnsoft-LimPcmAud.html` — the
   per-`(sample_rate × quantisation × channels)` bitrate table and
   the 6144 kbps DVD-Video ceiling used by

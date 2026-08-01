@@ -19,19 +19,22 @@
 //! bitrate-feasibility table on
 //! `docs/container/dvd/application/stnsoft-LimPcmAud.html`.
 //!
-//! For the **16-bit** quantisation case the raw PCM tail can be
-//! unpacked into channel-interleaved signed samples via
-//! [`LpcmHeader::unpack_samples_16bit`]: `mpucoder-lpcm.html` pins
-//! the storage as most-significant-byte-first
-//! ("first channel 0 (left) sample" leads the payload), interleaved
-//! by channel in ascending order, so each pair reads as a big-endian
-//! `i16`. The **20-bit and 24-bit** sub-byte grouping layout is *not*
-//! specified by the staged reference pages — the LimPcmAud table
-//! confirms those widths exist but neither page documents how the
-//! extra nibble / byte of grouped samples is arranged — so the
-//! unpacker is deliberately limited to 16-bit and returns `None`
-//! otherwise (see the "Docs gap" note below). The dynamic-range
-//! gain ([`LpcmHeader::linear_gain`] / [`LpcmHeader::gain_db`]) is
+//! The raw PCM tail can be unpacked into channel-interleaved signed
+//! samples for **all three quantisation widths**:
+//! [`LpcmHeader::unpack_samples_16bit`] reads the plain big-endian
+//! channel-interleaved `i16` layout `mpucoder-lpcm.html` pins
+//! ("first channel 0 (left) sample" leads the payload), while
+//! [`LpcmHeader::unpack_samples_20bit`] /
+//! [`LpcmHeader::unpack_samples_24bit`] implement the two-sample-frame
+//! **group** layout pinned by the staged
+//! `dvd-lpcm-sample-packing.md` trace: each group covers two
+//! consecutive sample-frames and stores *all the high parts first*
+//! (the top two bytes `T M` of every channel, frame `n` then frame
+//! `n+1`), *then all the low parts* — one low **nibble** per sample
+//! packed two-channels-per-byte for 20-bit, one low byte per sample
+//! for 24-bit. [`LpcmHeader::unpack_samples`] dispatches on the
+//! header's quantisation. The dynamic-range gain
+//! ([`LpcmHeader::linear_gain`] / [`LpcmHeader::gain_db`]) is
 //! exposed as a coefficient the caller applies during mix-down.
 //!
 //! Above the individual sample sits the **LPCM audio frame** — the
@@ -48,17 +51,15 @@
 //! but a 20-bit *frame* always does (e.g. 48 kHz 20-bit stereo =
 //! 400 bytes/frame).
 //!
-//! ## Docs gap
+//! ## Remaining gap — odd-channel 20-bit
 //!
-//! Neither `mpucoder-lpcm.html` nor `stnsoft-LimPcmAud.html`
-//! specifies the on-wire packing of 20-bit or 24-bit LPCM samples
-//! (the order in which the grouped low-order bits are stored across
-//! bytes). 16-bit packing is unambiguous (big-endian `i16`,
-//! channel-interleaved) and fully covered here; 20/24-bit sample
-//! reconstruction is blocked on a reference that pins the grouping.
-//! Frame-granular splitting ([`LpcmHeader::split_frames`]) is *not*
-//! affected — the frame byte-size formula is documented for every
-//! width — only the intra-frame sample decode remains gated.
+//! The 20-bit low-nibble packing pairs channels two-per-byte, and
+//! `dvd-lpcm-sample-packing.md` §"Edge cases" records that no public
+//! reference states unambiguously which half of the final low byte
+//! the trailing nibble of an **odd** channel count occupies. The
+//! 20-bit unpacker therefore returns `None` for odd channel counts
+//! until a reference or real-disc sample settles it; even-channel
+//! content (the overwhelming majority) is fully decoded.
 //!
 //! ## Clean-room references
 //!
@@ -126,9 +127,11 @@ impl LpcmQuantisation {
     /// width and must be expressed as a ratio. This is a width fact the
     /// `mpucoder-lpcm.html` / `stnsoft-LimPcmAud.html` tables state
     /// directly (16 / 20 / 24 bits per sample); the *byte order* in
-    /// which the grouped low-order bits of a 20/24-bit sample are stored
-    /// across bytes is a separate, undocumented question (see the
-    /// module-level docs-gap note) and is **not** implied by this ratio.
+    /// which the grouped low-order bits of a 20/24-bit sample are
+    /// stored across bytes is the separate two-sample-frame group
+    /// layout pinned by `dvd-lpcm-sample-packing.md` and implemented
+    /// by the width-specific unpackers — it is **not** implied by
+    /// this ratio.
     pub fn bytes_per_sample(self) -> Option<(u32, u32)> {
         // bits / 8, reduced. 16→2/1, 20→5/2, 24→3/1.
         let bits = self.bits_per_sample()? as u32;
@@ -545,10 +548,10 @@ impl LpcmHeader {
     ///
     /// Returns `None` for any non-16-bit quantisation
     /// ([`LpcmQuantisation::Bits20`] / [`LpcmQuantisation::Bits24`] /
-    /// [`LpcmQuantisation::Reserved`]) — the 20-bit and 24-bit sub-byte
-    /// grouping layout is **not specified** by the staged reference
-    /// pages (see the module-level docs-gap note), so this decoder
-    /// covers only the bit-pure 16-bit case.
+    /// [`LpcmQuantisation::Reserved`]) — use the width-specific
+    /// [`Self::unpack_samples_20bit`] / [`Self::unpack_samples_24bit`]
+    /// (or the [`Self::unpack_samples`] dispatcher) for the grouped
+    /// wider layouts.
     ///
     /// Any trailing bytes that do not complete a 16-bit sample (an
     /// odd-length tail) are ignored — DVD LPCM packs whole samples, so
@@ -563,6 +566,117 @@ impl LpcmHeader {
             out.push(i16::from_be_bytes([chunk[0], chunk[1]]) as i32);
         }
         Some(out)
+    }
+
+    /// Unpack a raw **20-bit** PCM tail into channel-interleaved
+    /// signed samples (sign-extended to `i32`, value range
+    /// `-524288..=524287`).
+    ///
+    /// Layout per `dvd-lpcm-sample-packing.md`: the tail is a
+    /// sequence of groups, each covering **two** sample-frames.
+    /// A group stores the top two bytes (`T M`) of every channel of
+    /// frame `n` then frame `n+1`, followed by the low nibbles packed
+    /// two channels per byte (high nibble = even channel, low nibble
+    /// = the next odd channel), one nibble-byte row per frame. A
+    /// stereo group is 10 bytes; `sample = (T << 12) | (M << 4) |
+    /// nibble`, sign-extended from bit 19.
+    ///
+    /// Returns `None` when the header is not 20-bit, when the channel
+    /// count is zero or **odd** (the trailing-nibble position for odd
+    /// channel counts is recorded as unverified — see the module-level
+    /// note), or when the tail is not a whole number of groups (a
+    /// truncated final group).
+    pub fn unpack_samples_20bit(self, pcm: &[u8]) -> Option<Vec<i32>> {
+        if self.quantisation != LpcmQuantisation::Bits20 {
+            return None;
+        }
+        let n = usize::from(self.channel_count);
+        if n == 0 || n % 2 != 0 {
+            return None;
+        }
+        // Group: 2 frames × N channels × 2 high bytes + 2 × N/2 low
+        // bytes = 5N.
+        let group = 5 * n;
+        if pcm.len() % group != 0 {
+            return None;
+        }
+        let mut out = Vec::with_capacity(pcm.len() / group * 2 * n);
+        for g in pcm.chunks_exact(group) {
+            let (high, low) = g.split_at(4 * n);
+            for frame in 0..2 {
+                for ch in 0..n {
+                    let t = u32::from(high[frame * 2 * n + ch * 2]);
+                    let m = u32::from(high[frame * 2 * n + ch * 2 + 1]);
+                    let low_byte = low[frame * (n / 2) + ch / 2];
+                    let nib = if ch % 2 == 0 {
+                        u32::from(low_byte >> 4)
+                    } else {
+                        u32::from(low_byte & 0x0F)
+                    };
+                    let v = (t << 12) | (m << 4) | nib;
+                    out.push(((v << 12) as i32) >> 12);
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Unpack a raw **24-bit** PCM tail into channel-interleaved
+    /// signed samples (sign-extended to `i32`, value range
+    /// `-8388608..=8388607`).
+    ///
+    /// Layout per `dvd-lpcm-sample-packing.md`: groups of two
+    /// sample-frames storing the top two bytes (`T M`) of every
+    /// channel of frame `n` then frame `n+1`, followed by the bottom
+    /// byte (`B`) of every channel of frame `n` then frame `n+1`. A
+    /// stereo group is 12 bytes; `sample = (T << 16) | (M << 8) | B`,
+    /// sign-extended from bit 23.
+    ///
+    /// Returns `None` when the header is not 24-bit, for a
+    /// zero-channel header, or when the tail is not a whole number of
+    /// groups (a truncated final group).
+    pub fn unpack_samples_24bit(self, pcm: &[u8]) -> Option<Vec<i32>> {
+        if self.quantisation != LpcmQuantisation::Bits24 {
+            return None;
+        }
+        let n = usize::from(self.channel_count);
+        if n == 0 {
+            return None;
+        }
+        // Group: 2 frames × N × 2 high bytes + 2 frames × N low
+        // bytes = 6N.
+        let group = 6 * n;
+        if pcm.len() % group != 0 {
+            return None;
+        }
+        let mut out = Vec::with_capacity(pcm.len() / group * 2 * n);
+        for g in pcm.chunks_exact(group) {
+            let (high, low) = g.split_at(4 * n);
+            for frame in 0..2 {
+                for ch in 0..n {
+                    let t = u32::from(high[frame * 2 * n + ch * 2]);
+                    let m = u32::from(high[frame * 2 * n + ch * 2 + 1]);
+                    let b = u32::from(low[frame * n + ch]);
+                    let v = (t << 16) | (m << 8) | b;
+                    out.push(((v << 8) as i32) >> 8);
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Unpack the raw PCM tail for whichever quantisation the header
+    /// declares — dispatching to [`Self::unpack_samples_16bit`] /
+    /// [`Self::unpack_samples_20bit`] / [`Self::unpack_samples_24bit`].
+    /// `None` for [`LpcmQuantisation::Reserved`] or any per-width
+    /// refusal condition.
+    pub fn unpack_samples(self, pcm: &[u8]) -> Option<Vec<i32>> {
+        match self.quantisation {
+            LpcmQuantisation::Bits16 => self.unpack_samples_16bit(pcm),
+            LpcmQuantisation::Bits20 => self.unpack_samples_20bit(pcm),
+            LpcmQuantisation::Bits24 => self.unpack_samples_24bit(pcm),
+            LpcmQuantisation::Reserved => None,
+        }
     }
 
     /// Number of complete sample frames (one sample per channel) the
@@ -1135,5 +1249,117 @@ mod tests {
             let h24 = LpcmHeader::parse(&bytes).unwrap();
             assert_eq!(h24.frame_stride_bytes(), Some(3 * ch as usize));
         }
+    }
+
+    // ----- 20/24-bit group unpacking (dvd-lpcm-sample-packing.md) --
+
+    /// Header for `q_code` quantisation, 48 kHz, `ch` channels.
+    fn header_with(q_code: u8, ch: u8) -> LpcmHeader {
+        let mut bytes = baseline_header();
+        bytes[5] = (q_code << 6) | (ch - 1);
+        LpcmHeader::parse(&bytes).unwrap()
+    }
+
+    /// Encode one 20-bit stereo group per the reference byte map.
+    fn encode_20bit_stereo_group(frames: [[i32; 2]; 2]) -> [u8; 10] {
+        let mut g = [0u8; 10];
+        for (f, frame) in frames.iter().enumerate() {
+            for (c, &s) in frame.iter().enumerate() {
+                let v = (s as u32) & 0xF_FFFF;
+                g[f * 4 + c * 2] = (v >> 12) as u8; // T
+                g[f * 4 + c * 2 + 1] = ((v >> 4) & 0xFF) as u8; // M
+            }
+            let l = ((frames[f][0] as u32) & 0xF) as u8;
+            let r = ((frames[f][1] as u32) & 0xF) as u8;
+            g[8 + f] = (l << 4) | r; // L01
+        }
+        g
+    }
+
+    #[test]
+    fn unpack_20bit_stereo_group_reference_layout() {
+        let h = header_with(1, 2);
+        assert_eq!(h.quantisation, LpcmQuantisation::Bits20);
+        // Known nibble-bearing values, including negatives.
+        let frames = [[0x12345_u32 as i32, -0x0ABCD], [0x7FFFF, -0x80000]];
+        let g = encode_20bit_stereo_group(frames);
+        // The doc's byte map, spot-checked: T(L,n) leads, the two
+        // nibble bytes trail.
+        assert_eq!(g[0], 0x12);
+        assert_eq!(g[1], 0x34);
+        assert_eq!(g[8] & 0x0F, ((-0x0ABCD_i32 as u32) & 0xF) as u8);
+        let out = h.unpack_samples_20bit(&g).unwrap();
+        assert_eq!(out, vec![0x12345, -0x0ABCD, 0x7FFFF, -0x80000]);
+        // The dispatcher routes by quantisation.
+        assert_eq!(h.unpack_samples(&g).unwrap(), out);
+    }
+
+    #[test]
+    fn unpack_24bit_stereo_group_reference_layout() {
+        let h = header_with(2, 2);
+        assert_eq!(h.quantisation, LpcmQuantisation::Bits24);
+        // Stereo group: T M of L0 R0 L1 R1, then B of L0 R0 L1 R1.
+        let samples = [0x123456_u32 as i32, -0x0ABCDE, 0x7FFFFF, -0x800000];
+        let mut g = [0u8; 12];
+        for (k, &s) in samples.iter().enumerate() {
+            let v = (s as u32) & 0xFF_FFFF;
+            g[k * 2] = (v >> 16) as u8;
+            g[k * 2 + 1] = ((v >> 8) & 0xFF) as u8;
+            g[8 + k] = (v & 0xFF) as u8;
+        }
+        let out = h.unpack_samples_24bit(&g).unwrap();
+        assert_eq!(out, samples);
+        assert_eq!(h.unpack_samples(&g).unwrap(), out);
+    }
+
+    #[test]
+    fn unpack_20bit_full_frame_matches_400_byte_arithmetic() {
+        // A whole 48 kHz 20-bit stereo audio frame is 400 bytes =
+        // 40 groups = 80 sample-frames; round-trip a ramp through
+        // encode → unpack.
+        let h = header_with(1, 2);
+        assert_eq!(h.audio_frame_size_bytes(), Some(400));
+        let mut pcm = Vec::with_capacity(400);
+        let mut expect = Vec::with_capacity(160);
+        for gidx in 0..40i32 {
+            let base = gidx * 4 - 80;
+            let frames = [
+                [base * 999, base * 999 + 1],
+                [base * 999 + 2, base * 999 + 3],
+            ];
+            pcm.extend_from_slice(&encode_20bit_stereo_group(frames));
+            expect.extend_from_slice(&[frames[0][0], frames[0][1], frames[1][0], frames[1][1]]);
+        }
+        assert_eq!(pcm.len(), 400);
+        let out = h.unpack_samples_20bit(&pcm).unwrap();
+        assert_eq!(out.len(), 160); // 80 sample-frames × 2 channels
+        assert_eq!(out, expect);
+    }
+
+    #[test]
+    fn unpack_wide_refusal_conditions() {
+        // Wrong quantisation.
+        let h16 = header_with(0, 2);
+        assert_eq!(h16.unpack_samples_20bit(&[0u8; 10]), None);
+        assert_eq!(h16.unpack_samples_24bit(&[0u8; 12]), None);
+        // Odd channel count at 20-bit — trailing-nibble position
+        // recorded as unverified by the staged trace.
+        let h20_mono = header_with(1, 1);
+        assert_eq!(h20_mono.unpack_samples_20bit(&[0u8; 5]), None);
+        assert_eq!(h20_mono.unpack_samples(&[0u8; 5]), None);
+        // 24-bit mono is fine (no nibble pairing).
+        let h24_mono = header_with(2, 1);
+        assert_eq!(
+            h24_mono.unpack_samples_24bit(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]),
+            Some(vec![0x010205, 0x030406])
+        );
+        // Truncated final group.
+        let h20 = header_with(1, 2);
+        assert_eq!(h20.unpack_samples_20bit(&[0u8; 9]), None);
+        let h24 = header_with(2, 2);
+        assert_eq!(h24.unpack_samples_24bit(&[0u8; 11]), None);
+        // Empty tail unpacks to empty.
+        assert_eq!(h20.unpack_samples_20bit(&[]), Some(vec![]));
+        assert_eq!(h24.unpack_samples_24bit(&[]), Some(vec![]));
     }
 }
