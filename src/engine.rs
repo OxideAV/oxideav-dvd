@@ -411,6 +411,15 @@ pub enum PlaybackEvent {
     /// Control transfers to chapter `pttn` of the current title
     /// (`LinkPTTN`) — resolve via `VtsPttSrpt::ptt`.
     Chapter { pttn: u16 },
+    /// A **non-sequential** PGC (`PG playback mode` byte `0x00A3` ≠ 0
+    /// — random or shuffle) finished playing program
+    /// `finished_program`'s cell span. The player picks the next
+    /// program and calls [`PgcRunner::jump_to_program`], or ends the
+    /// program phase with [`PgcRunner::end_programs`]; until it does,
+    /// [`PgcRunner::next_event`] keeps returning this event. The
+    /// selection policy stays with the player — the on-disc byte
+    /// fixes only the mode (random / shuffle) and the program count.
+    ProgramBoundary { finished_program: u8 },
     /// A cross-domain transfer (Jump / Call / Resume / Exit)
     /// surfaced out of a command list — the disc-level engine owns
     /// these (check it with [`transition_permitted`] first).
@@ -431,6 +440,9 @@ enum RunnerState {
     /// Cell `cell` has been presented; run its cell command (unless
     /// already done) and advance.
     AfterCell { cell: u8, command_done: bool },
+    /// A non-sequential PGC finished a program; waiting for the
+    /// player to pick the next one (or end the program phase).
+    AwaitProgram { finished_program: u8 },
     /// Executing the post-command list from index `pc`.
     Post { pc: usize },
     /// Terminal.
@@ -483,6 +495,69 @@ impl<'a> PgcRunner<'a> {
             } else {
                 RunnerState::Post { pc: 0 }
             },
+        }
+    }
+
+    /// Start a runner directly at program `program`'s entry cell
+    /// (1-based), skipping the pre-command list — the entry shape for
+    /// driving a **random / shuffle** PGC (`PG playback mode` byte
+    /// `0x00A3`, `mpucoder-pgc.html`) where the player owns the
+    /// program order. Falls through to the post commands when the
+    /// program is unauthored.
+    pub fn new_at_program(pgc: &'a crate::ifo::Pgc, pgcn: u16, program: u8) -> Self {
+        match pgc.program_entry_cell(program) {
+            Some(cell) => Self::new_at_cell(pgc, pgcn, cell),
+            None => Self {
+                pgc,
+                pgcn,
+                state: RunnerState::Post { pc: 0 },
+            },
+        }
+    }
+
+    /// The PGC's typed playback mode (`0x00A3`): sequential, or
+    /// random / shuffle with the on-disc program count. Non-sequential
+    /// modes make [`PgcRunner::next_event`] stop at every program
+    /// boundary with [`PlaybackEvent::ProgramBoundary`].
+    pub fn playback_mode(&self) -> crate::ifo::PlaybackMode {
+        self.pgc.playback_mode()
+    }
+
+    /// After a [`PlaybackEvent::ProgramBoundary`]: continue with
+    /// program `program` (1-based). Returns `true` when the program
+    /// exists (the runner will emit its first `PlayCell` next);
+    /// `false` leaves the runner waiting at the boundary. Also valid
+    /// from any non-terminal state as the `LinkPGN`-style direct
+    /// program jump within the current PGC.
+    pub fn jump_to_program(&mut self, program: u8) -> bool {
+        if matches!(self.state, RunnerState::Finished) {
+            return false;
+        }
+        match self.pgc.program_entry_cell(program) {
+            Some(cell) => {
+                self.state = RunnerState::PlayCell { cell };
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// After a [`PlaybackEvent::ProgramBoundary`]: end the program
+    /// phase — the player has played as many programs as its
+    /// random / shuffle policy calls for. Moves to the PGC-still /
+    /// post-command flow; returns the [`PlaybackEvent::PgcStill`]
+    /// event when the PGC header carries a still time (mirroring the
+    /// sequential end-of-cells transition), `None` otherwise.
+    pub fn end_programs(&mut self) -> Option<PlaybackEvent> {
+        if matches!(self.state, RunnerState::Finished) {
+            return None;
+        }
+        self.state = RunnerState::Post { pc: 0 };
+        let still = self.pgc.still();
+        if still != crate::ifo::StillTime::None {
+            Some(PlaybackEvent::PgcStill { still })
+        } else {
+            None
         }
     }
 
@@ -589,9 +664,36 @@ impl<'a> PgcRunner<'a> {
                         }
                         continue;
                     }
-                    // Advance the angle-aware cell walk.
+                    // Advance the angle-aware cell walk. In a
+                    // non-sequential PGC (playback-mode byte `0x00A3`
+                    // ≠ 0) the walk stops at each program boundary so
+                    // the player can pick the next program.
+                    let non_sequential =
+                        self.pgc.playback_mode() != crate::ifo::PlaybackMode::Sequential;
+                    let cur_program = self.pgc.program_containing_cell(cell).unwrap_or(1);
                     match self.pgc.next_cell(cell, Self::angle(vm)) {
-                        Some(next) => self.state = RunnerState::PlayCell { cell: next },
+                        Some(next)
+                            if !non_sequential
+                                || self.pgc.program_containing_cell(next) == Some(cur_program) =>
+                        {
+                            self.state = RunnerState::PlayCell { cell: next }
+                        }
+                        Some(_) => {
+                            self.state = RunnerState::AwaitProgram {
+                                finished_program: cur_program,
+                            };
+                            return PlaybackEvent::ProgramBoundary {
+                                finished_program: cur_program,
+                            };
+                        }
+                        None if non_sequential => {
+                            self.state = RunnerState::AwaitProgram {
+                                finished_program: cur_program,
+                            };
+                            return PlaybackEvent::ProgramBoundary {
+                                finished_program: cur_program,
+                            };
+                        }
                         None => {
                             self.state = RunnerState::Post { pc: 0 };
                             let still = self.pgc.still();
@@ -600,6 +702,11 @@ impl<'a> PgcRunner<'a> {
                             }
                         }
                     }
+                }
+                RunnerState::AwaitProgram { finished_program } => {
+                    // Idempotent: the player must act via
+                    // `jump_to_program` / `end_programs`.
+                    return PlaybackEvent::ProgramBoundary { finished_program };
                 }
                 RunnerState::Post { pc } => {
                     let list: &[crate::ifo::NavCommand] = self
@@ -2474,6 +2581,133 @@ mod tests {
             c.last_vobu_end_sector = (i as u32 + 1) * 100 + 99;
         }
         pgc
+    }
+
+    /// Expect the next event to be `PlayCell` for `cell`.
+    fn expect_cell(r: &mut PgcRunner<'_>, vm: &mut Vm, cell: u8) {
+        match r.next_event(vm) {
+            PlaybackEvent::PlayCell { cell: c, .. } => assert_eq!(c, cell),
+            other => panic!("expected PlayCell {{ cell: {cell} }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_nonsequential_stops_at_program_boundaries() {
+        // Two programs (cells 1-2 and 3-4), shuffle mode, count 2.
+        let mut pgc = plain_pgc(4);
+        pgc.number_of_programs = 2;
+        pgc.program_map = vec![1, 3];
+        pgc.playback_mode = 0x82;
+        assert_eq!(
+            pgc.playback_mode(),
+            crate::ifo::PlaybackMode::Shuffle { program_count: 2 }
+        );
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        assert_eq!(
+            r.playback_mode(),
+            crate::ifo::PlaybackMode::Shuffle { program_count: 2 }
+        );
+        // Program 1 plays through, then the walk stops.
+        expect_cell(&mut r, &mut vm, 1);
+        expect_cell(&mut r, &mut vm, 2);
+        assert_eq!(
+            r.next_event(&mut vm),
+            PlaybackEvent::ProgramBoundary {
+                finished_program: 1
+            }
+        );
+        // Idempotent until the player acts.
+        assert_eq!(
+            r.next_event(&mut vm),
+            PlaybackEvent::ProgramBoundary {
+                finished_program: 1
+            }
+        );
+        // An unauthored program is refused and the boundary holds.
+        assert!(!r.jump_to_program(9));
+        // The player picks program 2.
+        assert!(r.jump_to_program(2));
+        expect_cell(&mut r, &mut vm, 3);
+        expect_cell(&mut r, &mut vm, 4);
+        assert_eq!(
+            r.next_event(&mut vm),
+            PlaybackEvent::ProgramBoundary {
+                finished_program: 2
+            }
+        );
+        // Replaying an already-seen program is the player's call —
+        // the runner enforces no ordering policy.
+        assert!(r.jump_to_program(1));
+        expect_cell(&mut r, &mut vm, 1);
+        expect_cell(&mut r, &mut vm, 2);
+        assert_eq!(
+            r.next_event(&mut vm),
+            PlaybackEvent::ProgramBoundary {
+                finished_program: 1
+            }
+        );
+        // Done: no PGC still authored → straight to post/Finished.
+        assert_eq!(r.end_programs(), None);
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
+        // Terminal states refuse further program jumps.
+        assert!(!r.jump_to_program(1));
+        assert_eq!(r.end_programs(), None);
+    }
+
+    #[test]
+    fn runner_nonsequential_end_programs_surfaces_pgc_still() {
+        let mut pgc = plain_pgc(2);
+        pgc.number_of_programs = 2;
+        pgc.program_map = vec![1, 2];
+        pgc.playback_mode = 0x02; // random, count 2
+        pgc.still_time = 7;
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        expect_cell(&mut r, &mut vm, 1);
+        assert_eq!(
+            r.next_event(&mut vm),
+            PlaybackEvent::ProgramBoundary {
+                finished_program: 1
+            }
+        );
+        assert_eq!(
+            r.end_programs(),
+            Some(PlaybackEvent::PgcStill {
+                still: StillTime::Seconds(7)
+            })
+        );
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
+    }
+
+    #[test]
+    fn runner_sequential_multi_program_has_no_boundaries() {
+        // Same shape, mode byte 0 — the walk crosses programs
+        // without stopping.
+        let mut pgc = plain_pgc(4);
+        pgc.number_of_programs = 2;
+        pgc.program_map = vec![1, 3];
+        pgc.playback_mode = 0x00;
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new(&pgc, 1);
+        for cell in 1..=4 {
+            expect_cell(&mut r, &mut vm, cell);
+        }
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
+    }
+
+    #[test]
+    fn runner_new_at_program_enters_entry_cell() {
+        let mut pgc = plain_pgc(4);
+        pgc.number_of_programs = 2;
+        pgc.program_map = vec![1, 3];
+        pgc.playback_mode = 0x82;
+        let mut vm = Vm::new();
+        let mut r = PgcRunner::new_at_program(&pgc, 1, 2);
+        expect_cell(&mut r, &mut vm, 3);
+        // Unauthored program → straight to post commands / Finished.
+        let mut r = PgcRunner::new_at_program(&pgc, 1, 5);
+        assert_eq!(r.next_event(&mut vm), PlaybackEvent::Finished);
     }
 
     #[test]

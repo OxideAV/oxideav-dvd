@@ -149,6 +149,7 @@ is delegated to the external `oxideav-css` crate.
 | Angle-aware cell navigation (`Pgc::angle_block_span` / `cell_for_angle` / `next_cell` / `cell_walk` / `program_containing_cell`) | landed |
 | Type-1 **Link resolution** (`engine::resolve_link` — 13 `Link*` subsets + numbered forms → typed `LinkOutcome` at a `PgcPosition`, angle-resolved, `hl_bn` extraction) | landed |
 | **`PgcRunner`** playback state machine (pre → cells + cell commands → PGC still → post → next-PGCN chain; typed `PlaybackEvent` stream; `SetNVTMR` resume via `Vm::run_list_from`; SPRM 3 angle / SPRM 8 button integration; `new_at_cell` chapter entry) | landed |
+| Non-sequential PGC playback (random / shuffle `PG playback mode` byte `0x00A3` — `PgcRunner` halts the cell walk at every program boundary with `PlaybackEvent::ProgramBoundary`; `jump_to_program` / `end_programs` / `new_at_program` hand the program order to the player, since the disc byte fixes only the mode + program count) | landed |
 | Transfer resolution + SPRM bookkeeping (`resolve_action` → typed `JumpResolution`; `note_title_position` SPRM 4/5/6/7; `ResumeContext::effective_cell` rsm-cell override) | landed |
 | Title / chapter / menu-PGC resolution (`TtSrpt::title`, `VtsPttSrpt::ptt`, VTS_PGCI entry-PGC-by-title via `PgciSrp` category decode, `PgciUt::resolve_menu` language fallback) | landed |
 | Static title plan (`plan_title_cells` — entry PGC → angle walk → next-PGCN chain, loop-safe, per-cell sector spans) | landed |

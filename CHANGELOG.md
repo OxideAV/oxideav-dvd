@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Non-sequential (random / shuffle) PGC playback surface.** The
+  `PG playback mode` byte (`0x00A3`) was already typed as
+  `PlaybackMode`; `PgcRunner` now honours it: in a non-sequential
+  PGC the cell walk halts at every program boundary with the new
+  `PlaybackEvent::ProgramBoundary { finished_program }` (idempotent
+  until the player acts), `jump_to_program(n)` continues with any
+  authored program, `end_programs()` closes the program phase
+  (surfacing the PGC-still event exactly like the sequential
+  end-of-cells transition), and `PgcRunner::new_at_program` /
+  `PgcRunner::playback_mode` round out the entry points. The
+  program-selection policy deliberately stays with the player — the
+  on-disc byte fixes only the mode and the program count. Sequential
+  PGCs are unaffected (pinned by test).
+
 - **DVD-compliance validator for the video elementary stream.** The
   `mpeg` module now audits a stream against the staged
   `mpucoder-dvdmpeg.html` "Restrictions" table:
