@@ -32,6 +32,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **DVD-compliance validator for the video elementary stream.** The
+  `mpeg` module now audits a stream against the staged
+  `mpucoder-dvdmpeg.html` "Restrictions" table:
+  `check_dvd_compliance(stream, TvSystem)` (and the split
+  `scan_gop_stats` + `validate_dvd_compliance` pair) returns a typed
+  `DvdVideoViolation` list covering the per-system image-size
+  ladders, the coded-frame-rate set (24 fps progressive on both
+  systems, 29.97 NTSC-only, 25 PAL-only), the 4:3 / 16:9 aspect
+  gate, the declared-bit-rate ceilings (MPEG-1 1856 kbps / MPEG-2
+  9800 kbps, MPEG-1 VBR escape accepted), the MP\@ML / SP\@ML
+  profile gate (`PROFILE_LEVEL_MP_ML` / `PROFILE_LEVEL_SP_ML`), the
+  low-delay prohibition, the colour-description code points
+  (primaries/transfer 4/6 NTSC · 5 PAL, matrix 5/6), and the GOP
+  bounds — 18/15 frames (MPEG-1) or 36/30 fields (MPEG-2) with
+  field pictures counted via each picture's coding extension —
+  plus the GOPs-are-not-optional rule. `TvSystem::infer` derives
+  NTSC/PAL from the coded height; `GopStats` surfaces the
+  whole-stream GOP census.
+
 - **Full PES header-extension decode.** `PesPacket::parse` previously
   extracted only PTS/DTS; it now types every header-data group the
   staged `mpucoder-pes-hdr.html` documents for the DVD stream subset,

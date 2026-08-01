@@ -145,9 +145,11 @@ pub use lpcm::{
     LPCM_FRAME_DURATION_90KHZ, LPCM_GROUP_DURATION_90KHZ, LPCM_HEADER_LEN,
 };
 pub use mpeg::{
-    iter_start_codes, scan_video_sequence, AspectRatioCode, ColourDescription, FrameRateCode,
-    GopHeader, PictureCodingExtension, PictureCodingType, PictureHeader, PictureStructure,
-    SequenceDisplayExtension, SequenceExtension, SequenceHeader, StartCode, VideoSequenceInfo,
+    check_dvd_compliance, iter_start_codes, scan_gop_stats, scan_video_sequence,
+    validate_dvd_compliance, AspectRatioCode, ColourDescription, DvdVideoViolation, FrameRateCode,
+    GopHeader, GopStats, PictureCodingExtension, PictureCodingType, PictureHeader,
+    PictureStructure, SequenceDisplayExtension, SequenceExtension, SequenceHeader, StartCode,
+    TvSystem, VideoSequenceInfo, PROFILE_LEVEL_MP_ML, PROFILE_LEVEL_SP_ML,
 };
 pub use nav::{
     CallSSTarget, CmpOp, JumpSSTarget, LinkSubset, NavInstruction, Operand, Register, SetOp,

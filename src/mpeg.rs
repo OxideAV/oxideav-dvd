@@ -929,6 +929,365 @@ pub fn scan_video_sequence(stream: &[u8]) -> VideoSequenceInfo {
     info
 }
 
+// ------------------------------------------------------------------
+// DVD compliance (mpucoder-dvdmpeg.html "Restrictions")
+// ------------------------------------------------------------------
+
+/// The television system a DVD title targets — 525/60 (NTSC) or
+/// 625/50 (PAL/SECAM). Selects which `mpucoder-dvdmpeg.html`
+/// restriction column applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TvSystem {
+    /// 525/60 — NTSC.
+    Ntsc,
+    /// 625/50 — PAL / SECAM.
+    Pal,
+}
+
+impl TvSystem {
+    /// Infer the system from the coded vertical size (240/480 lines
+    /// = NTSC, 288/576 = PAL), or `None` when the size matches
+    /// neither ladder.
+    pub fn infer(info: &VideoSequenceInfo) -> Option<Self> {
+        match info.coded_size()?.1 {
+            240 | 480 => Some(Self::Ntsc),
+            288 | 576 => Some(Self::Pal),
+            _ => None,
+        }
+    }
+}
+
+/// One violated DVD restriction from the `mpucoder-dvdmpeg.html`
+/// "Restrictions" table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DvdVideoViolation {
+    /// No sequence header was found — nothing else can be checked.
+    NoSequenceHeader,
+    /// Coded size is not in the per-system, per-standard image-size
+    /// list (MPEG-1: 352×240 / 352×288; MPEG-2: {720, 704, 352} ×
+    /// {480 / 576}).
+    ImageSize {
+        /// Coded width.
+        width: u16,
+        /// Coded height.
+        height: u16,
+    },
+    /// Coded frame rate is outside the allowed set (24 fps
+    /// progressive, 29.97 fps NTSC-only, 25 fps PAL-only).
+    FrameRate {
+        /// The offending sequence-header code.
+        code: FrameRateCode,
+    },
+    /// Aspect ratio is neither 4:3 nor 16:9.
+    AspectRatio {
+        /// The offending sequence-header code.
+        code: AspectRatioCode,
+    },
+    /// Declared video bit rate exceeds the per-standard maximum
+    /// (MPEG-1: 1856 kbps, MPEG-2: 9800 kbps).
+    VideoBitRate {
+        /// Declared rate in bits/second.
+        bps: u64,
+        /// The applicable ceiling in bits/second.
+        max_bps: u64,
+    },
+    /// MPEG-2 `profile_and_level_indication` is neither MP\@ML nor
+    /// SP\@ML.
+    ProfileLevel {
+        /// The raw 8-bit indication.
+        profile_and_level: u8,
+    },
+    /// MPEG-2 `low_delay` flag is set ("Low delay - not permitted").
+    LowDelay,
+    /// `colour_primaries` / `transfer_characteristics` outside the
+    /// per-system set (NTSC: 4 = BT.470 M or 6 = SMPTE 170M;
+    /// PAL: 5 = BT.470 B/G).
+    ColourDescription {
+        /// `colour_primaries` value.
+        primaries: u8,
+        /// `transfer_characteristics` value.
+        transfer: u8,
+    },
+    /// `matrix_coefficients` is neither 5 (BT.470 B/G) nor
+    /// 6 (SMPTE 170M).
+    MatrixCoefficients {
+        /// The offending value.
+        value: u8,
+    },
+    /// No GOP header in a stream that carries pictures ("GOP's are
+    /// NOT optional").
+    MissingGop,
+    /// A GOP exceeds the MPEG-1 frame bound (18 frames NTSC,
+    /// 15 frames PAL/SECAM).
+    GopFrames {
+        /// Largest per-GOP picture count seen.
+        frames: u32,
+        /// The applicable bound.
+        max: u32,
+    },
+    /// A GOP exceeds the MPEG-2 field bound (36 fields NTSC,
+    /// 30 fields PAL/SECAM).
+    GopFields {
+        /// Largest per-GOP field count seen (frame picture = 2
+        /// fields, field picture = 1).
+        fields: u32,
+        /// The applicable bound.
+        max: u32,
+    },
+}
+
+/// Per-GOP structure statistics over a whole video elementary
+/// stream, produced by [`scan_gop_stats`] for the GOP-length
+/// restrictions in `mpucoder-dvdmpeg.html`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GopStats {
+    /// Number of GOP headers seen.
+    pub gop_count: u32,
+    /// Total picture headers seen.
+    pub picture_count: u32,
+    /// Largest number of pictures inside one GOP.
+    pub max_pictures_per_gop: u32,
+    /// Largest number of display fields inside one GOP — a frame
+    /// picture contributes 2, a field picture 1 (per its Picture
+    /// Coding Extension `picture_structure`; MPEG-1 pictures are
+    /// always frames).
+    pub max_fields_per_gop: u32,
+}
+
+/// Walk every start code of a video elementary stream and collect
+/// per-GOP picture / field counts for the DVD GOP-length bounds.
+pub fn scan_gop_stats(stream: &[u8]) -> GopStats {
+    let mut stats = GopStats::default();
+    let mut in_gop = false;
+    let mut cur_pictures = 0u32;
+    let mut cur_fields = 0u32;
+    // Field weight of the most recent picture header, adjusted down
+    // when its Picture Coding Extension declares a field picture.
+    let mut last_was_field = false;
+    let close = |stats: &mut GopStats, cur_pictures: &mut u32, cur_fields: &mut u32| {
+        stats.max_pictures_per_gop = stats.max_pictures_per_gop.max(*cur_pictures);
+        stats.max_fields_per_gop = stats.max_fields_per_gop.max(*cur_fields);
+        *cur_pictures = 0;
+        *cur_fields = 0;
+    };
+    for sc in iter_start_codes(stream) {
+        let tail = &stream[sc.offset..];
+        match sc.code {
+            SC_GROUP_OF_PICTURES => {
+                close(&mut stats, &mut cur_pictures, &mut cur_fields);
+                stats.gop_count += 1;
+                in_gop = true;
+                last_was_field = false;
+            }
+            SC_PICTURE => {
+                stats.picture_count += 1;
+                if in_gop {
+                    cur_pictures += 1;
+                    // Provisionally a frame picture (2 fields); a
+                    // following Picture Coding Extension may demote
+                    // it to a single field.
+                    cur_fields += 2;
+                }
+                last_was_field = false;
+            }
+            SC_EXTENSION if tail.len() >= 5 && (tail[4] >> 4) == EXT_ID_PICTURE_CODING => {
+                if let Ok(pce) = PictureCodingExtension::parse(tail) {
+                    let is_field = matches!(
+                        pce.picture_structure,
+                        PictureStructure::TopField | PictureStructure::BottomField
+                    );
+                    if is_field && in_gop && !last_was_field && cur_fields > 0 {
+                        cur_fields -= 1;
+                    }
+                    last_was_field = is_field;
+                }
+            }
+            _ => {}
+        }
+    }
+    close(&mut stats, &mut cur_pictures, &mut cur_fields);
+    stats
+}
+
+/// MPEG-2 `profile_and_level_indication` for Main Profile @ Main
+/// Level (profile 4, level 8).
+pub const PROFILE_LEVEL_MP_ML: u8 = 0x48;
+/// MPEG-2 `profile_and_level_indication` for Simple Profile @ Main
+/// Level (profile 5, level 8).
+pub const PROFILE_LEVEL_SP_ML: u8 = 0x58;
+
+/// Check a scanned video stream against the `mpucoder-dvdmpeg.html`
+/// "Restrictions" table for the given TV system, returning every
+/// violated restriction (empty = compliant).
+///
+/// `gop` carries the whole-stream GOP statistics from
+/// [`scan_gop_stats`]; pass `None` to skip the GOP-length checks
+/// (e.g. when only the opening headers are available).
+///
+/// Interpretation notes, all doc-bounded:
+/// - "24fps progressive" is accepted as either exact-24 or the
+///   NTSC-rate 24000/1001 film variant — the page names the nominal
+///   rate; 29.97 is NTSC-only and 25 PAL-only per its annotations.
+/// - Bit-rate checks apply to the *declared* sequence-header rate;
+///   an MPEG-1 VBR marker (all-ones) declares no rate and is
+///   accepted as VBR ("vbr/cbr" both permitted).
+/// - The colour checks only fire when a Sequence Display Extension
+///   actually carries a colour description.
+pub fn validate_dvd_compliance(
+    info: &VideoSequenceInfo,
+    system: TvSystem,
+    gop: Option<&GopStats>,
+) -> Vec<DvdVideoViolation> {
+    let mut v = Vec::new();
+    let Some(seq) = info.sequence else {
+        return vec![DvdVideoViolation::NoSequenceHeader];
+    };
+    let mpeg2 = info.sequence_extension.as_ref();
+    let (width, height) = info.coded_size().unwrap_or((0, 0));
+
+    // Image size ladder.
+    let size_ok = match (mpeg2.is_some(), system) {
+        (false, TvSystem::Ntsc) => (width, height) == (352, 240),
+        (false, TvSystem::Pal) => (width, height) == (352, 288),
+        (true, TvSystem::Ntsc) => matches!(width, 720 | 704 | 352) && height == 480,
+        (true, TvSystem::Pal) => matches!(width, 720 | 704 | 352) && height == 576,
+    };
+    if !size_ok {
+        v.push(DvdVideoViolation::ImageSize { width, height });
+    }
+
+    // Coded frame rate.
+    let rate_ok = match seq.frame_rate {
+        FrameRateCode::Fps24 | FrameRateCode::Fps23_976 => true,
+        FrameRateCode::Fps29_97 => system == TvSystem::Ntsc,
+        FrameRateCode::Fps25 => system == TvSystem::Pal,
+        _ => false,
+    };
+    if !rate_ok {
+        v.push(DvdVideoViolation::FrameRate {
+            code: seq.frame_rate,
+        });
+    }
+
+    // Aspect ratio — 4:3 or 16:9 only.
+    if !matches!(
+        seq.aspect_ratio,
+        AspectRatioCode::Ratio4x3 | AspectRatioCode::Ratio16x9
+    ) {
+        v.push(DvdVideoViolation::AspectRatio {
+            code: seq.aspect_ratio,
+        });
+    }
+
+    // Declared bit rate.
+    match mpeg2 {
+        Some(ext) => {
+            let bps = seq.bit_rate_bps_with_extension(ext);
+            if bps > 9_800_000 {
+                v.push(DvdVideoViolation::VideoBitRate {
+                    bps,
+                    max_bps: 9_800_000,
+                });
+            }
+        }
+        None => {
+            // MPEG-1: the all-ones value declares VBR (no rate).
+            if let Some(bps) = seq.bit_rate_bps() {
+                if bps > 1_856_000 {
+                    v.push(DvdVideoViolation::VideoBitRate {
+                        bps,
+                        max_bps: 1_856_000,
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(ext) = mpeg2 {
+        // MP@ML or SP@ML only.
+        if ext.profile_and_level != PROFILE_LEVEL_MP_ML
+            && ext.profile_and_level != PROFILE_LEVEL_SP_ML
+        {
+            v.push(DvdVideoViolation::ProfileLevel {
+                profile_and_level: ext.profile_and_level,
+            });
+        }
+        if ext.low_delay {
+            v.push(DvdVideoViolation::LowDelay);
+        }
+    }
+
+    // Colour description, when authored.
+    if let Some(colour) = info.display_extension.as_ref().and_then(|d| d.colour) {
+        let cp_ok = |x: u8| match system {
+            TvSystem::Ntsc => x == 4 || x == 6,
+            TvSystem::Pal => x == 5,
+        };
+        if !cp_ok(colour.colour_primaries) || !cp_ok(colour.transfer_characteristics) {
+            v.push(DvdVideoViolation::ColourDescription {
+                primaries: colour.colour_primaries,
+                transfer: colour.transfer_characteristics,
+            });
+        }
+        if !matches!(colour.matrix_coefficients, 5 | 6) {
+            v.push(DvdVideoViolation::MatrixCoefficients {
+                value: colour.matrix_coefficients,
+            });
+        }
+    }
+
+    // GOP bounds.
+    if let Some(g) = gop {
+        if g.gop_count == 0 && g.picture_count > 0 {
+            v.push(DvdVideoViolation::MissingGop);
+        }
+        match (mpeg2.is_some(), system) {
+            (false, TvSystem::Ntsc) => {
+                if g.max_pictures_per_gop > 18 {
+                    v.push(DvdVideoViolation::GopFrames {
+                        frames: g.max_pictures_per_gop,
+                        max: 18,
+                    });
+                }
+            }
+            (false, TvSystem::Pal) => {
+                if g.max_pictures_per_gop > 15 {
+                    v.push(DvdVideoViolation::GopFrames {
+                        frames: g.max_pictures_per_gop,
+                        max: 15,
+                    });
+                }
+            }
+            (true, TvSystem::Ntsc) => {
+                if g.max_fields_per_gop > 36 {
+                    v.push(DvdVideoViolation::GopFields {
+                        fields: g.max_fields_per_gop,
+                        max: 36,
+                    });
+                }
+            }
+            (true, TvSystem::Pal) => {
+                if g.max_fields_per_gop > 30 {
+                    v.push(DvdVideoViolation::GopFields {
+                        fields: g.max_fields_per_gop,
+                        max: 30,
+                    });
+                }
+            }
+        }
+    }
+    v
+}
+
+/// One-call convenience: scan the opening headers **and** the
+/// whole-stream GOP statistics, then validate against the DVD
+/// restrictions for `system`.
+pub fn check_dvd_compliance(stream: &[u8], system: TvSystem) -> Vec<DvdVideoViolation> {
+    let info = scan_video_sequence(stream);
+    let gop = scan_gop_stats(stream);
+    validate_dvd_compliance(&info, system, Some(&gop))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1372,6 +1731,321 @@ mod tests {
         assert_eq!(
             info.first_picture.unwrap().coding_type,
             PictureCodingType::Intra
+        );
+    }
+
+    // ----- DVD compliance (mpucoder-dvdmpeg.html) ------------------
+
+    /// General sequence-header builder (same packing as
+    /// `ntsc_seq_header`, parameterised).
+    fn seq_header_custom(w: u16, hgt: u16, aspect: u8, frc: u8, bit_rate: u32) -> Vec<u8> {
+        let vbv: u16 = 112;
+        let mut b = vec![0x00, 0x00, 0x01, SC_SEQUENCE_HEADER];
+        b.push((w >> 4) as u8);
+        b.push((((w & 0x0F) << 4) | (hgt >> 8)) as u8);
+        b.push((hgt & 0xFF) as u8);
+        b.push((aspect << 4) | frc);
+        b.push((bit_rate >> 10) as u8);
+        b.push((bit_rate >> 2) as u8);
+        b.push((((bit_rate & 0b11) as u8) << 6) | (1 << 5) | (vbv >> 5) as u8);
+        b.push(((vbv & 0x1F) as u8) << 3);
+        b
+    }
+
+    /// Picture Coding Extension declaring a top-field picture.
+    fn pic_coding_ext_field() -> Vec<u8> {
+        let mut b = pic_coding_ext();
+        // byte2 low bits: pic_struct = 01 (top field).
+        b[6] = (b[6] & !0b11) | 0b01;
+        b
+    }
+
+    #[test]
+    fn tv_system_infer_from_height() {
+        let mut info = VideoSequenceInfo {
+            sequence: Some(SequenceHeader::parse(&ntsc_seq_header()).unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(TvSystem::infer(&info), Some(TvSystem::Ntsc));
+        info.sequence =
+            Some(SequenceHeader::parse(&seq_header_custom(720, 576, 2, 3, 24_500)).unwrap());
+        assert_eq!(TvSystem::infer(&info), Some(TvSystem::Pal));
+        info.sequence =
+            Some(SequenceHeader::parse(&seq_header_custom(640, 400, 2, 3, 24_500)).unwrap());
+        assert_eq!(TvSystem::infer(&info), None);
+        assert_eq!(TvSystem::infer(&VideoSequenceInfo::default()), None);
+    }
+
+    #[test]
+    fn dvd_compliance_clean_ntsc_mpeg2() {
+        let mut s = Vec::new();
+        s.extend_from_slice(&ntsc_seq_header());
+        s.extend_from_slice(&main_seq_ext());
+        s.extend_from_slice(&gop_header(false, true, false));
+        for tr in 0..15u16 {
+            s.extend_from_slice(&picture_header(tr, 1 + (tr % 3) as u8, 0));
+            s.extend_from_slice(&pic_coding_ext());
+        }
+        assert_eq!(check_dvd_compliance(&s, TvSystem::Ntsc), vec![]);
+        // The same stream judged as PAL trips both the size ladder
+        // and the NTSC-only 29.97 coded rate.
+        let v = check_dvd_compliance(&s, TvSystem::Pal);
+        assert!(v.contains(&DvdVideoViolation::ImageSize {
+            width: 720,
+            height: 480
+        }));
+        assert!(v.contains(&DvdVideoViolation::FrameRate {
+            code: FrameRateCode::Fps29_97
+        }));
+    }
+
+    #[test]
+    fn dvd_compliance_no_sequence_header() {
+        assert_eq!(
+            validate_dvd_compliance(&VideoSequenceInfo::default(), TvSystem::Ntsc, None),
+            vec![DvdVideoViolation::NoSequenceHeader]
+        );
+    }
+
+    #[test]
+    fn dvd_compliance_bit_rate_ceilings() {
+        // MPEG-2: bit_rate_extension bit pushes the declared rate to
+        // (1 << 18 | 24_500) × 400 bps — far past 9800 kbps.
+        let seq = SequenceHeader::parse(&ntsc_seq_header()).unwrap();
+        let mut ext = SequenceExtension::parse(&main_seq_ext()).unwrap();
+        ext.bit_rate_extension = 1;
+        let info = VideoSequenceInfo {
+            sequence: Some(seq),
+            sequence_extension: Some(ext),
+            ..Default::default()
+        };
+        let v = validate_dvd_compliance(&info, TvSystem::Ntsc, None);
+        assert!(v.iter().any(|x| matches!(
+            x,
+            DvdVideoViolation::VideoBitRate {
+                max_bps: 9_800_000,
+                ..
+            }
+        )));
+        // MPEG-1: 352×240 @ 29.97 with a 2000 kbps declared rate
+        // breaks the 1856 kbps ceiling …
+        let info = VideoSequenceInfo {
+            sequence: Some(
+                SequenceHeader::parse(&seq_header_custom(352, 240, 2, 4, 2_000_000 / 400)).unwrap(),
+            ),
+            ..Default::default()
+        };
+        let v = validate_dvd_compliance(&info, TvSystem::Ntsc, None);
+        assert_eq!(
+            v,
+            vec![DvdVideoViolation::VideoBitRate {
+                bps: 2_000_000,
+                max_bps: 1_856_000
+            }]
+        );
+        // … while the VBR escape declares no rate and passes.
+        let mut buf = seq_header_custom(352, 240, 2, 4, 0);
+        buf[8] = 0xFF;
+        buf[9] = 0xFF;
+        buf[10] |= 0b1100_0000;
+        let info = VideoSequenceInfo {
+            sequence: Some(SequenceHeader::parse(&buf).unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(validate_dvd_compliance(&info, TvSystem::Ntsc, None), vec![]);
+    }
+
+    #[test]
+    fn dvd_compliance_mpeg1_sizes_and_pal_rate() {
+        // MPEG-1 PAL: 352×288 @ 25 fps is clean.
+        let info = VideoSequenceInfo {
+            sequence: Some(
+                SequenceHeader::parse(&seq_header_custom(352, 288, 2, 3, 4_000)).unwrap(),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(validate_dvd_compliance(&info, TvSystem::Pal, None), vec![]);
+        // 24 fps progressive is permitted on both systems (both film
+        // codes).
+        for frc in [1u8, 2] {
+            for sys in [TvSystem::Ntsc, TvSystem::Pal] {
+                let hgt = if sys == TvSystem::Ntsc { 240 } else { 288 };
+                let info = VideoSequenceInfo {
+                    sequence: Some(
+                        SequenceHeader::parse(&seq_header_custom(352, hgt, 2, frc, 4_000)).unwrap(),
+                    ),
+                    ..Default::default()
+                };
+                assert_eq!(validate_dvd_compliance(&info, sys, None), vec![]);
+            }
+        }
+        // A 704-wide MPEG-1 stream is out of ladder (MPEG-2 sizes
+        // need the sequence extension).
+        let info = VideoSequenceInfo {
+            sequence: Some(
+                SequenceHeader::parse(&seq_header_custom(704, 480, 2, 4, 4_000)).unwrap(),
+            ),
+            ..Default::default()
+        };
+        let v = validate_dvd_compliance(&info, TvSystem::Ntsc, None);
+        assert_eq!(
+            v,
+            vec![DvdVideoViolation::ImageSize {
+                width: 704,
+                height: 480
+            }]
+        );
+    }
+
+    #[test]
+    fn dvd_compliance_profile_low_delay_aspect() {
+        let seq = SequenceHeader::parse(&ntsc_seq_header()).unwrap();
+        let mut ext = SequenceExtension::parse(&main_seq_ext()).unwrap();
+        // SP@ML is also permitted.
+        ext.profile_and_level = PROFILE_LEVEL_SP_ML;
+        let info = VideoSequenceInfo {
+            sequence: Some(seq),
+            sequence_extension: Some(ext),
+            ..Default::default()
+        };
+        assert_eq!(validate_dvd_compliance(&info, TvSystem::Ntsc, None), vec![]);
+        // Main@High-1440 (0x46) is not; neither is low_delay.
+        ext.profile_and_level = 0x46;
+        ext.low_delay = true;
+        let info = VideoSequenceInfo {
+            sequence: Some(seq),
+            sequence_extension: Some(ext),
+            ..Default::default()
+        };
+        let v = validate_dvd_compliance(&info, TvSystem::Ntsc, None);
+        assert!(v.contains(&DvdVideoViolation::ProfileLevel {
+            profile_and_level: 0x46
+        }));
+        assert!(v.contains(&DvdVideoViolation::LowDelay));
+        // A reserved aspect code is flagged.
+        let mut seq2 = seq;
+        seq2.aspect_ratio = AspectRatioCode::Reserved(9);
+        let ext2 = SequenceExtension::parse(&main_seq_ext()).unwrap();
+        let info = VideoSequenceInfo {
+            sequence: Some(seq2),
+            sequence_extension: Some(ext2),
+            ..Default::default()
+        };
+        let v = validate_dvd_compliance(&info, TvSystem::Ntsc, None);
+        assert_eq!(
+            v,
+            vec![DvdVideoViolation::AspectRatio {
+                code: AspectRatioCode::Reserved(9)
+            }]
+        );
+    }
+
+    #[test]
+    fn dvd_compliance_colour_description() {
+        // SMPTE 170M everywhere: clean on NTSC, wrong on PAL.
+        let info = VideoSequenceInfo {
+            sequence: Some(SequenceHeader::parse(&ntsc_seq_header()).unwrap()),
+            sequence_extension: Some(SequenceExtension::parse(&main_seq_ext()).unwrap()),
+            display_extension: Some(SequenceDisplayExtension::parse(&disp_ext_colour()).unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(validate_dvd_compliance(&info, TvSystem::Ntsc, None), vec![]);
+        let v = validate_dvd_compliance(&info, TvSystem::Pal, None);
+        assert!(v.contains(&DvdVideoViolation::ColourDescription {
+            primaries: 6,
+            transfer: 6
+        }));
+        // A matrix outside {5, 6} is flagged independently.
+        let mut info = info;
+        if let Some(d) = info.display_extension.as_mut() {
+            d.colour = Some(ColourDescription {
+                colour_primaries: 6,
+                transfer_characteristics: 6,
+                matrix_coefficients: 1,
+            });
+        }
+        let v = validate_dvd_compliance(&info, TvSystem::Ntsc, None);
+        assert_eq!(v, vec![DvdVideoViolation::MatrixCoefficients { value: 1 }]);
+    }
+
+    #[test]
+    fn gop_stats_field_and_frame_counting() {
+        let mut s = Vec::new();
+        s.extend_from_slice(&ntsc_seq_header());
+        s.extend_from_slice(&main_seq_ext());
+        // GOP 1: two frame pictures = 4 fields.
+        s.extend_from_slice(&gop_header(false, true, false));
+        for tr in 0..2u16 {
+            s.extend_from_slice(&picture_header(tr, 1, 0));
+            s.extend_from_slice(&pic_coding_ext());
+        }
+        // GOP 2: three field pictures = 3 fields.
+        s.extend_from_slice(&gop_header(false, false, false));
+        for tr in 0..3u16 {
+            s.extend_from_slice(&picture_header(tr, 2, 0));
+            s.extend_from_slice(&pic_coding_ext_field());
+        }
+        let g = scan_gop_stats(&s);
+        assert_eq!(g.gop_count, 2);
+        assert_eq!(g.picture_count, 5);
+        assert_eq!(g.max_pictures_per_gop, 3);
+        assert_eq!(g.max_fields_per_gop, 4);
+    }
+
+    #[test]
+    fn dvd_compliance_gop_bounds() {
+        let seq = SequenceHeader::parse(&ntsc_seq_header()).unwrap();
+        let ext = SequenceExtension::parse(&main_seq_ext()).unwrap();
+        let info = VideoSequenceInfo {
+            sequence: Some(seq),
+            sequence_extension: Some(ext),
+            ..Default::default()
+        };
+        // 40 fields in one GOP breaks the 36-field NTSC bound.
+        let g = GopStats {
+            gop_count: 1,
+            picture_count: 20,
+            max_pictures_per_gop: 20,
+            max_fields_per_gop: 40,
+        };
+        let v = validate_dvd_compliance(&info, TvSystem::Ntsc, Some(&g));
+        assert_eq!(
+            v,
+            vec![DvdVideoViolation::GopFields {
+                fields: 40,
+                max: 36
+            }]
+        );
+        // Pictures with no GOP header at all: "GOP's are NOT
+        // optional".
+        let g = GopStats {
+            gop_count: 0,
+            picture_count: 4,
+            max_pictures_per_gop: 0,
+            max_fields_per_gop: 0,
+        };
+        let v = validate_dvd_compliance(&info, TvSystem::Ntsc, Some(&g));
+        assert_eq!(v, vec![DvdVideoViolation::MissingGop]);
+        // MPEG-1 PAL: 16 frames in a GOP breaks the 15-frame bound.
+        let info = VideoSequenceInfo {
+            sequence: Some(
+                SequenceHeader::parse(&seq_header_custom(352, 288, 2, 3, 4_000)).unwrap(),
+            ),
+            ..Default::default()
+        };
+        let g = GopStats {
+            gop_count: 1,
+            picture_count: 16,
+            max_pictures_per_gop: 16,
+            max_fields_per_gop: 32,
+        };
+        let v = validate_dvd_compliance(&info, TvSystem::Pal, Some(&g));
+        assert_eq!(
+            v,
+            vec![DvdVideoViolation::GopFrames {
+                frames: 16,
+                max: 15
+            }]
         );
     }
 }

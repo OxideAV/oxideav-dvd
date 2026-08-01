@@ -138,6 +138,7 @@ is delegated to the external `oxideav-css` crate.
 | Program Stream System Header typed decode (`SystemHeader` — rate/audio/video bound + fixed/CSPS/audio-lock/video-lock/packet-rate flags + 4 `StreamBound` P-STD buffer entries with `buffer_bytes()`; surfaced on `NavPack::system_header`) | landed |
 | MPEG-2 video header decode (`mpeg` module — `SequenceHeader` size/aspect/frame-rate/bit-rate/VBV + `SequenceExtension` profile/level/chroma/size-ext + `SequenceDisplayExtension` colour-description/display-size + `GopHeader` SMPTE TC/closed/broken + `PictureHeader` TR/coding-type/VBV-delay + `PictureCodingExtension` f_codes/picture-structure/coding-flags) | landed |
 | MPEG video elementary-stream scanner (`iter_start_codes` + `scan_video_sequence` → `VideoSequenceInfo` track summary; `VobStreams::video_sequence_info()` demux→summary) | landed |
+| DVD-compliance validator over the video ES (`check_dvd_compliance` / `validate_dvd_compliance` / `scan_gop_stats` → typed `DvdVideoViolation` list per the `mpucoder-dvdmpeg` restriction table — per-system image-size ladders, coded-frame-rate set, 4:3 / 16:9 aspect gate, MPEG-1 1856 kbps / MPEG-2 9800 kbps declared-rate ceilings, MP\@ML / SP\@ML profile gate, low-delay prohibition, colour-description code points, GOP frame/field bounds + GOPs-not-optional) | landed |
 | MKV mux + chapter encoding wiring | landed |
 | VM instruction **decode** (typed `NavInstruction` disassembler — non-executing) | landed |
 | `PgcCommandTable` typed-instruction iterators (`pre_instructions` / `post_instructions` / `cell_instructions` + 1-based `cell_instruction(index)`) | landed |
@@ -527,6 +528,20 @@ if let Some(pic) = info.first_picture {
     assert_eq!(pic.coding_type, PictureCodingType::Intra);
 }
 ```
+
+`check_dvd_compliance(stream, TvSystem::Ntsc)` (or the split
+`scan_gop_stats` + `validate_dvd_compliance` pair for header-only
+checks) audits the same stream against the DVD restriction table in
+`mpucoder-dvdmpeg.html` and returns a typed `DvdVideoViolation` list:
+the per-system image-size ladders (MPEG-1 352×240 / 352×288; MPEG-2
+{720, 704, 352} × {480, 576}), the coded-frame-rate set (24 fps
+progressive both systems, 29.97 NTSC-only, 25 PAL-only), the 4:3 /
+16:9 aspect gate, the declared-bit-rate ceilings (1856 kbps MPEG-1 /
+9800 kbps MPEG-2, VBR escape accepted), the MP\@ML / SP\@ML profile
+gate, the low-delay prohibition, the colour-description code points,
+and the GOP bounds (18/15 frames MPEG-1, 36/30 fields MPEG-2, with
+field pictures counted 1 and frame pictures 2 via each picture's
+coding extension) plus the GOPs-are-not-optional rule.
 
 `VideoSequenceInfo` carries the first `SequenceHeader`,
 `SequenceExtension` (its presence is what makes the stream MPEG-2),
