@@ -3025,6 +3025,17 @@ impl VobStreams {
         crate::mpeg::scan_video_sequence(&self.video)
     }
 
+    /// Audit the demuxed video elementary stream against the DVD
+    /// restriction table for `system` — the demux-side shortcut for
+    /// [`crate::mpeg::check_dvd_compliance`]. An empty list means the
+    /// stream passed every check.
+    pub fn dvd_compliance(
+        &self,
+        system: crate::mpeg::TvSystem,
+    ) -> Vec<crate::mpeg::DvdVideoViolation> {
+        crate::mpeg::check_dvd_compliance(&self.video, system)
+    }
+
     /// Every in-allocation substream observed during demux, in
     /// ascending substream-ID order — the typed track inventory of
     /// the demuxed VOB range.

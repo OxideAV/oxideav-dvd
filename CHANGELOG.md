@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hostile-input fuzz for the PES header walker + GOP census.**
+  `tests/hostile_input.rs` gains a structured-seed fuzz that drives
+  attacker-controlled flag bytes, header-data lengths, and
+  header-data content through the new PES header-extension walker
+  (asserting wire-size / payload / stuffing invariants on every
+  accepted packet, including deliberately truncated buffers), plus a
+  fuzz over `scan_gop_stats` / `check_dvd_compliance` with census
+  invariants. `VobStreams::dvd_compliance(system)` added as the
+  demux-side compliance shortcut.
+
 - **Non-sequential (random / shuffle) PGC playback surface.** The
   `PG playback mode` byte (`0x00A3`) was already typed as
   `PlaybackMode`; `PgcRunner` now honours it: in a non-sequential

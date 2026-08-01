@@ -15,12 +15,14 @@ use oxideav_dvd::ifo::{
     Pgc, Pgci, PgciUt, TtSrpt, VmgIfo, VmgPtlMait, VmgVtsAtrt, VobuAdmap, VtsCAdt, VtsIfo,
     VtsPttSrpt, VtsTmapti,
 };
+use oxideav_dvd::vob::PesPacket;
 use oxideav_dvd::vob::{
     AudioSubstreamHeader, DsiPacket, NavPack, PackHeader, PciPacket, SystemHeader,
 };
 use oxideav_dvd::{
-    scan_video_sequence, Ac3Header, DtsHeader, GopHeader, PictureCodingExtension, PictureHeader,
-    SequenceDisplayExtension, SequenceExtension, SequenceHeader, SubPictureUnit,
+    check_dvd_compliance, scan_gop_stats, scan_video_sequence, Ac3Header, DtsHeader, GopHeader,
+    PictureCodingExtension, PictureHeader, SequenceDisplayExtension, SequenceExtension,
+    SequenceHeader, SubPictureUnit, TvSystem,
 };
 
 /// A deterministic xorshift64* PRNG — no external crate, fully
@@ -91,6 +93,75 @@ fn fuzz_nav_pack_structures() {
     });
     fuzz_slice(6, ITERS, 0x400, |b| {
         let _ = DsiPacket::parse(b);
+    });
+}
+
+#[test]
+fn fuzz_pes_header_extension() {
+    // Raw random buffers exercise the start-code / length gates …
+    fuzz_slice(60, ITERS, 256, |b| {
+        let _ = PesPacket::parse(b);
+    });
+    // … while structured seeds force the header-data walker deep:
+    // valid start code + stream id, attacker-controlled flag bytes,
+    // header-data length, and header-data content.
+    let mut rng = Rng::new(61);
+    for _ in 0..ITERS {
+        let sid = match rng.byte() % 4 {
+            0 => 0xBD, // private_stream_1
+            1 => 0xE0, // video
+            2 => 0xC0, // MPEG audio
+            _ => 0xBE, // padding (no extension)
+        };
+        let byte6 = 0x80 | (rng.byte() & 0x3F);
+        let byte7 = rng.byte();
+        let hd = rng.buf(64);
+        let payload = rng.buf(32);
+        let pes_len = 3 + hd.len() + payload.len();
+        let mut v = vec![
+            0x00,
+            0x00,
+            0x01,
+            sid,
+            (pes_len >> 8) as u8,
+            (pes_len & 0xFF) as u8,
+            byte6,
+            byte7,
+            hd.len() as u8,
+        ];
+        v.extend_from_slice(&hd);
+        v.extend_from_slice(&payload);
+        // Occasionally lie about the trailing length.
+        let cut = if rng.byte() % 8 == 0 {
+            v.len() - (rng.byte() as usize % 16).min(v.len())
+        } else {
+            v.len()
+        };
+        if let Ok(pes) = PesPacket::parse(&v[..cut]) {
+            // Structural invariants on every accepted packet.
+            assert!(pes.wire_size <= cut);
+            assert!(pes.payload.len() <= pes.wire_size);
+            if let Some(ext) = pes.header_ext {
+                assert!(ext.stuffing_len <= hd.len());
+                assert!(ext.scrambling_control <= 0b11);
+                if let Some(pd) = ext.extension.and_then(|e| e.private_data) {
+                    assert_eq!(pd.len(), 16);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fuzz_gop_stats_and_compliance() {
+    fuzz_slice(62, ITERS / 2, 1024, |b| {
+        let g = scan_gop_stats(b);
+        // Census invariants: a GOP holds at most every picture, and
+        // a picture contributes at most 2 fields.
+        assert!(g.max_pictures_per_gop <= g.picture_count);
+        assert!(g.max_fields_per_gop <= g.picture_count.saturating_mul(2));
+        let _ = check_dvd_compliance(b, TvSystem::Ntsc);
+        let _ = check_dvd_compliance(b, TvSystem::Pal);
     });
 }
 

@@ -532,7 +532,8 @@ if let Some(pic) = info.first_picture {
 
 `check_dvd_compliance(stream, TvSystem::Ntsc)` (or the split
 `scan_gop_stats` + `validate_dvd_compliance` pair for header-only
-checks) audits the same stream against the DVD restriction table in
+checks; `VobStreams::dvd_compliance` runs it straight off a demux)
+audits the same stream against the DVD restriction table in
 `mpucoder-dvdmpeg.html` and returns a typed `DvdVideoViolation` list:
 the per-system image-size ladders (MPEG-1 352×240 / 352×288; MPEG-2
 {720, 704, 352} × {480, 576}), the coded-frame-rate set (24 fps
