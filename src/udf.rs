@@ -565,6 +565,7 @@ impl LogicalVolumeDescriptor {
 // ─────────────────────── LogicalVolumeIntegrityDescriptor (§10.10) ───────────────────────
 
 #[derive(Debug, Clone)]
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub struct LogicalVolumeIntegrityDescriptor {
     pub tag: DescriptorTag,
     pub number_of_partitions: u32,

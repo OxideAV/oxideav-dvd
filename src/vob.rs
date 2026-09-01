@@ -49,17 +49,23 @@ use crate::nav::NavInstruction;
 // ------------------------------------------------------------------
 
 /// `0x000001BA` — MPEG-PS Pack Header.
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_PACK_HEADER: u8 = 0xBA;
 /// `0x000001BB` — MPEG-PS System Header.
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_SYSTEM_HEADER: u8 = 0xBB;
 /// `0x000001BC` — Program Stream Map (unused on DVD).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_PROGRAM_STREAM_MAP: u8 = 0xBC;
 /// `0x000001BD` — Private Stream 1 (AC-3 / DTS / SDDS / LPCM /
 /// subpicture).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_PRIVATE_STREAM_1: u8 = 0xBD;
 /// `0x000001BE` — Padding Stream.
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_PADDING_STREAM: u8 = 0xBE;
 /// `0x000001BF` — Private Stream 2 (NAV packets: PCI + DSI).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_PRIVATE_STREAM_2: u8 = 0xBF;
 
 // ------------------------------------------------------------------

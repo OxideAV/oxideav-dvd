@@ -34,21 +34,29 @@
 use crate::error::{Error, Result};
 
 /// `0x00` — Picture start code (`00 00 01 00`).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_PICTURE: u8 = 0x00;
 /// `0xB3` — Sequence header start code (`00 00 01 B3`).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_SEQUENCE_HEADER: u8 = 0xB3;
 /// `0xB5` — Extension start code (`00 00 01 B5`).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_EXTENSION: u8 = 0xB5;
 /// `0xB7` — Sequence end start code (`00 00 01 B7`).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_SEQUENCE_END: u8 = 0xB7;
 /// `0xB8` — Group-of-Pictures start code (`00 00 01 B8`).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const SC_GROUP_OF_PICTURES: u8 = 0xB8;
 
 /// Extension-id nibble for a Sequence Extension (`0001`).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const EXT_ID_SEQUENCE: u8 = 0b0001;
 /// Extension-id nibble for a Sequence Display Extension (`0010`).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const EXT_ID_SEQUENCE_DISPLAY: u8 = 0b0010;
 /// Extension-id nibble for a Picture Coding Extension (`1000`).
+#[doc(hidden)] // internal wire plumbing; not part of the stable API
 pub const EXT_ID_PICTURE_CODING: u8 = 0b1000;
 
 // ------------------------------------------------------------------
