@@ -789,6 +789,11 @@ loop {
         PlaybackEvent::NavTimer { seconds, pgcn } => { /* arm wall clock */ }
         PlaybackEvent::NextPgc { pgcn } => { /* load PGC `pgcn`, new runner */ }
         PlaybackEvent::Chapter { pttn } => { /* VtsPttSrpt::ptt(ttn, pttn) */ }
+        PlaybackEvent::ProgramBoundary { finished_program } => {
+            // Random / shuffle PGC: the player picks the next program
+            // (runner.jump_to_program(n)) or ends the program phase.
+            let _ = (finished_program, runner.end_programs());
+        }
         PlaybackEvent::Transfer(action) => {
             // Cross-domain jump/call — check legality, then resolve.
             assert!(transition_permitted(Domain::VtsTitle, &action, 1));
