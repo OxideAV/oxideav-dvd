@@ -106,58 +106,58 @@ pub mod mkv_writer;
 #[cfg(feature = "mkv-output")]
 pub mod pipeline;
 
-pub use ac3::{Ac3AudioCodingMode, Ac3BitstreamMode, Ac3Header, Ac3SampleRate, AC3_SYNC_WORD};
+pub use ac3::{AC3_SYNC_WORD, Ac3AudioCodingMode, Ac3BitstreamMode, Ac3Header, Ac3SampleRate};
 pub use copyctl::{
-    ApsType, Cgms, CopyControlInfo, CprMai, CPR_MAI_FRAME_OFFSET, CPR_MAI_LEN, DATA_FRAME_LEN,
+    ApsType, CPR_MAI_FRAME_OFFSET, CPR_MAI_LEN, Cgms, CopyControlInfo, CprMai, DATA_FRAME_LEN,
 };
 pub use disc::{DvdDisc, DvdFile, DvdFileKind, TitlePlan};
-pub use dts::{DtsAudioMode, DtsBitRate, DtsFrameType, DtsHeader, DtsSampleRate, DTS_SYNC_WORD};
+pub use dts::{DTS_SYNC_WORD, DtsAudioMode, DtsBitRate, DtsFrameType, DtsHeader, DtsSampleRate};
 pub use engine::{
-    activate_button, audio_stream_playable, forced_action, initial_button, karaoke_routing,
-    link_highlight_button, navigate_button, note_audio_selection, note_title_position,
-    plan_title_cells, reference_frame_span, resolve_action, resolve_link, scan_permitted,
-    scan_step, select_audio_stream, select_button, select_subpicture_stream,
-    subpicture_display_mode, target_domain, transition_permitted, AudioSelection, ButtonMove,
-    ButtonPress, Domain, JumpResolution, KaraokeChannelContent, KaraokeChannelRoute, LinkOutcome,
-    NavTimerClock, PgcPosition, PgcRunner, PlannedCell, PlaybackEvent, ResumeContext,
-    ScanDirection, StillClock, StillPhase, SubpictureSelection, TrickStep,
+    AudioSelection, ButtonMove, ButtonPress, Domain, JumpResolution, KaraokeChannelContent,
+    KaraokeChannelRoute, LinkOutcome, NavTimerClock, PgcPosition, PgcRunner, PlannedCell,
+    PlaybackEvent, ResumeContext, ScanDirection, StillClock, StillPhase, SubpictureSelection,
+    TrickStep, activate_button, audio_stream_playable, forced_action, initial_button,
+    karaoke_routing, link_highlight_button, navigate_button, note_audio_selection,
+    note_title_position, plan_title_cells, reference_frame_span, resolve_action, resolve_link,
+    scan_permitted, scan_step, select_audio_stream, select_button, select_subpicture_stream,
+    subpicture_display_mode, target_domain, transition_permitted,
 };
 pub use error::{Error, Result};
 pub use ifo::{
-    menu_existence, AudioApplicationMode, AudioAttributes, AudioCodingMode, AudioLanguageType,
+    AudioApplicationMode, AudioAttributes, AudioCodingMode, AudioLanguageType,
     AudioQuantizationDrc, AudioStreamControl, CellAddrEntry, CellBlockType, CellCategory,
-    CellPlaybackInfo, CellPositionInfo, CellType, DvdChapter, DvdTitle, DvdTitleEntry, FrameRate,
-    McExtensionEntry, MenuAttributes, MenuType, NavCommand, PaletteEntry, Pgc, PgcCommandTable,
-    PgcTime, Pgci, PgciLu, PgciLuSrp, PgciSrp, PgciUt, PgciUtSrp, PlaybackMode, PtlMait, Ptt,
-    PttTitle, StillTime, SubpictureAttributes, SubpictureCodingMode, SubpictureDisplay,
-    SubpictureLanguageType, SubpictureStreamControl, TitleAttributes, TmapEntry, TtSrpt,
-    VideoAspectRatio, VideoAttributes, VideoCodingMode, VideoResolution, VideoStandard, VmgIfo,
-    VmgPtlMait, VmgVtsAtrt, VmgVtsAtrtEntry, VobuAdmap, VtsCAdt, VtsIfo, VtsPttSrpt, VtsTmap,
-    VtsTmapti, VtsiMat, DVD_SECTOR, VMG_MAGIC, VTS_MAGIC,
+    CellPlaybackInfo, CellPositionInfo, CellType, DVD_SECTOR, DvdChapter, DvdTitle, DvdTitleEntry,
+    FrameRate, McExtensionEntry, MenuAttributes, MenuType, NavCommand, PaletteEntry, Pgc,
+    PgcCommandTable, PgcTime, Pgci, PgciLu, PgciLuSrp, PgciSrp, PgciUt, PgciUtSrp, PlaybackMode,
+    PtlMait, Ptt, PttTitle, StillTime, SubpictureAttributes, SubpictureCodingMode,
+    SubpictureDisplay, SubpictureLanguageType, SubpictureStreamControl, TitleAttributes, TmapEntry,
+    TtSrpt, VMG_MAGIC, VTS_MAGIC, VideoAspectRatio, VideoAttributes, VideoCodingMode,
+    VideoResolution, VideoStandard, VmgIfo, VmgPtlMait, VmgVtsAtrt, VmgVtsAtrtEntry, VobuAdmap,
+    VtsCAdt, VtsIfo, VtsPttSrpt, VtsTmap, VtsTmapti, VtsiMat, menu_existence,
 };
 pub use iso9660::{
     DirectoryRecord, Iso9660Entry, Iso9660Volume, PathTableEntry, PrimaryVolumeDescriptor,
     VolumeDescriptorType,
 };
 pub use lpcm::{
-    peel_lpcm_payload, LpcmFrames, LpcmHeader, LpcmQuantisation, LpcmSampleFrequency,
-    DVD_LPCM_MAX_BITRATE_KBPS, LPCM_FRAMES_PER_GROUP, LPCM_FRAMES_PER_SECOND,
-    LPCM_FRAME_DURATION_90KHZ, LPCM_GROUP_DURATION_90KHZ, LPCM_HEADER_LEN,
+    DVD_LPCM_MAX_BITRATE_KBPS, LPCM_FRAME_DURATION_90KHZ, LPCM_FRAMES_PER_GROUP,
+    LPCM_FRAMES_PER_SECOND, LPCM_GROUP_DURATION_90KHZ, LPCM_HEADER_LEN, LpcmFrames, LpcmHeader,
+    LpcmQuantisation, LpcmSampleFrequency, peel_lpcm_payload,
 };
 pub use mpeg::{
-    check_dvd_compliance, iter_start_codes, scan_gop_stats, scan_video_sequence,
-    validate_dvd_compliance, AspectRatioCode, ColourDescription, DvdVideoViolation, FrameRateCode,
-    GopHeader, GopStats, PictureCodingExtension, PictureCodingType, PictureHeader,
-    PictureStructure, SequenceDisplayExtension, SequenceExtension, SequenceHeader, StartCode,
-    TvSystem, VideoSequenceInfo, PROFILE_LEVEL_MP_ML, PROFILE_LEVEL_SP_ML,
+    AspectRatioCode, ColourDescription, DvdVideoViolation, FrameRateCode, GopHeader, GopStats,
+    PROFILE_LEVEL_MP_ML, PROFILE_LEVEL_SP_ML, PictureCodingExtension, PictureCodingType,
+    PictureHeader, PictureStructure, SequenceDisplayExtension, SequenceExtension, SequenceHeader,
+    StartCode, TvSystem, VideoSequenceInfo, check_dvd_compliance, iter_start_codes, scan_gop_stats,
+    scan_video_sequence, validate_dvd_compliance,
 };
 pub use nav::{
     CallSSTarget, CmpOp, JumpSSTarget, LinkSubset, NavInstruction, Operand, Register, SetOp,
 };
-pub use source::{parse_dvd_uri, DvdDiscSource, DvdUri};
+pub use source::{DvdDiscSource, DvdUri, parse_dvd_uri};
 pub use spu::{
-    decode_rle_field, render_field, spdcsq_stm_to_ms, ycbcr_to_rgb, PixelRun, SpDcSq, SpuBitmap,
-    SpuCommand, SpuHeader, SubPictureUnit,
+    PixelRun, SpDcSq, SpuBitmap, SpuCommand, SpuHeader, SubPictureUnit, decode_rle_field,
+    render_field, spdcsq_stm_to_ms, ycbcr_to_rgb,
 };
 pub use udf::{
     AdType, AnchorVolumeDescriptorPointer, DescriptorTag, ExtAd, Extent, FileEntry,
@@ -165,33 +165,33 @@ pub use udf::{
     PartitionDescriptor, ShortAd, TagId, UdfFile, UdfVolume,
 };
 pub use uops::{
-    title_type_uop_mask, UopIter, UopLevel, UopMask, UserOp, UOP_ANGLE_CHANGE,
-    UOP_AUDIO_STREAM_CHANGE, UOP_BACKWARD_SCAN, UOP_BIT_COUNT, UOP_BUTTON_SELECT_OR_ACTIVATE,
-    UOP_DEFINED_BITS, UOP_FORWARD_SCAN, UOP_GO_UP, UOP_KARAOKE_AUDIO_MIX_CHANGE,
-    UOP_MENU_CALL_ANGLE, UOP_MENU_CALL_AUDIO, UOP_MENU_CALL_PTT, UOP_MENU_CALL_ROOT,
-    UOP_MENU_CALL_SUBPICTURE, UOP_MENU_CALL_TITLE, UOP_NEXT_PG_SEARCH, UOP_PAUSE_ON,
-    UOP_PTT_PLAY_OR_SEARCH, UOP_RESUME, UOP_STILL_OFF, UOP_STOP, UOP_SUBPICTURE_STREAM_CHANGE,
-    UOP_TIME_OR_PTT_SEARCH, UOP_TIME_PLAY_OR_SEARCH, UOP_TITLE_PLAY, UOP_TOP_PG_OR_PREV_PG_SEARCH,
-    UOP_VIDEO_PRESENTATION_MODE_CHANGE,
+    UOP_ANGLE_CHANGE, UOP_AUDIO_STREAM_CHANGE, UOP_BACKWARD_SCAN, UOP_BIT_COUNT,
+    UOP_BUTTON_SELECT_OR_ACTIVATE, UOP_DEFINED_BITS, UOP_FORWARD_SCAN, UOP_GO_UP,
+    UOP_KARAOKE_AUDIO_MIX_CHANGE, UOP_MENU_CALL_ANGLE, UOP_MENU_CALL_AUDIO, UOP_MENU_CALL_PTT,
+    UOP_MENU_CALL_ROOT, UOP_MENU_CALL_SUBPICTURE, UOP_MENU_CALL_TITLE, UOP_NEXT_PG_SEARCH,
+    UOP_PAUSE_ON, UOP_PTT_PLAY_OR_SEARCH, UOP_RESUME, UOP_STILL_OFF, UOP_STOP,
+    UOP_SUBPICTURE_STREAM_CHANGE, UOP_TIME_OR_PTT_SEARCH, UOP_TIME_PLAY_OR_SEARCH, UOP_TITLE_PLAY,
+    UOP_TOP_PG_OR_PREV_PG_SEARCH, UOP_VIDEO_PRESENTATION_MODE_CHANGE, UopIter, UopLevel, UopMask,
+    UserOp, title_type_uop_mask,
 };
 pub use vm::{
     AspectRatio, AudioCapabilities, AudioLanguageExt, AudioMixMode, AudioStreamSelector,
-    DisplayMode, LanguageCode, LinkAction, ParentalLevel, RegisterFile, ResumePoint,
-    SubpictureLanguageExt, SubpictureStreamView, VideoPreference, Vm, VmAction, GPRM_COUNT,
-    MAX_RSM_DEPTH, SPRM_AMXMD, SPRM_ANGLE, SPRM_AUDIO_CAPS, SPRM_AUDIO_STREAM, SPRM_CC_PLT,
+    DisplayMode, GPRM_COUNT, LanguageCode, LinkAction, MAX_RSM_DEPTH, ParentalLevel, RegisterFile,
+    ResumePoint, SPRM_AMXMD, SPRM_ANGLE, SPRM_AUDIO_CAPS, SPRM_AUDIO_STREAM, SPRM_CC_PLT,
     SPRM_COUNT, SPRM_HL_BTNN, SPRM_MENU_LANG, SPRM_NV_PGCN, SPRM_NV_TIMER, SPRM_PARENTAL_LEVEL,
     SPRM_PGCN, SPRM_PREF_AUDIO_LANG, SPRM_PREF_AUDIO_LANG_EXT, SPRM_PREF_SUBP_LANG,
     SPRM_PREF_SUBP_LANG_EXT, SPRM_PTT, SPRM_REGION_MASK, SPRM_SUBPICTURE_STREAM, SPRM_TITLE,
-    SPRM_VIDEO_PREF, SPRM_VTS_TITLE,
+    SPRM_VIDEO_PREF, SPRM_VTS_TITLE, SubpictureLanguageExt, SubpictureStreamView, VideoPreference,
+    Vm, VmAction,
 };
 pub use vob::{
-    classify_pack, demux_vobs, demux_vobs_path, looks_like_nav_pack, AudioSubstreamHeader,
-    ButtonInfo, ButtonMode, CellId, DsiGi, DsiPacket, DvdSubstream, DvdSubstreamKind,
-    ElementaryStream, Escr, HighlightInfo, HighlightStatus, NavPack, NsmlAgli, NsmlAngleCell,
-    PackClass, PackHeader, PackKind, PciPacket, PesExtension, PesHeaderExt, PesPacket,
-    PesPstdBuffer, ProgramPacketSequenceCounter, SlColi, SlColiCell, SmlAgli, SmlAngleCell,
-    SmlAudioGap, SmlPbi, SriDirection, SriPointer, StreamBound, SubstreamStat, Synci, SystemHeader,
-    VobDemuxer, VobId, VobStreams, VobuSri, AUDIO_SUBSTREAM_HEADER_LEN, VOB_FILE_SPLIT_SECTORS,
+    AUDIO_SUBSTREAM_HEADER_LEN, AudioSubstreamHeader, ButtonInfo, ButtonMode, CellId, DsiGi,
+    DsiPacket, DvdSubstream, DvdSubstreamKind, ElementaryStream, Escr, HighlightInfo,
+    HighlightStatus, NavPack, NsmlAgli, NsmlAngleCell, PackClass, PackHeader, PackKind, PciPacket,
+    PesExtension, PesHeaderExt, PesPacket, PesPstdBuffer, ProgramPacketSequenceCounter, SlColi,
+    SlColiCell, SmlAgli, SmlAngleCell, SmlAudioGap, SmlPbi, SriDirection, SriPointer, StreamBound,
+    SubstreamStat, Synci, SystemHeader, VOB_FILE_SPLIT_SECTORS, VobDemuxer, VobId, VobStreams,
+    VobuSri, classify_pack, demux_vobs, demux_vobs_path, looks_like_nav_pack,
 };
 
 #[cfg(feature = "registry")]

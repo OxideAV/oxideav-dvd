@@ -699,7 +699,7 @@ mod tests {
         }
         bitbuf.push(lfe);
         // Pack the bit buffer into bytes (MSB-first), padding the tail.
-        while bitbuf.len() % 8 != 0 {
+        while !bitbuf.len().is_multiple_of(8) {
             bitbuf.push(false);
         }
         for chunk in bitbuf.chunks(8) {

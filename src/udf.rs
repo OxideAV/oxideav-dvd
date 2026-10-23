@@ -401,11 +401,11 @@ pub fn decode_dstring(payload: &[u8]) -> Result<String> {
         }
         16 => {
             let body = &payload[1..];
-            if body.len() % 2 != 0 {
+            if !body.len().is_multiple_of(2) {
                 return Err(Error::InvalidUdf("16-bit d-string with odd byte count"));
             }
             let mut s = String::with_capacity(body.len() / 2);
-            for chunk in body.chunks_exact(2) {
+            for chunk in body.as_chunks::<2>().0 {
                 let cp = u16::from_be_bytes([chunk[0], chunk[1]]);
                 if cp == 0 {
                     break;
@@ -1117,10 +1117,10 @@ pub fn find_avdp<R: Read + Seek>(reader: &mut R) -> Result<AnchorVolumeDescripto
         let total_sectors = end / SECTOR_SIZE;
         if total_sectors > 256 {
             let sec = total_sectors - 256;
-            if let Ok(buf) = read_sector(reader, sec) {
-                if let Ok(avdp) = AnchorVolumeDescriptorPointer::parse(&buf) {
-                    return Ok(avdp);
-                }
+            if let Ok(buf) = read_sector(reader, sec)
+                && let Ok(avdp) = AnchorVolumeDescriptorPointer::parse(&buf)
+            {
+                return Ok(avdp);
             }
         }
     }

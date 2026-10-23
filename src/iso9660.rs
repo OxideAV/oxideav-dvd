@@ -467,7 +467,7 @@ mod tests {
         let mut r = vec![0u8; 34];
         r[0] = 34; // record length
         r[1] = 0; // EAR length
-                  // extent LBA (both-endian)
+        // extent LBA (both-endian)
         r[2..6].copy_from_slice(&lba.to_le_bytes());
         r[6..10].copy_from_slice(&lba.to_be_bytes());
         // data length (both-endian)
@@ -477,7 +477,7 @@ mod tests {
         r[25] = file_flags::DIRECTORY;
         r[26] = 0; // file_unit_size
         r[27] = 0; // interleave gap
-                   // volume sequence number = 1 (both-endian u16)
+        // volume sequence number = 1 (both-endian u16)
         r[28..30].copy_from_slice(&1u16.to_le_bytes());
         r[30..32].copy_from_slice(&1u16.to_be_bytes());
         r[32] = 1; // identifier length
@@ -490,7 +490,7 @@ mod tests {
         buf[0] = VolumeDescriptorType::Primary as u8;
         buf[1..6].copy_from_slice(STANDARD_ID);
         buf[6] = 1; // PVD version
-                    // bytes 8..40 system identifier — leave as spaces
+        // bytes 8..40 system identifier — leave as spaces
         for b in &mut buf[8..40] {
             *b = 0x20;
         }
@@ -567,7 +567,7 @@ mod tests {
         t.extend_from_slice(&1u16.to_le_bytes()); // parent
         t.push(0x00); // identifier byte
         t.push(0x00); // pad to even
-                      // VIDEO_TS entry: name len 8, EAR=0, extent LBA=100, parent=1
+        // VIDEO_TS entry: name len 8, EAR=0, extent LBA=100, parent=1
         t.push(8);
         t.push(0);
         t.extend_from_slice(&100u32.to_le_bytes());

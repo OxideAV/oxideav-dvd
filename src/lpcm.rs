@@ -562,7 +562,7 @@ impl LpcmHeader {
             return None;
         }
         let mut out = Vec::with_capacity(pcm.len() / 2);
-        for chunk in pcm.chunks_exact(2) {
+        for chunk in pcm.as_chunks::<2>().0 {
             out.push(i16::from_be_bytes([chunk[0], chunk[1]]) as i32);
         }
         Some(out)
@@ -597,7 +597,7 @@ impl LpcmHeader {
         // Group: 2 frames × N channels × 2 high bytes + 2 × N/2 low
         // bytes = 5N.
         let group = 5 * n;
-        if pcm.len() % group != 0 {
+        if !pcm.len().is_multiple_of(group) {
             return None;
         }
         let mut out = Vec::with_capacity(pcm.len() / group * 2 * n);
@@ -646,7 +646,7 @@ impl LpcmHeader {
         // Group: 2 frames × N × 2 high bytes + 2 frames × N low
         // bytes = 6N.
         let group = 6 * n;
-        if pcm.len() % group != 0 {
+        if !pcm.len().is_multiple_of(group) {
             return None;
         }
         let mut out = Vec::with_capacity(pcm.len() / group * 2 * n);

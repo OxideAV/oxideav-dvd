@@ -1332,7 +1332,7 @@ mod tests {
         assert_eq!((bmp.x, bmp.y, bmp.width, bmp.height), (0, 0, 2, 2));
         assert_eq!(bmp.rgba.len(), 2 * 2 * 4);
         // Every pixel is code 0 → palette index 5 (white), alpha 0xFF.
-        for px in bmp.rgba.chunks_exact(4) {
+        for px in bmp.rgba.as_chunks::<4>().0 {
             assert!(px[0] >= 254 && px[1] >= 254 && px[2] >= 254);
             assert_eq!(px[3], 0xFF);
         }

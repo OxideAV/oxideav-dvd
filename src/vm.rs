@@ -306,11 +306,7 @@ impl RegisterFile {
     pub fn highlight_button(&self) -> u8 {
         let raw = self.sprm(SPRM_HL_BTNN);
         let n = (raw >> 10) as u8;
-        if (1..=36).contains(&n) {
-            n
-        } else {
-            0
-        }
+        if (1..=36).contains(&n) { n } else { 0 }
     }
 
     /// SPRM 11 karaoke audio mixing mode — returns the channel-routing
@@ -404,11 +400,7 @@ impl RegisterFile {
     /// Values outside `1..=9` collapse to `None`.
     pub fn angle_number(&self) -> Option<u8> {
         let v = self.sprm(SPRM_ANGLE) as u8;
-        if (1..=9).contains(&v) {
-            Some(v)
-        } else {
-            None
-        }
+        if (1..=9).contains(&v) { Some(v) } else { None }
     }
 
     /// SPRM 12 parental management country code — ISO 3166 alpha-2
@@ -1051,11 +1043,7 @@ impl Vm {
                 // entropy source — a `0` placeholder is deterministic
                 // and traceable; callers that need true randomness
                 // wrap the VM and post-process this slot.
-                if src == 0 {
-                    dst
-                } else {
-                    0
-                }
+                if src == 0 { dst } else { 0 }
             }
             SetOp::And => dst & src,
             SetOp::Or => dst | src,
@@ -1208,10 +1196,10 @@ impl Vm {
                     self.regs.set_gprm(i, new);
                     // Swp also writes the swapped value back into
                     // the source slot when the source was a register.
-                    if matches!(op, SetOp::Swp) {
-                        if let Operand::Register(Register::Gprm(j)) = src {
-                            self.regs.set_gprm(j, cur);
-                        }
+                    if matches!(op, SetOp::Swp)
+                        && let Operand::Register(Register::Gprm(j)) = src
+                    {
+                        self.regs.set_gprm(j, cur);
                     }
                 }
                 VmAction::Continue
@@ -1317,10 +1305,10 @@ impl Vm {
         let rhs = self.regs.read_operand(src);
         let new = Self::apply_set(op, cur, rhs);
         self.regs.set_gprm(i, new);
-        if matches!(op, SetOp::Swp) {
-            if let Operand::Register(Register::Gprm(j)) = src {
-                self.regs.set_gprm(j, cur);
-            }
+        if matches!(op, SetOp::Swp)
+            && let Operand::Register(Register::Gprm(j)) = src
+        {
+            self.regs.set_gprm(j, cur);
         }
     }
 

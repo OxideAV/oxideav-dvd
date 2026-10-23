@@ -642,25 +642,24 @@ impl<'a> PgcRunner<'a> {
                             .get(usize::from(cell) - 1)
                             .map(|c| u16::from(c.cell_command))
                             .unwrap_or(0);
-                        if cmd_index != 0 {
-                            if let Some(ins) = self
+                        if cmd_index != 0
+                            && let Some(ins) = self
                                 .pgc
                                 .commands
                                 .as_ref()
                                 .and_then(|c| c.cell_instruction(cmd_index))
-                            {
-                                let action = vm.step(ins);
-                                match self.handle_list_action(vm, action, 0, cell) {
-                                    // A cell command has no list to
-                                    // fall back into: "ran clean"
-                                    // just means "advance to the
-                                    // next cell".
-                                    ListVerdict::EnterCells => {}
-                                    ListVerdict::Emit(ev) => return ev,
-                                    ListVerdict::Moved => {}
-                                }
-                                continue;
+                        {
+                            let action = vm.step(ins);
+                            match self.handle_list_action(vm, action, 0, cell) {
+                                // A cell command has no list to
+                                // fall back into: "ran clean"
+                                // just means "advance to the
+                                // next cell".
+                                ListVerdict::EnterCells => {}
+                                ListVerdict::Emit(ev) => return ev,
+                                ListVerdict::Moved => {}
                             }
+                            continue;
                         }
                         continue;
                     }
@@ -1376,11 +1375,7 @@ impl NavTimerClock {
 
     /// Milliseconds left before the timer fires (`0` when disarmed).
     pub fn remaining_ms(&self) -> u64 {
-        if self.armed {
-            self.remaining_ms
-        } else {
-            0
-        }
+        if self.armed { self.remaining_ms } else { 0 }
     }
 
     /// The PGC the timer will jump to.
@@ -1533,10 +1528,7 @@ pub fn select_audio_stream(
     let caps = vm.regs.audio_capabilities();
     let usable = |n: usize| -> bool {
         // (map_or, not is_none_or: MSRV 1.80.)
-        ast_ctl[n].available
-            && attrs
-                .get(n)
-                .map_or(true, |a| audio_stream_playable(caps, a))
+        ast_ctl[n].available && attrs.get(n).is_none_or(|a| audio_stream_playable(caps, a))
     };
     match vm.regs.audio_stream() {
         crate::vm::AudioStreamSelector::None => return AudioSelection::NoAudio,

@@ -998,7 +998,7 @@ mod tests {
         let mut b = vec![0u8; DVD_SECTOR];
         b[0..2].copy_from_slice(&1u16.to_be_bytes()); // number of VOB IDs
         b[4..8].copy_from_slice(&19u32.to_be_bytes()); // end_address = 8 + 12 - 1
-                                                       // entry 0
+        // entry 0
         b[8..10].copy_from_slice(&7u16.to_be_bytes()); // VOBidn
         b[10] = 3; // CELLidn
         b[12..16].copy_from_slice(&100u32.to_be_bytes()); // start sector

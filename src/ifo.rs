@@ -2369,18 +2369,18 @@ impl Pgc {
         }
         let mut next = cell_1based.checked_add(1)?;
         let idx = usize::from(cell_1based - 1);
-        if let Some(cell) = self.cells.get(idx) {
-            if cell.category().cell_type.is_angle_block() {
-                // Skip forward to one past the block's last cell.
-                let mut last = cell_1based;
-                for (i, c) in self.cells.iter().enumerate().skip(idx) {
-                    last = (i as u8) + 1;
-                    if c.category().cell_type == CellType::LastOfAngleBlock {
-                        break;
-                    }
+        if let Some(cell) = self.cells.get(idx)
+            && cell.category().cell_type.is_angle_block()
+        {
+            // Skip forward to one past the block's last cell.
+            let mut last = cell_1based;
+            for (i, c) in self.cells.iter().enumerate().skip(idx) {
+                last = (i as u8) + 1;
+                if c.category().cell_type == CellType::LastOfAngleBlock {
+                    break;
                 }
-                next = last.checked_add(1)?;
             }
+            next = last.checked_add(1)?;
         }
         if next > self.number_of_cells {
             return None;
@@ -2873,10 +2873,10 @@ impl PgciUt {
         preferred_language: u16,
         menu: MenuType,
     ) -> Option<(u16, u16, &Pgc)> {
-        if let Some(lu) = self.language_unit(preferred_language) {
-            if let Some((pgcn, pgc)) = lu.entry_pgc(menu) {
-                return Some((preferred_language, pgcn, pgc));
-            }
+        if let Some(lu) = self.language_unit(preferred_language)
+            && let Some((pgcn, pgc)) = lu.entry_pgc(menu)
+        {
+            return Some((preferred_language, pgcn, pgc));
         }
         self.srp
             .iter()
@@ -2932,7 +2932,7 @@ impl VtsCAdt {
         // relative to start of C_ADT. The entries start at byte 8.
         // Entry count = (end_address + 1 - 8) / 12.
         let body_bytes = (end_address as usize).saturating_add(1).saturating_sub(8);
-        if body_bytes % 12 != 0 {
+        if !body_bytes.is_multiple_of(12) {
             return Err(Error::InvalidUdf(
                 "C_ADT: end_address implies non-12-byte entry size",
             ));
@@ -3019,7 +3019,7 @@ impl VobuAdmap {
         // relative to the table start. Entries begin at byte 4; each
         // entry is 4 bytes wide.
         let body_bytes = (end_address as usize).saturating_add(1).saturating_sub(4);
-        if body_bytes % 4 != 0 {
+        if !body_bytes.is_multiple_of(4) {
             return Err(Error::InvalidUdf(
                 "VOBU_ADMAP: end_address implies non-4-byte entry size",
             ));
@@ -3071,11 +3071,7 @@ impl VobuAdmap {
         }
         // Binary partition.
         let idx = self.entries.partition_point(|&v| v <= sector);
-        if idx == 0 {
-            None
-        } else {
-            Some(idx as u32)
-        }
+        if idx == 0 { None } else { Some(idx as u32) }
     }
 }
 
@@ -4160,9 +4156,9 @@ mod tests {
         b[0x0003] = n as u8;
         // playback time
         b[0x0004..0x0008].copy_from_slice(&[0x00, 0x05, 0x00, 0xE0]); // 00:05:00.00 @ 30fps
-                                                                      // 0x0008..: prohibited UOPs = 0
-                                                                      // next/prev/goup at 0x009C / 0x009E / 0x00A0 = 0
-                                                                      // still time, playback mode = 0
+        // 0x0008..: prohibited UOPs = 0
+        // next/prev/goup at 0x009C / 0x009E / 0x00A0 = 0
+        // still time, playback mode = 0
 
         // Palette at 0x00A4: 16 × (0, Y, Cr, Cb). Fill entry i with a
         // deterministic (Y=0x10+i, Cr=0x80, Cb=0x80) so the round-trip
@@ -4511,7 +4507,7 @@ mod tests {
         b[0x0002] = 0; // 0 programs
         b[0x0003] = 0; // 0 cells
         b[0x0004..0x0008].copy_from_slice(&[0x00, 0x00, 0x00, 0xC0]); // PAL 25 fps
-                                                                      // all four table offsets stay 0
+        // all four table offsets stay 0
         let pgc = Pgc::parse(&b).unwrap();
         assert!(pgc.commands.is_none());
         // Palette defaults to all-zero when bytes are zero.
@@ -5783,7 +5779,7 @@ mod tests {
     fn vts_atrt_rejects_offset_list_past_end() {
         let mut buf = vec![0u8; 8];
         buf[0..2].copy_from_slice(&5u16.to_be_bytes()); // claims 5 entries
-                                                        // but the offset list (20 bytes) doesn't fit in the 8-byte buffer
+        // but the offset list (20 bytes) doesn't fit in the 8-byte buffer
         assert!(VmgVtsAtrt::parse(&buf).is_err());
     }
 

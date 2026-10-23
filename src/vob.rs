@@ -41,7 +41,7 @@ use std::path::Path;
 
 use crate::disc::{DvdDisc, DvdFileKind};
 use crate::error::{Error, Result};
-use crate::ifo::{NavCommand, PgcTime, DVD_SECTOR};
+use crate::ifo::{DVD_SECTOR, NavCommand, PgcTime};
 use crate::nav::NavInstruction;
 
 // ------------------------------------------------------------------
@@ -581,7 +581,7 @@ impl AudioSubstreamHeader {
             _ => {
                 return Err(Error::InvalidUdf(
                     "audio substream header: byte 0 is not an AC-3 / DTS / SDDS / LPCM selector",
-                ))
+                ));
             }
         }
         let frame_count = payload[1];
@@ -3217,7 +3217,7 @@ impl VobStreams {
     pub fn unallocated_substreams(&self) -> Vec<(u8, SubstreamStat)> {
         self.substream_census
             .iter()
-            .filter(|(&id, _)| DvdSubstream::from_first_byte(id).is_none())
+            .filter(|&(&id, _)| DvdSubstream::from_first_byte(id).is_none())
             .map(|(&id, &stat)| (id, stat))
             .collect()
     }
@@ -4145,11 +4145,11 @@ mod tests {
         sector[0x2A] = 0x03;
         sector[0x2B] = 0xD4;
         sector[0x2C] = 0x00; // PCI substream
-                             // PCI_GI 00..1C
+        // PCI_GI 00..1C
         sector[0x2D..0x31].copy_from_slice(&nv_lbn.to_be_bytes());
         sector[0x39..0x3D].copy_from_slice(&vobu_s_ptm.to_be_bytes()); // vobu_s_ptm at 0x2D+0x0C = 0x39
-                                                                       // By default no buttons: PCI HLI_GI btn_ns (packet 0x71 ->
-                                                                       // sector 0x2D + 0x71 = 0x9E) stays 0 so highlight == None.
+        // By default no buttons: PCI HLI_GI btn_ns (packet 0x71 ->
+        // sector 0x2D + 0x71 = 0x9E) stays 0 so highlight == None.
 
         // DSI prefix at 0x400: 00 00 01 BF 03 FA 01
         sector[0x400] = 0x00;
@@ -4159,8 +4159,8 @@ mod tests {
         sector[0x404] = 0x03;
         sector[0x405] = 0xFA;
         sector[0x406] = 0x01; // DSI substream
-                              // DSI_GI 00..1C — pour vobu_ea into DSI_GI offset 0x08
-                              // DSI body starts at 0x407.
+        // DSI_GI 00..1C — pour vobu_ea into DSI_GI offset 0x08
+        // DSI body starts at 0x407.
         sector[0x40B..0x40F].copy_from_slice(&nv_lbn.to_be_bytes()); // nv_pck_lbn @0x407+0x04
         sector[0x40F..0x413].copy_from_slice(&vobu_ea.to_be_bytes()); // vobu_ea @0x407+0x08
         sector
@@ -4519,7 +4519,7 @@ mod tests {
         assert_eq!(sel[1].color, 4); // pattern
         assert_eq!(sel[2].color, 1); // emphasis1
         assert_eq!(sel[3].color, 2); // emphasis2
-                                     // selection contrast byte2=0x65,byte3=0x87: bg=7,pat=8,e1=5,e2=6.
+        // selection contrast byte2=0x65,byte3=0x87: bg=7,pat=8,e1=5,e2=6.
         assert_eq!(sel[0].contrast, 7);
         assert_eq!(sel[1].contrast, 8);
         assert_eq!(sel[2].contrast, 5);
@@ -5165,7 +5165,7 @@ mod tests {
         buf[0x2A..0x2C].copy_from_slice(&0xFFFFu16.to_be_bytes()); // nxt_ilvu_sz
         buf[0x2C..0x30].copy_from_slice(&0x0000_AAAAu32.to_be_bytes()); // vob_v_s_ptm
         buf[0x30..0x34].copy_from_slice(&0x0000_BBBBu32.to_be_bytes()); // vob_v_e_ptm
-                                                                        // 8 audio streams × 16 bytes each (stp_ptm1, stp_ptm2, gap_len1, gap_len2)
+        // 8 audio streams × 16 bytes each (stp_ptm1, stp_ptm2, gap_len1, gap_len2)
         for stream in 0..8u32 {
             let base = 0x34 + stream as usize * 16;
             buf[base..base + 4].copy_from_slice(&(0x1000_0000 + stream).to_be_bytes());
@@ -5294,7 +5294,7 @@ mod tests {
         let mut buf = vec![0u8; SmlPbi::SIZE];
         buf[0x06..0x0A].copy_from_slice(&nxt_sa.to_be_bytes()); // nxt_ilvu_sa
         buf[0x0A..0x0C].copy_from_slice(&nxt_sz.to_be_bytes()); // nxt_ilvu_sz
-                                                                // stream-0 gap_len1 at SML_PBI 0x14 + 8.
+        // stream-0 gap_len1 at SML_PBI 0x14 + 8.
         buf[0x1C..0x20].copy_from_slice(&gap_len1_s0.to_be_bytes());
         SmlPbi::parse(&buf).expect("SmlPbi parses")
     }

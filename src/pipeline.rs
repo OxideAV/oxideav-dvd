@@ -32,9 +32,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
-use crate::source::{parse_dvd_uri, DvdUri};
 use crate::DvdDisc;
+use crate::error::{Error, Result};
+use crate::source::{DvdUri, parse_dvd_uri};
 
 /// Phase 3b high-level entry: open `source`, pick `title_idx`
 /// (1-based), and write the title to `out_path` as a Matroska file.

@@ -60,10 +60,10 @@ use oxideav_mkv::mux::MkvMuxer;
 
 use crate::disc::{DvdDisc, DvdFileKind};
 use crate::error::{Error, Result};
-use crate::ifo::{DvdChapter, PgcTime, DVD_SECTOR};
+use crate::ifo::{DVD_SECTOR, DvdChapter, PgcTime};
 use crate::vob::{
-    looks_like_nav_pack, DvdSubstream, NavPack, PackHeader, PesPacket, SC_PADDING_STREAM,
-    SC_PRIVATE_STREAM_1, SC_PRIVATE_STREAM_2, SC_SYSTEM_HEADER,
+    DvdSubstream, NavPack, PackHeader, PesPacket, SC_PADDING_STREAM, SC_PRIVATE_STREAM_1,
+    SC_PRIVATE_STREAM_2, SC_SYSTEM_HEADER, looks_like_nav_pack,
 };
 
 /// PES timestamps on MPEG-PS are in 90 kHz units. MKV expects per-

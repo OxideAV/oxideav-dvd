@@ -1200,13 +1200,13 @@ pub fn validate_dvd_compliance(
         }
         None => {
             // MPEG-1: the all-ones value declares VBR (no rate).
-            if let Some(bps) = seq.bit_rate_bps() {
-                if bps > 1_856_000 {
-                    v.push(DvdVideoViolation::VideoBitRate {
-                        bps,
-                        max_bps: 1_856_000,
-                    });
-                }
+            if let Some(bps) = seq.bit_rate_bps()
+                && bps > 1_856_000
+            {
+                v.push(DvdVideoViolation::VideoBitRate {
+                    bps,
+                    max_bps: 1_856_000,
+                });
             }
         }
     }
@@ -1396,7 +1396,7 @@ mod tests {
     fn main_seq_ext() -> Vec<u8> {
         let mut b = vec![0x00, 0x00, 0x01, SC_EXTENSION];
         let prof_level: u8 = 0x48; // 0100 1000
-                                   // byte0: ext_id(0001) | prof_level_hi(0100)
+        // byte0: ext_id(0001) | prof_level_hi(0100)
         b.push((EXT_ID_SEQUENCE << 4) | (prof_level >> 4));
         // byte1: prof_level_lo(1000) prog(0) chroma(01) hsize_ext_hi(0)
         let prog = 0u8;

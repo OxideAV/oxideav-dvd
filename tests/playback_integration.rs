@@ -28,11 +28,11 @@ use std::io::Cursor;
 
 use oxideav_dvd::vob::PesPacket;
 use oxideav_dvd::{
-    peel_lpcm_payload, scan_permitted, scan_step, select_audio_stream, select_subpicture_stream,
-    AudioSelection, AudioStreamControl, CellPlaybackInfo, PaletteEntry, Pgc, PgcRunner, PgcTime,
-    PlaybackEvent, ScanDirection, SriPointer, StillPhase, StillTime, SubPictureUnit,
-    SubpictureSelection, SubpictureStreamControl, TrickStep, TvSystem, UopMask, UserOp, Vm,
-    VobDemuxer, VobuSri, DVD_SECTOR, SPRM_AUDIO_STREAM, SPRM_SUBPICTURE_STREAM,
+    AudioSelection, AudioStreamControl, CellPlaybackInfo, DVD_SECTOR, PaletteEntry, Pgc, PgcRunner,
+    PgcTime, PlaybackEvent, SPRM_AUDIO_STREAM, SPRM_SUBPICTURE_STREAM, ScanDirection, SriPointer,
+    StillPhase, StillTime, SubPictureUnit, SubpictureSelection, SubpictureStreamControl, TrickStep,
+    TvSystem, UopMask, UserOp, Vm, VobDemuxer, VobuSri, peel_lpcm_payload, scan_permitted,
+    scan_step, select_audio_stream, select_subpicture_stream,
 };
 
 // ---------------------------------------------------------------------
@@ -355,7 +355,7 @@ fn synthetic_title_plays_end_to_end() {
         .expect("composite ok")
         .expect("bitmap present");
     assert_eq!((bmp.x, bmp.y, bmp.width, bmp.height), (0, 0, 2, 2));
-    for px in bmp.rgba.chunks_exact(4) {
+    for px in bmp.rgba.as_chunks::<4>().0 {
         assert!(px[0] >= 254 && px[1] >= 254 && px[2] >= 254, "white pixel");
         assert_eq!(px[3], 0xFF, "opaque pixel");
     }
@@ -462,7 +462,7 @@ fn mpeg2_video_opening() -> Vec<u8> {
     s.push(0x08); // marker bit
     s.push(0x00);
     s.push(0x40); // closed_gop
-                  // I-picture header (TR 0, coding type 1, vbv_delay 0).
+    // I-picture header (TR 0, coding type 1, vbv_delay 0).
     s.extend_from_slice(&[0x00, 0x00, 0x01, 0x00]);
     s.push(0x00);
     s.push(0b0000_1000);

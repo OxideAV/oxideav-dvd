@@ -20,9 +20,9 @@ use oxideav_dvd::vob::{
     AudioSubstreamHeader, DsiPacket, NavPack, PackHeader, PciPacket, SystemHeader,
 };
 use oxideav_dvd::{
-    check_dvd_compliance, scan_gop_stats, scan_video_sequence, Ac3Header, DtsHeader, GopHeader,
-    PictureCodingExtension, PictureHeader, SequenceDisplayExtension, SequenceExtension,
-    SequenceHeader, SubPictureUnit, TvSystem,
+    Ac3Header, DtsHeader, GopHeader, PictureCodingExtension, PictureHeader,
+    SequenceDisplayExtension, SequenceExtension, SequenceHeader, SubPictureUnit, TvSystem,
+    check_dvd_compliance, scan_gop_stats, scan_video_sequence,
 };
 
 /// A deterministic xorshift64* PRNG — no external crate, fully
@@ -132,7 +132,7 @@ fn fuzz_pes_header_extension() {
         v.extend_from_slice(&hd);
         v.extend_from_slice(&payload);
         // Occasionally lie about the trailing length.
-        let cut = if rng.byte() % 8 == 0 {
+        let cut = if rng.byte().is_multiple_of(8) {
             v.len() - (rng.byte() as usize % 16).min(v.len())
         } else {
             v.len()
@@ -575,8 +575,8 @@ fn build_valid_file_entry() -> Vec<u8> {
     fe[0..2].copy_from_slice(&261u16.to_le_bytes());
     fe[2..4].copy_from_slice(&0x0102u16.to_le_bytes()); // descriptor version
     fe[5] = 0; // reserved must be zero
-               // ICB tag occupies FE bytes 16..36; flags at 34..36. flags &
-               // 0b111 == 0 selects the short-AD form.
+    // ICB tag occupies FE bytes 16..36; flags at 34..36. flags &
+    // 0b111 == 0 selects the short-AD form.
     fe[34..36].copy_from_slice(&0u16.to_le_bytes());
     // l_ea = 0, l_ad = 24.
     fe[168..172].copy_from_slice(&0u32.to_le_bytes());
@@ -584,7 +584,7 @@ fn build_valid_file_entry() -> Vec<u8> {
     // One non-zero short_ad so the extent-push path runs.
     fe[176..180].copy_from_slice(&2048u32.to_le_bytes()); // length
     fe[180..184].copy_from_slice(&5u32.to_le_bytes()); // block location
-                                                       // Checksum: sum of tag bytes 0..16 except byte 4, & 0xFF.
+    // Checksum: sum of tag bytes 0..16 except byte 4, & 0xFF.
     let sum: u32 = fe[0..16]
         .iter()
         .enumerate()
@@ -628,7 +628,7 @@ fn fuzz_file_entry_alloc_descriptors() {
             }
         }
         // Occasionally truncate hard to exercise the prefix gate.
-        if rng.next_u64() % 5 == 0 {
+        if rng.next_u64().is_multiple_of(5) {
             let n = (rng.next_u64() as usize) % (seed.len() + 1);
             fe.truncate(n);
         }
@@ -638,7 +638,7 @@ fn fuzz_file_entry_alloc_descriptors() {
 
 #[test]
 fn fuzz_iso9660() {
-    use oxideav_dvd::iso9660::{parse_l_path_table, DirectoryRecord, PrimaryVolumeDescriptor};
+    use oxideav_dvd::iso9660::{DirectoryRecord, PrimaryVolumeDescriptor, parse_l_path_table};
     fuzz_slice(43, ITERS, 2100, |b| {
         let _ = PrimaryVolumeDescriptor::parse(b);
     });
@@ -652,8 +652,8 @@ fn fuzz_iso9660() {
 
 #[test]
 fn fuzz_vm_interpreter() {
-    use oxideav_dvd::ifo::NavCommand;
     use oxideav_dvd::Vm;
+    use oxideav_dvd::ifo::NavCommand;
     // A malicious command list must always terminate (runaway-loop
     // budget) and never panic. Feed random 8-byte command words —
     // including Goto-heavy lists that could loop forever without the

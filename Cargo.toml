@@ -1,8 +1,8 @@
 [package]
 name = "oxideav-dvd"
 version = "0.0.4"
-edition = "2021"
-rust-version = "1.80"
+edition = "2024"
+rust-version = "1.95"
 license = "MIT"
 authors = ["Mark Karpeles <admin@echelle.co.jp>"]
 description = "Read-only DVD-Video disc reader — ISO 9660 + UDF 1.02 mount + VIDEO_TS directory walk — clean-room per ECMA-267/268 + OSTA UDF 1.02"
