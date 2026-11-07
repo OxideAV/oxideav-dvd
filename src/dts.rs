@@ -296,6 +296,7 @@ impl DtsBitRate {
 /// hdcd       1  HDCD format
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DtsHeader {
     /// Decoded `ftype` frame type.
     pub frame_type: DtsFrameType,
@@ -327,6 +328,133 @@ pub struct DtsHeader {
     pub aux_data: bool,
     /// `hdcd` — the source PCM was HDCD-format.
     pub hdcd: bool,
+}
+
+impl DtsHeader {
+    /// Build a `DtsHeader` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        frame_type: DtsFrameType,
+        short: u8,
+        crc_present: bool,
+        nblks: u8,
+        fsize: u16,
+        audio_mode: DtsAudioMode,
+        sample_rate: DtsSampleRate,
+        bit_rate: DtsBitRate,
+        mix: bool,
+        dynamic_range: bool,
+        time_stamp: bool,
+        aux_data: bool,
+        hdcd: bool,
+    ) -> Self {
+        Self {
+            frame_type,
+            short,
+            crc_present,
+            nblks,
+            fsize,
+            audio_mode,
+            sample_rate,
+            bit_rate,
+            mix,
+            dynamic_range,
+            time_stamp,
+            aux_data,
+            hdcd,
+        }
+    }
+
+    /// Set `frame_type`.
+    #[must_use]
+    pub fn with_frame_type(mut self, v: DtsFrameType) -> Self {
+        self.frame_type = v;
+        self
+    }
+
+    /// Set `short`.
+    #[must_use]
+    pub fn with_short(mut self, v: u8) -> Self {
+        self.short = v;
+        self
+    }
+
+    /// Set `crc_present`.
+    #[must_use]
+    pub fn with_crc_present(mut self, v: bool) -> Self {
+        self.crc_present = v;
+        self
+    }
+
+    /// Set `nblks`.
+    #[must_use]
+    pub fn with_nblks(mut self, v: u8) -> Self {
+        self.nblks = v;
+        self
+    }
+
+    /// Set `fsize`.
+    #[must_use]
+    pub fn with_fsize(mut self, v: u16) -> Self {
+        self.fsize = v;
+        self
+    }
+
+    /// Set `audio_mode`.
+    #[must_use]
+    pub fn with_audio_mode(mut self, v: DtsAudioMode) -> Self {
+        self.audio_mode = v;
+        self
+    }
+
+    /// Set `sample_rate`.
+    #[must_use]
+    pub fn with_sample_rate(mut self, v: DtsSampleRate) -> Self {
+        self.sample_rate = v;
+        self
+    }
+
+    /// Set `bit_rate`.
+    #[must_use]
+    pub fn with_bit_rate(mut self, v: DtsBitRate) -> Self {
+        self.bit_rate = v;
+        self
+    }
+
+    /// Set `mix`.
+    #[must_use]
+    pub fn with_mix(mut self, v: bool) -> Self {
+        self.mix = v;
+        self
+    }
+
+    /// Set `dynamic_range`.
+    #[must_use]
+    pub fn with_dynamic_range(mut self, v: bool) -> Self {
+        self.dynamic_range = v;
+        self
+    }
+
+    /// Set `time_stamp`.
+    #[must_use]
+    pub fn with_time_stamp(mut self, v: bool) -> Self {
+        self.time_stamp = v;
+        self
+    }
+
+    /// Set `aux_data`.
+    #[must_use]
+    pub fn with_aux_data(mut self, v: bool) -> Self {
+        self.aux_data = v;
+        self
+    }
+
+    /// Set `hdcd`.
+    #[must_use]
+    pub fn with_hdcd(mut self, v: bool) -> Self {
+        self.hdcd = v;
+        self
+    }
 }
 
 impl DtsHeader {

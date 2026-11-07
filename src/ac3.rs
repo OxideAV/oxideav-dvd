@@ -491,6 +491,7 @@ const FRM_SIZE_TABLE: [FrmSizeRow; 38] = [
 ///   lfeon       1  LFE channel present
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Ac3Header {
     /// 16-bit CRC over the first 5/8 of the sync frame (carried, not
     /// verified — the decoder is header-only).
@@ -518,6 +519,106 @@ pub struct Ac3Header {
     /// `lfeon` — `true` when a low-frequency-effects channel is
     /// present.
     pub lfe_on: bool,
+}
+
+impl Ac3Header {
+    /// Build a `Ac3Header` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        crc1: u16,
+        sample_rate: Ac3SampleRate,
+        frame_size_code: u8,
+        bsid: u8,
+        bitstream_mode: Ac3BitstreamMode,
+        audio_coding_mode: Ac3AudioCodingMode,
+        center_mix_level: Option<u8>,
+        surround_mix_level: Option<u8>,
+        dolby_surround_mode: Option<u8>,
+        lfe_on: bool,
+    ) -> Self {
+        Self {
+            crc1,
+            sample_rate,
+            frame_size_code,
+            bsid,
+            bitstream_mode,
+            audio_coding_mode,
+            center_mix_level,
+            surround_mix_level,
+            dolby_surround_mode,
+            lfe_on,
+        }
+    }
+
+    /// Set `crc1`.
+    #[must_use]
+    pub fn with_crc1(mut self, v: u16) -> Self {
+        self.crc1 = v;
+        self
+    }
+
+    /// Set `sample_rate`.
+    #[must_use]
+    pub fn with_sample_rate(mut self, v: Ac3SampleRate) -> Self {
+        self.sample_rate = v;
+        self
+    }
+
+    /// Set `frame_size_code`.
+    #[must_use]
+    pub fn with_frame_size_code(mut self, v: u8) -> Self {
+        self.frame_size_code = v;
+        self
+    }
+
+    /// Set `bsid`.
+    #[must_use]
+    pub fn with_bsid(mut self, v: u8) -> Self {
+        self.bsid = v;
+        self
+    }
+
+    /// Set `bitstream_mode`.
+    #[must_use]
+    pub fn with_bitstream_mode(mut self, v: Ac3BitstreamMode) -> Self {
+        self.bitstream_mode = v;
+        self
+    }
+
+    /// Set `audio_coding_mode`.
+    #[must_use]
+    pub fn with_audio_coding_mode(mut self, v: Ac3AudioCodingMode) -> Self {
+        self.audio_coding_mode = v;
+        self
+    }
+
+    /// Set `center_mix_level`.
+    #[must_use]
+    pub fn with_center_mix_level(mut self, v: Option<u8>) -> Self {
+        self.center_mix_level = v;
+        self
+    }
+
+    /// Set `surround_mix_level`.
+    #[must_use]
+    pub fn with_surround_mix_level(mut self, v: Option<u8>) -> Self {
+        self.surround_mix_level = v;
+        self
+    }
+
+    /// Set `dolby_surround_mode`.
+    #[must_use]
+    pub fn with_dolby_surround_mode(mut self, v: Option<u8>) -> Self {
+        self.dolby_surround_mode = v;
+        self
+    }
+
+    /// Set `lfe_on`.
+    #[must_use]
+    pub fn with_lfe_on(mut self, v: bool) -> Self {
+        self.lfe_on = v;
+        self
+    }
 }
 
 impl Ac3Header {

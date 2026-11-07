@@ -45,6 +45,7 @@ use crate::udf::{UdfFile, UdfVolume};
 /// convention in `docs/container/dvd/application/mpucoder-ifo.html`;
 /// we don't peek inside any of the bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DvdFileKind {
     /// `VIDEO_TS.IFO` — Video Manager Information. Mandatory.
     Vmgi,
@@ -64,6 +65,7 @@ pub enum DvdFileKind {
 
 /// A file we found in `VIDEO_TS/` (or `AUDIO_TS/`), enumerated.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DvdFile {
     pub kind: DvdFileKind,
     pub name: String,
@@ -77,8 +79,72 @@ pub struct DvdFile {
     pub vob_index: u8,
 }
 
+impl DvdFile {
+    /// Build a `DvdFile` from every field.
+    pub fn new(
+        kind: DvdFileKind,
+        name: String,
+        lba: u32,
+        size: u64,
+        title_set: u8,
+        vob_index: u8,
+    ) -> Self {
+        Self {
+            kind,
+            name,
+            lba,
+            size,
+            title_set,
+            vob_index,
+        }
+    }
+
+    /// Set `kind`.
+    #[must_use]
+    pub fn with_kind(mut self, v: DvdFileKind) -> Self {
+        self.kind = v;
+        self
+    }
+
+    /// Set `name`.
+    #[must_use]
+    pub fn with_name(mut self, v: String) -> Self {
+        self.name = v;
+        self
+    }
+
+    /// Set `lba`.
+    #[must_use]
+    pub fn with_lba(mut self, v: u32) -> Self {
+        self.lba = v;
+        self
+    }
+
+    /// Set `size`.
+    #[must_use]
+    pub fn with_size(mut self, v: u64) -> Self {
+        self.size = v;
+        self
+    }
+
+    /// Set `title_set`.
+    #[must_use]
+    pub fn with_title_set(mut self, v: u8) -> Self {
+        self.title_set = v;
+        self
+    }
+
+    /// Set `vob_index`.
+    #[must_use]
+    pub fn with_vob_index(mut self, v: u8) -> Self {
+        self.vob_index = v;
+        self
+    }
+}
+
 /// A successfully-detected DVD-Video disc.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct DvdDisc {
     /// Volume identifier (from ISO 9660 PVD if available, otherwise
     /// from the UDF Primary Volume Descriptor).
@@ -90,6 +156,36 @@ pub struct DvdDisc {
     pub video_ts_files: Vec<DvdFile>,
     /// All `AUDIO_TS/` files (typically empty on DVD-Video).
     pub audio_ts_files: Vec<DvdFile>,
+}
+
+impl DvdDisc {
+    /// Set `volume_id`.
+    #[must_use]
+    pub fn with_volume_id(mut self, v: String) -> Self {
+        self.volume_id = v;
+        self
+    }
+
+    /// Set `title_set_count`.
+    #[must_use]
+    pub fn with_title_set_count(mut self, v: u8) -> Self {
+        self.title_set_count = v;
+        self
+    }
+
+    /// Set `video_ts_files`.
+    #[must_use]
+    pub fn with_video_ts_files(mut self, v: Vec<DvdFile>) -> Self {
+        self.video_ts_files = v;
+        self
+    }
+
+    /// Set `audio_ts_files`.
+    #[must_use]
+    pub fn with_audio_ts_files(mut self, v: Vec<DvdFile>) -> Self {
+        self.audio_ts_files = v;
+        self
+    }
 }
 
 impl DvdDisc {
@@ -845,7 +941,8 @@ fn parse_vts_filename(name: &str) -> Option<DvdFileKind> {
 /// The result of [`DvdDisc::plan_title`] — one title's static cell
 /// schedule plus the addressing context that turns its VOB-relative
 /// sector spans into disc-absolute LBAs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct TitlePlan {
     /// 1-based volume-wide title number (SPRM 4).
     pub ttn: u8,
@@ -861,6 +958,50 @@ pub struct TitlePlan {
     /// The angle-resolved cell schedule in presentation order;
     /// sector spans are relative to the title-content VOB set.
     pub cells: Vec<crate::engine::PlannedCell>,
+}
+
+impl TitlePlan {
+    /// Set `ttn`.
+    #[must_use]
+    pub fn with_ttn(mut self, v: u8) -> Self {
+        self.ttn = v;
+        self
+    }
+
+    /// Set `vts`.
+    #[must_use]
+    pub fn with_vts(mut self, v: u8) -> Self {
+        self.vts = v;
+        self
+    }
+
+    /// Set `vts_ttn`.
+    #[must_use]
+    pub fn with_vts_ttn(mut self, v: u8) -> Self {
+        self.vts_ttn = v;
+        self
+    }
+
+    /// Set `vts_start_sector`.
+    #[must_use]
+    pub fn with_vts_start_sector(mut self, v: u32) -> Self {
+        self.vts_start_sector = v;
+        self
+    }
+
+    /// Set `title_vob_sector`.
+    #[must_use]
+    pub fn with_title_vob_sector(mut self, v: u32) -> Self {
+        self.title_vob_sector = v;
+        self
+    }
+
+    /// Set `cells`.
+    #[must_use]
+    pub fn with_cells(mut self, v: Vec<crate::engine::PlannedCell>) -> Self {
+        self.cells = v;
+        self
+    }
 }
 
 impl TitlePlan {

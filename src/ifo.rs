@@ -186,7 +186,8 @@ impl PgcTime {
 /// Fields are surfaced in the order they appear in mpucoder-ifo.html's
 /// "VMG IFO Contents" column. Sector-pointer fields are kept as-is
 /// (`0` denotes "table absent" per spec).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VmgIfo {
     /// Last sector of the VMG set (last sector of `VIDEO_TS.BUP`).
     pub last_sector_vmg_set: u32,
@@ -234,6 +235,148 @@ pub struct VmgIfo {
     /// 0x0100..0x015C. Empty when the buffer was too short to
     /// cover that region.
     pub menu_attributes: MenuAttributes,
+}
+
+impl VmgIfo {
+    /// Set `last_sector_vmg_set`.
+    #[must_use]
+    pub fn with_last_sector_vmg_set(mut self, v: u32) -> Self {
+        self.last_sector_vmg_set = v;
+        self
+    }
+
+    /// Set `last_sector_ifo`.
+    #[must_use]
+    pub fn with_last_sector_ifo(mut self, v: u32) -> Self {
+        self.last_sector_ifo = v;
+        self
+    }
+
+    /// Set `version`.
+    #[must_use]
+    pub fn with_version(mut self, v: u16) -> Self {
+        self.version = v;
+        self
+    }
+
+    /// Set `vmg_category`.
+    #[must_use]
+    pub fn with_vmg_category(mut self, v: u32) -> Self {
+        self.vmg_category = v;
+        self
+    }
+
+    /// Set `number_of_volumes`.
+    #[must_use]
+    pub fn with_number_of_volumes(mut self, v: u16) -> Self {
+        self.number_of_volumes = v;
+        self
+    }
+
+    /// Set `volume_number`.
+    #[must_use]
+    pub fn with_volume_number(mut self, v: u16) -> Self {
+        self.volume_number = v;
+        self
+    }
+
+    /// Set `side_id`.
+    #[must_use]
+    pub fn with_side_id(mut self, v: u8) -> Self {
+        self.side_id = v;
+        self
+    }
+
+    /// Set `number_of_title_sets`.
+    #[must_use]
+    pub fn with_number_of_title_sets(mut self, v: u16) -> Self {
+        self.number_of_title_sets = v;
+        self
+    }
+
+    /// Set `provider_id`.
+    #[must_use]
+    pub fn with_provider_id(mut self, v: String) -> Self {
+        self.provider_id = v;
+        self
+    }
+
+    /// Set `vmgi_mat_end`.
+    #[must_use]
+    pub fn with_vmgi_mat_end(mut self, v: u32) -> Self {
+        self.vmgi_mat_end = v;
+        self
+    }
+
+    /// Set `fp_pgc_addr`.
+    #[must_use]
+    pub fn with_fp_pgc_addr(mut self, v: u32) -> Self {
+        self.fp_pgc_addr = v;
+        self
+    }
+
+    /// Set `menu_vob_sector`.
+    #[must_use]
+    pub fn with_menu_vob_sector(mut self, v: u32) -> Self {
+        self.menu_vob_sector = v;
+        self
+    }
+
+    /// Set `tt_srpt_sector`.
+    #[must_use]
+    pub fn with_tt_srpt_sector(mut self, v: u32) -> Self {
+        self.tt_srpt_sector = v;
+        self
+    }
+
+    /// Set `vmgm_pgci_ut_sector`.
+    #[must_use]
+    pub fn with_vmgm_pgci_ut_sector(mut self, v: u32) -> Self {
+        self.vmgm_pgci_ut_sector = v;
+        self
+    }
+
+    /// Set `ptl_mait_sector`.
+    #[must_use]
+    pub fn with_ptl_mait_sector(mut self, v: u32) -> Self {
+        self.ptl_mait_sector = v;
+        self
+    }
+
+    /// Set `vts_atrt_sector`.
+    #[must_use]
+    pub fn with_vts_atrt_sector(mut self, v: u32) -> Self {
+        self.vts_atrt_sector = v;
+        self
+    }
+
+    /// Set `txtdt_mg_sector`.
+    #[must_use]
+    pub fn with_txtdt_mg_sector(mut self, v: u32) -> Self {
+        self.txtdt_mg_sector = v;
+        self
+    }
+
+    /// Set `vmgm_c_adt_sector`.
+    #[must_use]
+    pub fn with_vmgm_c_adt_sector(mut self, v: u32) -> Self {
+        self.vmgm_c_adt_sector = v;
+        self
+    }
+
+    /// Set `vmgm_vobu_admap_sector`.
+    #[must_use]
+    pub fn with_vmgm_vobu_admap_sector(mut self, v: u32) -> Self {
+        self.vmgm_vobu_admap_sector = v;
+        self
+    }
+
+    /// Set `menu_attributes`.
+    #[must_use]
+    pub fn with_menu_attributes(mut self, v: MenuAttributes) -> Self {
+        self.menu_attributes = v;
+        self
+    }
 }
 
 impl VmgIfo {
@@ -307,7 +450,8 @@ fn decode_ascii_trim(buf: &[u8]) -> String {
 /// Per mpucoder-ifo_vmg.html "TT_SRPT" each entry is 12 bytes and
 /// indexes the disc-global "title number" to the (title-set, title-
 /// in-title-set) pair plus the VTS's start sector on the disc.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct DvdTitleEntry {
     /// Title type byte (jump/link/call permission bits — see spec).
     pub title_type: u8,
@@ -323,6 +467,57 @@ pub struct DvdTitleEntry {
     pub vts_title_number: u8,
     /// Start sector of the VTS (whole-disc-relative LBA).
     pub vts_start_sector: u32,
+}
+
+impl DvdTitleEntry {
+    /// Set `title_type`.
+    #[must_use]
+    pub fn with_title_type(mut self, v: u8) -> Self {
+        self.title_type = v;
+        self
+    }
+
+    /// Set `angle_count`.
+    #[must_use]
+    pub fn with_angle_count(mut self, v: u8) -> Self {
+        self.angle_count = v;
+        self
+    }
+
+    /// Set `chapter_count`.
+    #[must_use]
+    pub fn with_chapter_count(mut self, v: u16) -> Self {
+        self.chapter_count = v;
+        self
+    }
+
+    /// Set `parental_mask`.
+    #[must_use]
+    pub fn with_parental_mask(mut self, v: u16) -> Self {
+        self.parental_mask = v;
+        self
+    }
+
+    /// Set `vts_number`.
+    #[must_use]
+    pub fn with_vts_number(mut self, v: u8) -> Self {
+        self.vts_number = v;
+        self
+    }
+
+    /// Set `vts_title_number`.
+    #[must_use]
+    pub fn with_vts_title_number(mut self, v: u8) -> Self {
+        self.vts_title_number = v;
+        self
+    }
+
+    /// Set `vts_start_sector`.
+    #[must_use]
+    pub fn with_vts_start_sector(mut self, v: u32) -> Self {
+        self.vts_start_sector = v;
+        self
+    }
 }
 
 impl DvdTitleEntry {
@@ -354,7 +549,8 @@ impl DvdTitleEntry {
 }
 
 /// Parsed TT_SRPT body — 8-byte header plus N × 12-byte entries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct TtSrpt {
     /// Number of titles (= entry count).
     pub title_count: u16,
@@ -362,6 +558,29 @@ pub struct TtSrpt {
     pub end_address: u32,
     /// Parsed entries.
     pub entries: Vec<DvdTitleEntry>,
+}
+
+impl TtSrpt {
+    /// Set `title_count`.
+    #[must_use]
+    pub fn with_title_count(mut self, v: u16) -> Self {
+        self.title_count = v;
+        self
+    }
+
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u32) -> Self {
+        self.end_address = v;
+        self
+    }
+
+    /// Set `entries`.
+    #[must_use]
+    pub fn with_entries(mut self, v: Vec<DvdTitleEntry>) -> Self {
+        self.entries = v;
+        self
+    }
 }
 
 impl TtSrpt {
@@ -517,6 +736,7 @@ impl VideoResolution {
 ///     bit 0     PAL only: 0 = camera, 1 = film
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VideoAttributes {
     /// Raw 2-byte field, kept for fidelity / round-trip diagnostics.
     pub raw: [u8; 2],
@@ -545,6 +765,124 @@ pub struct VideoAttributes {
     /// (progressive at 24 fps, telecined to 25 fps). Always `false`
     /// on NTSC.
     pub film_source_pal: bool,
+}
+
+impl VideoAttributes {
+    /// Build a `VideoAttributes` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        raw: [u8; 2],
+        coding_mode: VideoCodingMode,
+        standard: VideoStandard,
+        aspect_ratio: VideoAspectRatio,
+        pan_scan_disallowed: bool,
+        letterbox_disallowed: bool,
+        line21_field1_cc: bool,
+        line21_field2_cc: bool,
+        resolution_code: u8,
+        resolution: VideoResolution,
+        letterboxed_source: bool,
+        film_source_pal: bool,
+    ) -> Self {
+        Self {
+            raw,
+            coding_mode,
+            standard,
+            aspect_ratio,
+            pan_scan_disallowed,
+            letterbox_disallowed,
+            line21_field1_cc,
+            line21_field2_cc,
+            resolution_code,
+            resolution,
+            letterboxed_source,
+            film_source_pal,
+        }
+    }
+
+    /// Set `raw`.
+    #[must_use]
+    pub fn with_raw(mut self, v: [u8; 2]) -> Self {
+        self.raw = v;
+        self
+    }
+
+    /// Set `coding_mode`.
+    #[must_use]
+    pub fn with_coding_mode(mut self, v: VideoCodingMode) -> Self {
+        self.coding_mode = v;
+        self
+    }
+
+    /// Set `standard`.
+    #[must_use]
+    pub fn with_standard(mut self, v: VideoStandard) -> Self {
+        self.standard = v;
+        self
+    }
+
+    /// Set `aspect_ratio`.
+    #[must_use]
+    pub fn with_aspect_ratio(mut self, v: VideoAspectRatio) -> Self {
+        self.aspect_ratio = v;
+        self
+    }
+
+    /// Set `pan_scan_disallowed`.
+    #[must_use]
+    pub fn with_pan_scan_disallowed(mut self, v: bool) -> Self {
+        self.pan_scan_disallowed = v;
+        self
+    }
+
+    /// Set `letterbox_disallowed`.
+    #[must_use]
+    pub fn with_letterbox_disallowed(mut self, v: bool) -> Self {
+        self.letterbox_disallowed = v;
+        self
+    }
+
+    /// Set `line21_field1_cc`.
+    #[must_use]
+    pub fn with_line21_field1_cc(mut self, v: bool) -> Self {
+        self.line21_field1_cc = v;
+        self
+    }
+
+    /// Set `line21_field2_cc`.
+    #[must_use]
+    pub fn with_line21_field2_cc(mut self, v: bool) -> Self {
+        self.line21_field2_cc = v;
+        self
+    }
+
+    /// Set `resolution_code`.
+    #[must_use]
+    pub fn with_resolution_code(mut self, v: u8) -> Self {
+        self.resolution_code = v;
+        self
+    }
+
+    /// Set `resolution`.
+    #[must_use]
+    pub fn with_resolution(mut self, v: VideoResolution) -> Self {
+        self.resolution = v;
+        self
+    }
+
+    /// Set `letterboxed_source`.
+    #[must_use]
+    pub fn with_letterboxed_source(mut self, v: bool) -> Self {
+        self.letterboxed_source = v;
+        self
+    }
+
+    /// Set `film_source_pal`.
+    #[must_use]
+    pub fn with_film_source_pal(mut self, v: bool) -> Self {
+        self.film_source_pal = v;
+        self
+    }
 }
 
 impl VideoAttributes {
@@ -668,6 +1006,7 @@ pub enum AudioLanguageType {
 ///                 the application mode)
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AudioAttributes {
     pub raw: [u8; 8],
     pub coding_mode: AudioCodingMode,
@@ -690,6 +1029,115 @@ pub struct AudioAttributes {
     /// surround application modes both pack secondary flags in here;
     /// callers can decode them with the helpers below.
     pub application_info: u8,
+}
+
+impl AudioAttributes {
+    /// Build a `AudioAttributes` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        raw: [u8; 8],
+        coding_mode: AudioCodingMode,
+        multichannel_extension_present: bool,
+        language_type: AudioLanguageType,
+        application_mode: AudioApplicationMode,
+        quantization: AudioQuantizationDrc,
+        sample_rate_code: u8,
+        channel_count: u8,
+        language_code: [u8; 2],
+        code_extension: u8,
+        application_info: u8,
+    ) -> Self {
+        Self {
+            raw,
+            coding_mode,
+            multichannel_extension_present,
+            language_type,
+            application_mode,
+            quantization,
+            sample_rate_code,
+            channel_count,
+            language_code,
+            code_extension,
+            application_info,
+        }
+    }
+
+    /// Set `raw`.
+    #[must_use]
+    pub fn with_raw(mut self, v: [u8; 8]) -> Self {
+        self.raw = v;
+        self
+    }
+
+    /// Set `coding_mode`.
+    #[must_use]
+    pub fn with_coding_mode(mut self, v: AudioCodingMode) -> Self {
+        self.coding_mode = v;
+        self
+    }
+
+    /// Set `multichannel_extension_present`.
+    #[must_use]
+    pub fn with_multichannel_extension_present(mut self, v: bool) -> Self {
+        self.multichannel_extension_present = v;
+        self
+    }
+
+    /// Set `language_type`.
+    #[must_use]
+    pub fn with_language_type(mut self, v: AudioLanguageType) -> Self {
+        self.language_type = v;
+        self
+    }
+
+    /// Set `application_mode`.
+    #[must_use]
+    pub fn with_application_mode(mut self, v: AudioApplicationMode) -> Self {
+        self.application_mode = v;
+        self
+    }
+
+    /// Set `quantization`.
+    #[must_use]
+    pub fn with_quantization(mut self, v: AudioQuantizationDrc) -> Self {
+        self.quantization = v;
+        self
+    }
+
+    /// Set `sample_rate_code`.
+    #[must_use]
+    pub fn with_sample_rate_code(mut self, v: u8) -> Self {
+        self.sample_rate_code = v;
+        self
+    }
+
+    /// Set `channel_count`.
+    #[must_use]
+    pub fn with_channel_count(mut self, v: u8) -> Self {
+        self.channel_count = v;
+        self
+    }
+
+    /// Set `language_code`.
+    #[must_use]
+    pub fn with_language_code(mut self, v: [u8; 2]) -> Self {
+        self.language_code = v;
+        self
+    }
+
+    /// Set `code_extension`.
+    #[must_use]
+    pub fn with_code_extension(mut self, v: u8) -> Self {
+        self.code_extension = v;
+        self
+    }
+
+    /// Set `application_info`.
+    #[must_use]
+    pub fn with_application_info(mut self, v: u8) -> Self {
+        self.application_info = v;
+        self
+    }
 }
 
 impl AudioAttributes {
@@ -837,12 +1285,67 @@ pub enum SubpictureLanguageType {
 ///   byte 5:     code extension — see SPRM #19
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SubpictureAttributes {
     pub raw: [u8; 6],
     pub coding_mode: SubpictureCodingMode,
     pub language_type: SubpictureLanguageType,
     pub language_code: [u8; 2],
     pub code_extension: u8,
+}
+
+impl SubpictureAttributes {
+    /// Build a `SubpictureAttributes` from every field.
+    pub fn new(
+        raw: [u8; 6],
+        coding_mode: SubpictureCodingMode,
+        language_type: SubpictureLanguageType,
+        language_code: [u8; 2],
+        code_extension: u8,
+    ) -> Self {
+        Self {
+            raw,
+            coding_mode,
+            language_type,
+            language_code,
+            code_extension,
+        }
+    }
+
+    /// Set `raw`.
+    #[must_use]
+    pub fn with_raw(mut self, v: [u8; 6]) -> Self {
+        self.raw = v;
+        self
+    }
+
+    /// Set `coding_mode`.
+    #[must_use]
+    pub fn with_coding_mode(mut self, v: SubpictureCodingMode) -> Self {
+        self.coding_mode = v;
+        self
+    }
+
+    /// Set `language_type`.
+    #[must_use]
+    pub fn with_language_type(mut self, v: SubpictureLanguageType) -> Self {
+        self.language_type = v;
+        self
+    }
+
+    /// Set `language_code`.
+    #[must_use]
+    pub fn with_language_code(mut self, v: [u8; 2]) -> Self {
+        self.language_code = v;
+        self
+    }
+
+    /// Set `code_extension`.
+    #[must_use]
+    pub fn with_code_extension(mut self, v: u8) -> Self {
+        self.code_extension = v;
+        self
+    }
 }
 
 impl SubpictureAttributes {
@@ -873,6 +1376,7 @@ impl SubpictureAttributes {
 ///
 /// Bytes 0x05..=0x17 are reserved-zero and absorbed silently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct McExtensionEntry {
     pub raw: [u8; 8],
     /// Byte 0 bit 0 — guide melody on audio channel 0 of the
@@ -904,6 +1408,113 @@ pub struct McExtensionEntry {
     pub ach4_guide_melody_b: bool,
     /// Byte 4 bit 0 — sound effect B on audio channel 4.
     pub ach4_sound_effect_b: bool,
+}
+
+impl McExtensionEntry {
+    /// Set `raw`.
+    #[must_use]
+    pub fn with_raw(mut self, v: [u8; 8]) -> Self {
+        self.raw = v;
+        self
+    }
+
+    /// Set `ach0_guide_melody`.
+    #[must_use]
+    pub fn with_ach0_guide_melody(mut self, v: bool) -> Self {
+        self.ach0_guide_melody = v;
+        self
+    }
+
+    /// Set `ach1_guide_melody`.
+    #[must_use]
+    pub fn with_ach1_guide_melody(mut self, v: bool) -> Self {
+        self.ach1_guide_melody = v;
+        self
+    }
+
+    /// Set `ach2_guide_vocal_1`.
+    #[must_use]
+    pub fn with_ach2_guide_vocal_1(mut self, v: bool) -> Self {
+        self.ach2_guide_vocal_1 = v;
+        self
+    }
+
+    /// Set `ach2_guide_vocal_2`.
+    #[must_use]
+    pub fn with_ach2_guide_vocal_2(mut self, v: bool) -> Self {
+        self.ach2_guide_vocal_2 = v;
+        self
+    }
+
+    /// Set `ach2_guide_melody_1`.
+    #[must_use]
+    pub fn with_ach2_guide_melody_1(mut self, v: bool) -> Self {
+        self.ach2_guide_melody_1 = v;
+        self
+    }
+
+    /// Set `ach2_guide_melody_2`.
+    #[must_use]
+    pub fn with_ach2_guide_melody_2(mut self, v: bool) -> Self {
+        self.ach2_guide_melody_2 = v;
+        self
+    }
+
+    /// Set `ach3_guide_vocal_1`.
+    #[must_use]
+    pub fn with_ach3_guide_vocal_1(mut self, v: bool) -> Self {
+        self.ach3_guide_vocal_1 = v;
+        self
+    }
+
+    /// Set `ach3_guide_vocal_2`.
+    #[must_use]
+    pub fn with_ach3_guide_vocal_2(mut self, v: bool) -> Self {
+        self.ach3_guide_vocal_2 = v;
+        self
+    }
+
+    /// Set `ach3_guide_melody_a`.
+    #[must_use]
+    pub fn with_ach3_guide_melody_a(mut self, v: bool) -> Self {
+        self.ach3_guide_melody_a = v;
+        self
+    }
+
+    /// Set `ach3_sound_effect_a`.
+    #[must_use]
+    pub fn with_ach3_sound_effect_a(mut self, v: bool) -> Self {
+        self.ach3_sound_effect_a = v;
+        self
+    }
+
+    /// Set `ach4_guide_vocal_1`.
+    #[must_use]
+    pub fn with_ach4_guide_vocal_1(mut self, v: bool) -> Self {
+        self.ach4_guide_vocal_1 = v;
+        self
+    }
+
+    /// Set `ach4_guide_vocal_2`.
+    #[must_use]
+    pub fn with_ach4_guide_vocal_2(mut self, v: bool) -> Self {
+        self.ach4_guide_vocal_2 = v;
+        self
+    }
+
+    /// Set `ach4_guide_melody_b`.
+    #[must_use]
+    pub fn with_ach4_guide_melody_b(mut self, v: bool) -> Self {
+        self.ach4_guide_melody_b = v;
+        self
+    }
+
+    /// Set `ach4_sound_effect_b`.
+    #[must_use]
+    pub fn with_ach4_sound_effect_b(mut self, v: bool) -> Self {
+        self.ach4_sound_effect_b = v;
+        self
+    }
 }
 
 impl McExtensionEntry {
@@ -950,10 +1561,34 @@ impl McExtensionEntry {
 /// 6-byte slot). Any tail attribute slots beyond the declared
 /// counts are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MenuAttributes {
     pub video: Option<VideoAttributes>,
     pub audio_streams: Vec<AudioAttributes>,
     pub subpicture_streams: Vec<SubpictureAttributes>,
+}
+
+impl MenuAttributes {
+    /// Set `video`.
+    #[must_use]
+    pub fn with_video(mut self, v: Option<VideoAttributes>) -> Self {
+        self.video = v;
+        self
+    }
+
+    /// Set `audio_streams`.
+    #[must_use]
+    pub fn with_audio_streams(mut self, v: Vec<AudioAttributes>) -> Self {
+        self.audio_streams = v;
+        self
+    }
+
+    /// Set `subpicture_streams`.
+    #[must_use]
+    pub fn with_subpicture_streams(mut self, v: Vec<SubpictureAttributes>) -> Self {
+        self.subpicture_streams = v;
+        self
+    }
 }
 
 /// VTS_VOBS-side title-attribute block — video format plus the
@@ -961,6 +1596,7 @@ pub struct MenuAttributes {
 /// karaoke multichannel-extension table (24 × 8-byte entries; one
 /// per audio stream slot, even for slots not populated).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TitleAttributes {
     pub video: Option<VideoAttributes>,
     pub audio_streams: Vec<AudioAttributes>,
@@ -972,12 +1608,43 @@ pub struct TitleAttributes {
     pub multichannel_extension: Vec<McExtensionEntry>,
 }
 
+impl TitleAttributes {
+    /// Set `video`.
+    #[must_use]
+    pub fn with_video(mut self, v: Option<VideoAttributes>) -> Self {
+        self.video = v;
+        self
+    }
+
+    /// Set `audio_streams`.
+    #[must_use]
+    pub fn with_audio_streams(mut self, v: Vec<AudioAttributes>) -> Self {
+        self.audio_streams = v;
+        self
+    }
+
+    /// Set `subpicture_streams`.
+    #[must_use]
+    pub fn with_subpicture_streams(mut self, v: Vec<SubpictureAttributes>) -> Self {
+        self.subpicture_streams = v;
+        self
+    }
+
+    /// Set `multichannel_extension`.
+    #[must_use]
+    pub fn with_multichannel_extension(mut self, v: Vec<McExtensionEntry>) -> Self {
+        self.multichannel_extension = v;
+        self
+    }
+}
+
 /// Parsed VTSI_MAT (the first 0x300 + audio/sub-picture extension
 /// bytes of a `VTS_xx_0.IFO` file).
 ///
 /// Like [`VmgIfo`], sector-pointer fields stay raw — `0` denotes
 /// "absent".
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VtsiMat {
     /// Last sector of this title set (last sector of `VTS_xx_0.BUP`).
     pub last_sector_title_set: u32,
@@ -1018,6 +1685,127 @@ pub struct VtsiMat {
     /// 0x03D8. Empty when the buffer was too short to cover that
     /// region.
     pub title_attributes: TitleAttributes,
+}
+
+impl VtsiMat {
+    /// Set `last_sector_title_set`.
+    #[must_use]
+    pub fn with_last_sector_title_set(mut self, v: u32) -> Self {
+        self.last_sector_title_set = v;
+        self
+    }
+
+    /// Set `last_sector_ifo`.
+    #[must_use]
+    pub fn with_last_sector_ifo(mut self, v: u32) -> Self {
+        self.last_sector_ifo = v;
+        self
+    }
+
+    /// Set `version`.
+    #[must_use]
+    pub fn with_version(mut self, v: u16) -> Self {
+        self.version = v;
+        self
+    }
+
+    /// Set `vts_category`.
+    #[must_use]
+    pub fn with_vts_category(mut self, v: u32) -> Self {
+        self.vts_category = v;
+        self
+    }
+
+    /// Set `vtsi_mat_end`.
+    #[must_use]
+    pub fn with_vtsi_mat_end(mut self, v: u32) -> Self {
+        self.vtsi_mat_end = v;
+        self
+    }
+
+    /// Set `menu_vob_sector`.
+    #[must_use]
+    pub fn with_menu_vob_sector(mut self, v: u32) -> Self {
+        self.menu_vob_sector = v;
+        self
+    }
+
+    /// Set `title_vob_sector`.
+    #[must_use]
+    pub fn with_title_vob_sector(mut self, v: u32) -> Self {
+        self.title_vob_sector = v;
+        self
+    }
+
+    /// Set `vts_ptt_srpt_sector`.
+    #[must_use]
+    pub fn with_vts_ptt_srpt_sector(mut self, v: u32) -> Self {
+        self.vts_ptt_srpt_sector = v;
+        self
+    }
+
+    /// Set `vts_pgci_sector`.
+    #[must_use]
+    pub fn with_vts_pgci_sector(mut self, v: u32) -> Self {
+        self.vts_pgci_sector = v;
+        self
+    }
+
+    /// Set `vtsm_pgci_ut_sector`.
+    #[must_use]
+    pub fn with_vtsm_pgci_ut_sector(mut self, v: u32) -> Self {
+        self.vtsm_pgci_ut_sector = v;
+        self
+    }
+
+    /// Set `vts_tmapti_sector`.
+    #[must_use]
+    pub fn with_vts_tmapti_sector(mut self, v: u32) -> Self {
+        self.vts_tmapti_sector = v;
+        self
+    }
+
+    /// Set `vtsm_c_adt_sector`.
+    #[must_use]
+    pub fn with_vtsm_c_adt_sector(mut self, v: u32) -> Self {
+        self.vtsm_c_adt_sector = v;
+        self
+    }
+
+    /// Set `vtsm_vobu_admap_sector`.
+    #[must_use]
+    pub fn with_vtsm_vobu_admap_sector(mut self, v: u32) -> Self {
+        self.vtsm_vobu_admap_sector = v;
+        self
+    }
+
+    /// Set `vts_c_adt_sector`.
+    #[must_use]
+    pub fn with_vts_c_adt_sector(mut self, v: u32) -> Self {
+        self.vts_c_adt_sector = v;
+        self
+    }
+
+    /// Set `vts_vobu_admap_sector`.
+    #[must_use]
+    pub fn with_vts_vobu_admap_sector(mut self, v: u32) -> Self {
+        self.vts_vobu_admap_sector = v;
+        self
+    }
+
+    /// Set `menu_attributes`.
+    #[must_use]
+    pub fn with_menu_attributes(mut self, v: MenuAttributes) -> Self {
+        self.menu_attributes = v;
+        self
+    }
+
+    /// Set `title_attributes`.
+    #[must_use]
+    pub fn with_title_attributes(mut self, v: TitleAttributes) -> Self {
+        self.title_attributes = v;
+        self
+    }
 }
 
 impl VtsiMat {
@@ -1206,11 +1994,35 @@ pub struct PttTitle {
 
 /// Parsed VTS_PTT_SRPT — 8-byte header + per-title offset list +
 /// per-title PTT entries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VtsPttSrpt {
     pub title_count: u16,
     pub end_address: u32,
     pub titles: Vec<PttTitle>,
+}
+
+impl VtsPttSrpt {
+    /// Set `title_count`.
+    #[must_use]
+    pub fn with_title_count(mut self, v: u16) -> Self {
+        self.title_count = v;
+        self
+    }
+
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u32) -> Self {
+        self.end_address = v;
+        self
+    }
+
+    /// Set `titles`.
+    #[must_use]
+    pub fn with_titles(mut self, v: Vec<PttTitle>) -> Self {
+        self.titles = v;
+        self
+    }
 }
 
 impl VtsPttSrpt {
@@ -1410,6 +2222,7 @@ impl CellBlockType {
 /// transition is gap-free, and the STC-discontinuity bit warns the
 /// demuxer to reset its system-clock reference at the cell boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CellCategory {
     /// Bits 7..6 — cell position within an angle block.
     pub cell_type: CellType,
@@ -1423,6 +2236,69 @@ pub struct CellCategory {
     pub stc_discontinuity: bool,
     /// Bit 0 — seamless angle change linked in DSI.
     pub seamless_angle: bool,
+}
+
+impl CellCategory {
+    /// Build a `CellCategory` from every field.
+    pub fn new(
+        cell_type: CellType,
+        block_type: CellBlockType,
+        seamless_playback: bool,
+        interleaved: bool,
+        stc_discontinuity: bool,
+        seamless_angle: bool,
+    ) -> Self {
+        Self {
+            cell_type,
+            block_type,
+            seamless_playback,
+            interleaved,
+            stc_discontinuity,
+            seamless_angle,
+        }
+    }
+
+    /// Set `cell_type`.
+    #[must_use]
+    pub fn with_cell_type(mut self, v: CellType) -> Self {
+        self.cell_type = v;
+        self
+    }
+
+    /// Set `block_type`.
+    #[must_use]
+    pub fn with_block_type(mut self, v: CellBlockType) -> Self {
+        self.block_type = v;
+        self
+    }
+
+    /// Set `seamless_playback`.
+    #[must_use]
+    pub fn with_seamless_playback(mut self, v: bool) -> Self {
+        self.seamless_playback = v;
+        self
+    }
+
+    /// Set `interleaved`.
+    #[must_use]
+    pub fn with_interleaved(mut self, v: bool) -> Self {
+        self.interleaved = v;
+        self
+    }
+
+    /// Set `stc_discontinuity`.
+    #[must_use]
+    pub fn with_stc_discontinuity(mut self, v: bool) -> Self {
+        self.stc_discontinuity = v;
+        self
+    }
+
+    /// Set `seamless_angle`.
+    #[must_use]
+    pub fn with_seamless_angle(mut self, v: bool) -> Self {
+        self.seamless_angle = v;
+        self
+    }
 }
 
 impl CellCategory {
@@ -1456,6 +2332,7 @@ impl CellCategory {
 /// - bytes 16..20: last VOBU start sector.
 /// - bytes 20..24: last VOBU end sector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CellPlaybackInfo {
     pub category_byte0: u8,
     pub restricted: bool,
@@ -1466,6 +2343,97 @@ pub struct CellPlaybackInfo {
     pub first_ilvu_end_sector: u32,
     pub last_vobu_start_sector: u32,
     pub last_vobu_end_sector: u32,
+}
+
+impl CellPlaybackInfo {
+    /// Build a `CellPlaybackInfo` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        category_byte0: u8,
+        restricted: bool,
+        still_time: u8,
+        cell_command: u8,
+        playback_time: PgcTime,
+        first_vobu_start_sector: u32,
+        first_ilvu_end_sector: u32,
+        last_vobu_start_sector: u32,
+        last_vobu_end_sector: u32,
+    ) -> Self {
+        Self {
+            category_byte0,
+            restricted,
+            still_time,
+            cell_command,
+            playback_time,
+            first_vobu_start_sector,
+            first_ilvu_end_sector,
+            last_vobu_start_sector,
+            last_vobu_end_sector,
+        }
+    }
+
+    /// Set `category_byte0`.
+    #[must_use]
+    pub fn with_category_byte0(mut self, v: u8) -> Self {
+        self.category_byte0 = v;
+        self
+    }
+
+    /// Set `restricted`.
+    #[must_use]
+    pub fn with_restricted(mut self, v: bool) -> Self {
+        self.restricted = v;
+        self
+    }
+
+    /// Set `still_time`.
+    #[must_use]
+    pub fn with_still_time(mut self, v: u8) -> Self {
+        self.still_time = v;
+        self
+    }
+
+    /// Set `cell_command`.
+    #[must_use]
+    pub fn with_cell_command(mut self, v: u8) -> Self {
+        self.cell_command = v;
+        self
+    }
+
+    /// Set `playback_time`.
+    #[must_use]
+    pub fn with_playback_time(mut self, v: PgcTime) -> Self {
+        self.playback_time = v;
+        self
+    }
+
+    /// Set `first_vobu_start_sector`.
+    #[must_use]
+    pub fn with_first_vobu_start_sector(mut self, v: u32) -> Self {
+        self.first_vobu_start_sector = v;
+        self
+    }
+
+    /// Set `first_ilvu_end_sector`.
+    #[must_use]
+    pub fn with_first_ilvu_end_sector(mut self, v: u32) -> Self {
+        self.first_ilvu_end_sector = v;
+        self
+    }
+
+    /// Set `last_vobu_start_sector`.
+    #[must_use]
+    pub fn with_last_vobu_start_sector(mut self, v: u32) -> Self {
+        self.last_vobu_start_sector = v;
+        self
+    }
+
+    /// Set `last_vobu_end_sector`.
+    #[must_use]
+    pub fn with_last_vobu_end_sector(mut self, v: u32) -> Self {
+        self.last_vobu_end_sector = v;
+        self
+    }
 }
 
 impl CellPlaybackInfo {
@@ -1637,6 +2605,7 @@ impl NavCommand {
 /// (1-based; `0` = none). Executing the words is Phase 3c VM work —
 /// here we only carve the raw 8-byte words out of the table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PgcCommandTable {
     /// Commands executed when the PGC starts.
     pub pre: Vec<NavCommand>,
@@ -1647,6 +2616,36 @@ pub struct PgcCommandTable {
     /// `end address` field — last byte offset of the table relative
     /// to its own start.
     pub end_address: u16,
+}
+
+impl PgcCommandTable {
+    /// Set `pre`.
+    #[must_use]
+    pub fn with_pre(mut self, v: Vec<NavCommand>) -> Self {
+        self.pre = v;
+        self
+    }
+
+    /// Set `post`.
+    #[must_use]
+    pub fn with_post(mut self, v: Vec<NavCommand>) -> Self {
+        self.post = v;
+        self
+    }
+
+    /// Set `cell`.
+    #[must_use]
+    pub fn with_cell(mut self, v: Vec<NavCommand>) -> Self {
+        self.cell = v;
+        self
+    }
+
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u16) -> Self {
+        self.end_address = v;
+        self
+    }
 }
 
 impl PgcCommandTable {
@@ -1767,13 +2766,30 @@ impl PgcCommandTable {
 /// substream number a demuxer routes on — the same 3-bit selector
 /// SPRM 1 stores. An unavailable slot (`available == false`) is one
 /// the title does not provide; its `stream_number` is meaningless.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct AudioStreamControl {
     /// Bit 7 — the title carries audio for this logical stream.
     pub available: bool,
     /// Bits 2..0 — physical MPEG-audio stream / private_stream_1
     /// substream number this logical stream resolves to.
     pub stream_number: u8,
+}
+
+impl AudioStreamControl {
+    /// Set `available`.
+    #[must_use]
+    pub fn with_available(mut self, v: bool) -> Self {
+        self.available = v;
+        self
+    }
+
+    /// Set `stream_number`.
+    #[must_use]
+    pub fn with_stream_number(mut self, v: u8) -> Self {
+        self.stream_number = v;
+        self
+    }
 }
 
 impl AudioStreamControl {
@@ -1809,7 +2825,8 @@ impl AudioStreamControl {
 /// displaying a 16:9 title on a 4:3 (or 16:9) screen — the four
 /// 5-bit fields are the four `0..=31` physical sub-stream numbers a
 /// player picks between once it knows its aspect/display mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SubpictureStreamControl {
     /// Bit 7 of byte 0 — the title carries this logical stream.
     pub available: bool,
@@ -1822,6 +2839,43 @@ pub struct SubpictureStreamControl {
     pub stream_letterbox: u8,
     /// Byte 3 bits 4..0 — physical sub-stream for pan&scan output.
     pub stream_pan_scan: u8,
+}
+
+impl SubpictureStreamControl {
+    /// Set `available`.
+    #[must_use]
+    pub fn with_available(mut self, v: bool) -> Self {
+        self.available = v;
+        self
+    }
+
+    /// Set `stream_4x3`.
+    #[must_use]
+    pub fn with_stream_4x3(mut self, v: u8) -> Self {
+        self.stream_4x3 = v;
+        self
+    }
+
+    /// Set `stream_wide`.
+    #[must_use]
+    pub fn with_stream_wide(mut self, v: u8) -> Self {
+        self.stream_wide = v;
+        self
+    }
+
+    /// Set `stream_letterbox`.
+    #[must_use]
+    pub fn with_stream_letterbox(mut self, v: u8) -> Self {
+        self.stream_letterbox = v;
+        self
+    }
+
+    /// Set `stream_pan_scan`.
+    #[must_use]
+    pub fn with_stream_pan_scan(mut self, v: u8) -> Self {
+        self.stream_pan_scan = v;
+        self
+    }
 }
 
 impl SubpictureStreamControl {
@@ -1980,6 +3034,7 @@ impl PlaybackMode {
 /// - 0x00E8: u16 offset_to_cell_playback_information.
 /// - 0x00EA: u16 offset_to_cell_position_information.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Pgc {
     /// Number of programs in this PGC.
     pub number_of_programs: u8,
@@ -2030,6 +3085,196 @@ pub struct Pgc {
     /// Parsed pre/post/cell navigation command table. `None` when
     /// `offset_commands == 0` (no command table present).
     pub commands: Option<PgcCommandTable>,
+}
+
+impl Pgc {
+    /// Build a `Pgc` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        number_of_programs: u8,
+        number_of_cells: u8,
+        playback_time: PgcTime,
+        prohibited_user_ops: u32,
+        next_pgcn: u16,
+        prev_pgcn: u16,
+        goup_pgcn: u16,
+        still_time: u8,
+        playback_mode: u8,
+        audio_stream_control: [AudioStreamControl; 8],
+        subpicture_stream_control: [SubpictureStreamControl; 32],
+        palette: [PaletteEntry; 16],
+        offset_commands: u16,
+        offset_program_map: u16,
+        offset_cell_playback: u16,
+        offset_cell_position: u16,
+        program_map: Vec<u8>,
+        cells: Vec<CellPlaybackInfo>,
+        cell_positions: Vec<CellPositionInfo>,
+        commands: Option<PgcCommandTable>,
+    ) -> Self {
+        Self {
+            number_of_programs,
+            number_of_cells,
+            playback_time,
+            prohibited_user_ops,
+            next_pgcn,
+            prev_pgcn,
+            goup_pgcn,
+            still_time,
+            playback_mode,
+            audio_stream_control,
+            subpicture_stream_control,
+            palette,
+            offset_commands,
+            offset_program_map,
+            offset_cell_playback,
+            offset_cell_position,
+            program_map,
+            cells,
+            cell_positions,
+            commands,
+        }
+    }
+
+    /// Set `number_of_programs`.
+    #[must_use]
+    pub fn with_number_of_programs(mut self, v: u8) -> Self {
+        self.number_of_programs = v;
+        self
+    }
+
+    /// Set `number_of_cells`.
+    #[must_use]
+    pub fn with_number_of_cells(mut self, v: u8) -> Self {
+        self.number_of_cells = v;
+        self
+    }
+
+    /// Set `playback_time`.
+    #[must_use]
+    pub fn with_playback_time(mut self, v: PgcTime) -> Self {
+        self.playback_time = v;
+        self
+    }
+
+    /// Set `prohibited_user_ops`.
+    #[must_use]
+    pub fn with_prohibited_user_ops(mut self, v: u32) -> Self {
+        self.prohibited_user_ops = v;
+        self
+    }
+
+    /// Set `next_pgcn`.
+    #[must_use]
+    pub fn with_next_pgcn(mut self, v: u16) -> Self {
+        self.next_pgcn = v;
+        self
+    }
+
+    /// Set `prev_pgcn`.
+    #[must_use]
+    pub fn with_prev_pgcn(mut self, v: u16) -> Self {
+        self.prev_pgcn = v;
+        self
+    }
+
+    /// Set `goup_pgcn`.
+    #[must_use]
+    pub fn with_goup_pgcn(mut self, v: u16) -> Self {
+        self.goup_pgcn = v;
+        self
+    }
+
+    /// Set `still_time`.
+    #[must_use]
+    pub fn with_still_time(mut self, v: u8) -> Self {
+        self.still_time = v;
+        self
+    }
+
+    /// Set `playback_mode`.
+    #[must_use]
+    pub fn with_playback_mode(mut self, v: u8) -> Self {
+        self.playback_mode = v;
+        self
+    }
+
+    /// Set `audio_stream_control`.
+    #[must_use]
+    pub fn with_audio_stream_control(mut self, v: [AudioStreamControl; 8]) -> Self {
+        self.audio_stream_control = v;
+        self
+    }
+
+    /// Set `subpicture_stream_control`.
+    #[must_use]
+    pub fn with_subpicture_stream_control(mut self, v: [SubpictureStreamControl; 32]) -> Self {
+        self.subpicture_stream_control = v;
+        self
+    }
+
+    /// Set `palette`.
+    #[must_use]
+    pub fn with_palette(mut self, v: [PaletteEntry; 16]) -> Self {
+        self.palette = v;
+        self
+    }
+
+    /// Set `offset_commands`.
+    #[must_use]
+    pub fn with_offset_commands(mut self, v: u16) -> Self {
+        self.offset_commands = v;
+        self
+    }
+
+    /// Set `offset_program_map`.
+    #[must_use]
+    pub fn with_offset_program_map(mut self, v: u16) -> Self {
+        self.offset_program_map = v;
+        self
+    }
+
+    /// Set `offset_cell_playback`.
+    #[must_use]
+    pub fn with_offset_cell_playback(mut self, v: u16) -> Self {
+        self.offset_cell_playback = v;
+        self
+    }
+
+    /// Set `offset_cell_position`.
+    #[must_use]
+    pub fn with_offset_cell_position(mut self, v: u16) -> Self {
+        self.offset_cell_position = v;
+        self
+    }
+
+    /// Set `program_map`.
+    #[must_use]
+    pub fn with_program_map(mut self, v: Vec<u8>) -> Self {
+        self.program_map = v;
+        self
+    }
+
+    /// Set `cells`.
+    #[must_use]
+    pub fn with_cells(mut self, v: Vec<CellPlaybackInfo>) -> Self {
+        self.cells = v;
+        self
+    }
+
+    /// Set `cell_positions`.
+    #[must_use]
+    pub fn with_cell_positions(mut self, v: Vec<CellPositionInfo>) -> Self {
+        self.cell_positions = v;
+        self
+    }
+
+    /// Set `commands`.
+    #[must_use]
+    pub fn with_commands(mut self, v: Option<PgcCommandTable>) -> Self {
+        self.commands = v;
+        self
+    }
 }
 
 impl Pgc {
@@ -2467,12 +3712,43 @@ impl PgciSrp {
 }
 
 /// Parsed PGCI (VTS_PGCI or VMGM_PGCI body).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Pgci {
     pub number_of_pgcs: u16,
     pub end_address: u32,
     pub srp: Vec<PgciSrp>,
     pub pgcs: Vec<Pgc>,
+}
+
+impl Pgci {
+    /// Set `number_of_pgcs`.
+    #[must_use]
+    pub fn with_number_of_pgcs(mut self, v: u16) -> Self {
+        self.number_of_pgcs = v;
+        self
+    }
+
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u32) -> Self {
+        self.end_address = v;
+        self
+    }
+
+    /// Set `srp`.
+    #[must_use]
+    pub fn with_srp(mut self, v: Vec<PgciSrp>) -> Self {
+        self.srp = v;
+        self
+    }
+
+    /// Set `pgcs`.
+    #[must_use]
+    pub fn with_pgcs(mut self, v: Vec<Pgc>) -> Self {
+        self.pgcs = v;
+        self
+    }
 }
 
 impl Pgci {
@@ -2660,7 +3936,8 @@ impl PgciLuSrp {
 
 /// One Language Unit (`PGCI_LU`) — a PGC search-pointer list plus the
 /// parsed PGC bodies it points at.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct PgciLu {
     /// Number of PGCs in this language unit.
     pub number_of_pgcs: u16,
@@ -2671,6 +3948,36 @@ pub struct PgciLu {
     pub srp: Vec<PgciLuSrp>,
     /// Parsed PGC bodies in the same order as `srp`.
     pub pgcs: Vec<Pgc>,
+}
+
+impl PgciLu {
+    /// Set `number_of_pgcs`.
+    #[must_use]
+    pub fn with_number_of_pgcs(mut self, v: u16) -> Self {
+        self.number_of_pgcs = v;
+        self
+    }
+
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u32) -> Self {
+        self.end_address = v;
+        self
+    }
+
+    /// Set `srp`.
+    #[must_use]
+    pub fn with_srp(mut self, v: Vec<PgciLuSrp>) -> Self {
+        self.srp = v;
+        self
+    }
+
+    /// Set `pgcs`.
+    #[must_use]
+    pub fn with_pgcs(mut self, v: Vec<Pgc>) -> Self {
+        self.pgcs = v;
+        self
+    }
 }
 
 impl PgciLu {
@@ -2791,7 +4098,8 @@ impl PgciUtSrp {
 /// the documented set of `menu_existence` / `MenuType` values
 /// (the VMG side only authors a "title" menu type, while the VTS
 /// side authors root / subpicture / audio / angle / PTT menus).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct PgciUt {
     /// Number of Language Units in this table.
     pub number_of_language_units: u16,
@@ -2802,6 +4110,36 @@ pub struct PgciUt {
     pub srp: Vec<PgciUtSrp>,
     /// Parsed Language Units in the same order as `srp`.
     pub language_units: Vec<PgciLu>,
+}
+
+impl PgciUt {
+    /// Set `number_of_language_units`.
+    #[must_use]
+    pub fn with_number_of_language_units(mut self, v: u16) -> Self {
+        self.number_of_language_units = v;
+        self
+    }
+
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u32) -> Self {
+        self.end_address = v;
+        self
+    }
+
+    /// Set `srp`.
+    #[must_use]
+    pub fn with_srp(mut self, v: Vec<PgciUtSrp>) -> Self {
+        self.srp = v;
+        self
+    }
+
+    /// Set `language_units`.
+    #[must_use]
+    pub fn with_language_units(mut self, v: Vec<PgciLu>) -> Self {
+        self.language_units = v;
+        self
+    }
 }
 
 impl PgciUt {
@@ -2907,7 +4245,8 @@ pub struct CellAddrEntry {
 
 /// Parsed VTS_C_ADT body — also covers VMGM_C_ADT and VTSM_C_ADT
 /// since they share the wire format.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VtsCAdt {
     /// Number of distinct VOB IDs covered (NOT the entry count —
     /// per spec, multiple entries can share a VOB ID for the cells
@@ -2917,6 +4256,29 @@ pub struct VtsCAdt {
     pub end_address: u32,
     /// Parsed cell-address entries.
     pub entries: Vec<CellAddrEntry>,
+}
+
+impl VtsCAdt {
+    /// Set `number_of_vob_ids`.
+    #[must_use]
+    pub fn with_number_of_vob_ids(mut self, v: u16) -> Self {
+        self.number_of_vob_ids = v;
+        self
+    }
+
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u32) -> Self {
+        self.end_address = v;
+        self
+    }
+
+    /// Set `entries`.
+    #[must_use]
+    pub fn with_entries(mut self, v: Vec<CellAddrEntry>) -> Self {
+        self.entries = v;
+        self
+    }
 }
 
 impl VtsCAdt {
@@ -2996,7 +4358,8 @@ impl VtsCAdt {
 /// `VTS_VOBU_ADMAP`, the menu VOB for the menu variants); a player
 /// adds the title-set VOB base LBA recorded in the corresponding
 /// `VTSI_MAT::title_vob_sector` to recover the absolute disc LBA.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VobuAdmap {
     /// `end_address` field — last byte of the last entry, relative
     /// to the start of the address map.
@@ -3005,6 +4368,22 @@ pub struct VobuAdmap {
     /// order. Index 0 = VOBU 1; index `entries.len() - 1` = the last
     /// VOBU declared by the map.
     pub entries: Vec<u32>,
+}
+
+impl VobuAdmap {
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u32) -> Self {
+        self.end_address = v;
+        self
+    }
+
+    /// Set `entries`.
+    #[must_use]
+    pub fn with_entries(mut self, v: Vec<u32>) -> Self {
+        self.entries = v;
+        self
+    }
 }
 
 impl VobuAdmap {
@@ -3131,12 +4510,29 @@ impl TmapEntry {
 /// An empty time map (number_of_entries = 0) is legal and is the
 /// authoring convention for a PGC the disc decided not to time-index
 /// (typically very short menus or warning still-frames).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VtsTmap {
     /// Seconds covered by one entry step.
     pub time_unit: u8,
     /// Decoded entry list, one per step.
     pub entries: Vec<TmapEntry>,
+}
+
+impl VtsTmap {
+    /// Set `time_unit`.
+    #[must_use]
+    pub fn with_time_unit(mut self, v: u8) -> Self {
+        self.time_unit = v;
+        self
+    }
+
+    /// Set `entries`.
+    #[must_use]
+    pub fn with_entries(mut self, v: Vec<TmapEntry>) -> Self {
+        self.entries = v;
+        self
+    }
 }
 
 impl VtsTmap {
@@ -3204,7 +4600,8 @@ impl VtsTmap {
 ///
 /// "Each PGC MUST have a time map, even if it is empty" — the spec
 /// guarantees `maps.len() == number_of_program_chains`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VtsTmapti {
     /// Number of program chains covered (= maps.len()).
     pub number_of_pgcs: u16,
@@ -3213,6 +4610,29 @@ pub struct VtsTmapti {
     /// Decoded time maps, one per program chain. Index `i` (0-based)
     /// is the map for `PGCN = i + 1`.
     pub maps: Vec<VtsTmap>,
+}
+
+impl VtsTmapti {
+    /// Set `number_of_pgcs`.
+    #[must_use]
+    pub fn with_number_of_pgcs(mut self, v: u16) -> Self {
+        self.number_of_pgcs = v;
+        self
+    }
+
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u32) -> Self {
+        self.end_address = v;
+        self
+    }
+
+    /// Set `maps`.
+    #[must_use]
+    pub fn with_maps(mut self, v: Vec<VtsTmap>) -> Self {
+        self.maps = v;
+        self
+    }
 }
 
 impl VtsTmapti {
@@ -3265,6 +4685,7 @@ impl VtsTmapti {
 /// A chapter (Part-of-Title) at the API surface — pulls fields from
 /// the PTT entry, the referenced PGC's cell list, and the C_ADT.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DvdChapter {
     /// 1-based chapter number within the title.
     pub number: u16,
@@ -3285,9 +4706,73 @@ pub struct DvdChapter {
     pub playback_time: PgcTime,
 }
 
+impl DvdChapter {
+    /// Build a `DvdChapter` from every field.
+    pub fn new(
+        number: u16,
+        pgcn: u16,
+        pgn: u16,
+        start_cell: u8,
+        end_cell: u8,
+        playback_time: PgcTime,
+    ) -> Self {
+        Self {
+            number,
+            pgcn,
+            pgn,
+            start_cell,
+            end_cell,
+            playback_time,
+        }
+    }
+
+    /// Set `number`.
+    #[must_use]
+    pub fn with_number(mut self, v: u16) -> Self {
+        self.number = v;
+        self
+    }
+
+    /// Set `pgcn`.
+    #[must_use]
+    pub fn with_pgcn(mut self, v: u16) -> Self {
+        self.pgcn = v;
+        self
+    }
+
+    /// Set `pgn`.
+    #[must_use]
+    pub fn with_pgn(mut self, v: u16) -> Self {
+        self.pgn = v;
+        self
+    }
+
+    /// Set `start_cell`.
+    #[must_use]
+    pub fn with_start_cell(mut self, v: u8) -> Self {
+        self.start_cell = v;
+        self
+    }
+
+    /// Set `end_cell`.
+    #[must_use]
+    pub fn with_end_cell(mut self, v: u8) -> Self {
+        self.end_cell = v;
+        self
+    }
+
+    /// Set `playback_time`.
+    #[must_use]
+    pub fn with_playback_time(mut self, v: PgcTime) -> Self {
+        self.playback_time = v;
+        self
+    }
+}
+
 /// A title at the API surface — pulls fields from TT_SRPT (for the
 /// title-level header) and VTS_PTT_SRPT (for the chapter list).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct DvdTitle {
     /// 1-based VTS_TTN — title number within its VTS.
     pub number: u8,
@@ -3299,11 +4784,42 @@ pub struct DvdTitle {
     pub chapters: Vec<DvdChapter>,
 }
 
+impl DvdTitle {
+    /// Set `number`.
+    #[must_use]
+    pub fn with_number(mut self, v: u8) -> Self {
+        self.number = v;
+        self
+    }
+
+    /// Set `angle_count`.
+    #[must_use]
+    pub fn with_angle_count(mut self, v: u8) -> Self {
+        self.angle_count = v;
+        self
+    }
+
+    /// Set `chapter_count`.
+    #[must_use]
+    pub fn with_chapter_count(mut self, v: u16) -> Self {
+        self.chapter_count = v;
+        self
+    }
+
+    /// Set `chapters`.
+    #[must_use]
+    pub fn with_chapters(mut self, v: Vec<DvdChapter>) -> Self {
+        self.chapters = v;
+        self
+    }
+}
+
 /// Parsed VTS — pulls VTSI_MAT, VTS_PTT_SRPT, VTS_PGCI, VTS_C_ADT,
 /// VTS_VOBU_ADMAP, and VTS_TMAPTI into a single materialised view
 /// that's convenient for chapter enumeration and time-based seek
 /// without re-walking the byte buffer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VtsIfo {
     /// VTS number (1..=99).
     pub vts_number: u8,
@@ -3334,6 +4850,71 @@ pub struct VtsIfo {
     /// VMGM/VTSM menu tables, the VOBU address maps on the menu
     /// side, etc.).
     pub mat: VtsiMat,
+}
+
+impl VtsIfo {
+    /// Set `vts_number`.
+    #[must_use]
+    pub fn with_vts_number(mut self, v: u8) -> Self {
+        self.vts_number = v;
+        self
+    }
+
+    /// Set `title_count`.
+    #[must_use]
+    pub fn with_title_count(mut self, v: u8) -> Self {
+        self.title_count = v;
+        self
+    }
+
+    /// Set `titles`.
+    #[must_use]
+    pub fn with_titles(mut self, v: Vec<DvdTitle>) -> Self {
+        self.titles = v;
+        self
+    }
+
+    /// Set `pgcs`.
+    #[must_use]
+    pub fn with_pgcs(mut self, v: Vec<Pgc>) -> Self {
+        self.pgcs = v;
+        self
+    }
+
+    /// Set `pgci_srp`.
+    #[must_use]
+    pub fn with_pgci_srp(mut self, v: Vec<PgciSrp>) -> Self {
+        self.pgci_srp = v;
+        self
+    }
+
+    /// Set `cell_adt`.
+    #[must_use]
+    pub fn with_cell_adt(mut self, v: VtsCAdt) -> Self {
+        self.cell_adt = v;
+        self
+    }
+
+    /// Set `vobu_admap`.
+    #[must_use]
+    pub fn with_vobu_admap(mut self, v: Option<VobuAdmap>) -> Self {
+        self.vobu_admap = v;
+        self
+    }
+
+    /// Set `time_map`.
+    #[must_use]
+    pub fn with_time_map(mut self, v: Option<VtsTmapti>) -> Self {
+        self.time_map = v;
+        self
+    }
+
+    /// Set `mat`.
+    #[must_use]
+    pub fn with_mat(mut self, v: VtsiMat) -> Self {
+        self.mat = v;
+        self
+    }
 }
 
 impl VtsIfo {
@@ -3544,7 +5125,8 @@ impl VtsIfo {
 /// [`TitleAttributes`] reuse without us re-decoding the same fields
 /// twice (once here, once in the VTSI proper). The 1-based VTS index
 /// is the entry's position in the table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VmgVtsAtrtEntry {
     /// 1-based VTS number this entry mirrors.
     pub vts_number: u8,
@@ -3555,6 +5137,29 @@ pub struct VmgVtsAtrtEntry {
     pub attributes_blob: Vec<u8>,
 }
 
+impl VmgVtsAtrtEntry {
+    /// Set `vts_number`.
+    #[must_use]
+    pub fn with_vts_number(mut self, v: u8) -> Self {
+        self.vts_number = v;
+        self
+    }
+
+    /// Set `vts_category`.
+    #[must_use]
+    pub fn with_vts_category(mut self, v: u32) -> Self {
+        self.vts_category = v;
+        self
+    }
+
+    /// Set `attributes_blob`.
+    #[must_use]
+    pub fn with_attributes_blob(mut self, v: Vec<u8>) -> Self {
+        self.attributes_blob = v;
+        self
+    }
+}
+
 /// Parsed `VMG_VTS_ATRT` — the per-VTS attribute copies stored on the
 /// VMG side.
 ///
@@ -3563,7 +5168,8 @@ pub struct VmgVtsAtrtEntry {
 /// IDs, language codes, …) without having to open every `VTS_xx_0.IFO`
 /// individually. Each entry mirrors the attribute block found at the
 /// start of the corresponding VTSI body.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VmgVtsAtrt {
     /// Number of title sets referenced by this table.
     pub number_of_title_sets: u16,
@@ -3572,6 +5178,29 @@ pub struct VmgVtsAtrt {
     pub end_address: u32,
     /// One entry per title set, in `vts_number` order (1-based).
     pub entries: Vec<VmgVtsAtrtEntry>,
+}
+
+impl VmgVtsAtrt {
+    /// Set `number_of_title_sets`.
+    #[must_use]
+    pub fn with_number_of_title_sets(mut self, v: u16) -> Self {
+        self.number_of_title_sets = v;
+        self
+    }
+
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u32) -> Self {
+        self.end_address = v;
+        self
+    }
+
+    /// Set `entries`.
+    #[must_use]
+    pub fn with_entries(mut self, v: Vec<VmgVtsAtrtEntry>) -> Self {
+        self.entries = v;
+        self
+    }
 }
 
 impl VmgVtsAtrt {
@@ -3687,7 +5316,8 @@ impl VmgVtsAtrt {
 /// `masks[level_minus_one][title_set_index]` is the 16-bit mask for
 /// the title set (where `title_set_index = 0` is the VMG itself and
 /// `1..=nts` are the title sets in `1..=nts` order).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct PtlMait {
     /// 16-bit country code (BCD-packed ISO 3166 per `mpucoder-sprm.html`).
     pub country_code: u16,
@@ -3701,6 +5331,22 @@ pub struct PtlMait {
     /// in `masks[L-1][T]` means title-set `T` is blocked from level `L`
     /// in this country.
     pub masks: [Vec<u16>; 8],
+}
+
+impl PtlMait {
+    /// Set `country_code`.
+    #[must_use]
+    pub fn with_country_code(mut self, v: u16) -> Self {
+        self.country_code = v;
+        self
+    }
+
+    /// Set `masks`.
+    #[must_use]
+    pub fn with_masks(mut self, v: [Vec<u16>; 8]) -> Self {
+        self.masks = v;
+        self
+    }
 }
 
 impl PtlMait {
@@ -3727,7 +5373,8 @@ impl PtlMait {
 /// the natural ceiling on DVD-Video discs (99 title sets × 16 bytes
 /// per level × 8 levels = 12.7 KB per country, with up to ~100
 /// countries fitting under the bound).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct VmgPtlMait {
     /// Number of countries (each gets one sub-table).
     pub number_of_countries: u16,
@@ -3739,6 +5386,36 @@ pub struct VmgPtlMait {
     pub end_address: u32,
     /// One sub-table per country.
     pub entries: Vec<PtlMait>,
+}
+
+impl VmgPtlMait {
+    /// Set `number_of_countries`.
+    #[must_use]
+    pub fn with_number_of_countries(mut self, v: u16) -> Self {
+        self.number_of_countries = v;
+        self
+    }
+
+    /// Set `number_of_title_sets`.
+    #[must_use]
+    pub fn with_number_of_title_sets(mut self, v: u16) -> Self {
+        self.number_of_title_sets = v;
+        self
+    }
+
+    /// Set `end_address`.
+    #[must_use]
+    pub fn with_end_address(mut self, v: u32) -> Self {
+        self.end_address = v;
+        self
+    }
+
+    /// Set `entries`.
+    #[must_use]
+    pub fn with_entries(mut self, v: Vec<PtlMait>) -> Self {
+        self.entries = v;
+        self
+    }
 }
 
 impl VmgPtlMait {

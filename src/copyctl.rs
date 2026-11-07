@@ -175,6 +175,7 @@ impl ApsType {
 /// | b2–b1 | APS ([`ApsType`])                              |
 /// | b0    | ASB — Analog Source Bit (1 = pre-recorded)     |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct CopyControlInfo {
     /// Copy-generation state.
     pub cgms: Cgms,
@@ -182,6 +183,38 @@ pub struct CopyControlInfo {
     pub aps: ApsType,
     /// ASB — Analog Source Bit (`true` = pre-recorded material).
     pub analog_source: bool,
+}
+
+impl CopyControlInfo {
+    /// Build a `CopyControlInfo` from every field.
+    pub fn new(cgms: Cgms, aps: ApsType, analog_source: bool) -> Self {
+        Self {
+            cgms,
+            aps,
+            analog_source,
+        }
+    }
+
+    /// Set `cgms`.
+    #[must_use]
+    pub fn with_cgms(mut self, v: Cgms) -> Self {
+        self.cgms = v;
+        self
+    }
+
+    /// Set `aps`.
+    #[must_use]
+    pub fn with_aps(mut self, v: ApsType) -> Self {
+        self.aps = v;
+        self
+    }
+
+    /// Set `analog_source`.
+    #[must_use]
+    pub fn with_analog_source(mut self, v: bool) -> Self {
+        self.analog_source = v;
+        self
+    }
 }
 
 impl CopyControlInfo {
@@ -251,6 +284,7 @@ pub const CPR_MAI_FRAME_OFFSET: usize = 6;
 /// | 1    |       | `RMI` — region-management / APS trigger byte   |
 /// | 2–5  |       | reserved (all-ZERO default per ECMA-267)       |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct CprMai {
     /// `CPM` — `true` when the sector is copyright-protected.
     pub cpm: bool,
@@ -264,6 +298,54 @@ pub struct CprMai {
     pub rmi: u8,
     /// The verbatim 6 on-wire bytes.
     pub raw: [u8; CPR_MAI_LEN],
+}
+
+impl CprMai {
+    /// Build a `CprMai` from every field.
+    pub fn new(cpm: bool, cp_sec: bool, cgms: Cgms, rmi: u8, raw: [u8; CPR_MAI_LEN]) -> Self {
+        Self {
+            cpm,
+            cp_sec,
+            cgms,
+            rmi,
+            raw,
+        }
+    }
+
+    /// Set `cpm`.
+    #[must_use]
+    pub fn with_cpm(mut self, v: bool) -> Self {
+        self.cpm = v;
+        self
+    }
+
+    /// Set `cp_sec`.
+    #[must_use]
+    pub fn with_cp_sec(mut self, v: bool) -> Self {
+        self.cp_sec = v;
+        self
+    }
+
+    /// Set `cgms`.
+    #[must_use]
+    pub fn with_cgms(mut self, v: Cgms) -> Self {
+        self.cgms = v;
+        self
+    }
+
+    /// Set `rmi`.
+    #[must_use]
+    pub fn with_rmi(mut self, v: u8) -> Self {
+        self.rmi = v;
+        self
+    }
+
+    /// Set `raw`.
+    #[must_use]
+    pub fn with_raw(mut self, v: [u8; CPR_MAI_LEN]) -> Self {
+        self.raw = v;
+        self
+    }
 }
 
 impl CprMai {

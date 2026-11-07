@@ -214,10 +214,10 @@ pub fn write_title_to_mkv(
                 pb.first_vobu_start_sector,
                 pb.last_vobu_end_sector,
                 |pes| {
-                    if let Some(s) = DvdMkvStream::from_pes(&pes) {
-                        if !probe.streams.contains(&s) {
-                            probe.streams.push(s);
-                        }
+                    if let Some(s) = DvdMkvStream::from_pes(&pes)
+                        && !probe.streams.contains(&s)
+                    {
+                        probe.streams.push(s);
                     }
                     Ok(())
                 },

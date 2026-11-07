@@ -11,6 +11,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// What can go wrong when mounting a DVD or walking its file system.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// Underlying I/O error (sector read, file open).
     Io(std::io::Error),

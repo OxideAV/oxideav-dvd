@@ -206,6 +206,7 @@ impl LpcmSampleFrequency {
 /// | 6   | `dynamic_range X`           | 3    | High nibble of the gain coefficient.|
 /// |     | `dynamic_range Y`           | 5    | Low bits of the gain coefficient.   |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LpcmHeader {
     /// `0xA0..=0xA7` LPCM substream selector (mirrored from byte 0
     /// of the header for round-trip purposes; the demuxer has
@@ -233,6 +234,115 @@ pub struct LpcmHeader {
     pub dynamic_range_x: u8,
     /// 5-bit `Y` coefficient of the dynamic-range gain.
     pub dynamic_range_y: u8,
+}
+
+impl LpcmHeader {
+    /// Build a `LpcmHeader` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        sub_stream_id: u8,
+        number_of_frame_headers: u8,
+        first_access_unit_pointer: u16,
+        audio_emphasis_flag: bool,
+        audio_mute_flag: bool,
+        audio_frame_number: u8,
+        quantisation: LpcmQuantisation,
+        sample_frequency: LpcmSampleFrequency,
+        channel_count: u8,
+        dynamic_range_x: u8,
+        dynamic_range_y: u8,
+    ) -> Self {
+        Self {
+            sub_stream_id,
+            number_of_frame_headers,
+            first_access_unit_pointer,
+            audio_emphasis_flag,
+            audio_mute_flag,
+            audio_frame_number,
+            quantisation,
+            sample_frequency,
+            channel_count,
+            dynamic_range_x,
+            dynamic_range_y,
+        }
+    }
+
+    /// Set `sub_stream_id`.
+    #[must_use]
+    pub fn with_sub_stream_id(mut self, v: u8) -> Self {
+        self.sub_stream_id = v;
+        self
+    }
+
+    /// Set `number_of_frame_headers`.
+    #[must_use]
+    pub fn with_number_of_frame_headers(mut self, v: u8) -> Self {
+        self.number_of_frame_headers = v;
+        self
+    }
+
+    /// Set `first_access_unit_pointer`.
+    #[must_use]
+    pub fn with_first_access_unit_pointer(mut self, v: u16) -> Self {
+        self.first_access_unit_pointer = v;
+        self
+    }
+
+    /// Set `audio_emphasis_flag`.
+    #[must_use]
+    pub fn with_audio_emphasis_flag(mut self, v: bool) -> Self {
+        self.audio_emphasis_flag = v;
+        self
+    }
+
+    /// Set `audio_mute_flag`.
+    #[must_use]
+    pub fn with_audio_mute_flag(mut self, v: bool) -> Self {
+        self.audio_mute_flag = v;
+        self
+    }
+
+    /// Set `audio_frame_number`.
+    #[must_use]
+    pub fn with_audio_frame_number(mut self, v: u8) -> Self {
+        self.audio_frame_number = v;
+        self
+    }
+
+    /// Set `quantisation`.
+    #[must_use]
+    pub fn with_quantisation(mut self, v: LpcmQuantisation) -> Self {
+        self.quantisation = v;
+        self
+    }
+
+    /// Set `sample_frequency`.
+    #[must_use]
+    pub fn with_sample_frequency(mut self, v: LpcmSampleFrequency) -> Self {
+        self.sample_frequency = v;
+        self
+    }
+
+    /// Set `channel_count`.
+    #[must_use]
+    pub fn with_channel_count(mut self, v: u8) -> Self {
+        self.channel_count = v;
+        self
+    }
+
+    /// Set `dynamic_range_x`.
+    #[must_use]
+    pub fn with_dynamic_range_x(mut self, v: u8) -> Self {
+        self.dynamic_range_x = v;
+        self
+    }
+
+    /// Set `dynamic_range_y`.
+    #[must_use]
+    pub fn with_dynamic_range_y(mut self, v: u8) -> Self {
+        self.dynamic_range_y = v;
+        self
+    }
 }
 
 /// Length of an LPCM audio-pack header in bytes.

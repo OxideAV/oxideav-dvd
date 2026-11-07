@@ -444,7 +444,8 @@ impl RegisterFile {
 /// `stream` is the raw 6-bit field (0..=31 = stream index, 62 = none,
 /// 63 = forced); `display` is bit 6 — when `false`, the sub-picture
 /// must not be displayed even if a stream is selected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SubpictureStreamView {
     /// Bits 0..=5 of SPRM 2 — the raw stream identifier.
     pub stream: u8,
@@ -453,6 +454,29 @@ pub struct SubpictureStreamView {
     pub display: bool,
     /// The original SPRM 2 word for callers that want to round-trip it.
     pub raw: u16,
+}
+
+impl SubpictureStreamView {
+    /// Set `stream`.
+    #[must_use]
+    pub fn with_stream(mut self, v: u8) -> Self {
+        self.stream = v;
+        self
+    }
+
+    /// Set `display`.
+    #[must_use]
+    pub fn with_display(mut self, v: bool) -> Self {
+        self.display = v;
+        self
+    }
+
+    /// Set `raw`.
+    #[must_use]
+    pub fn with_raw(mut self, v: u16) -> Self {
+        self.raw = v;
+        self
+    }
 }
 
 impl SubpictureStreamView {
@@ -472,7 +496,8 @@ impl SubpictureStreamView {
 /// allocation: bit 2 = "mix ch 2 into front", bit 3 = "mix ch 3 into
 /// front", bit 4 = "mix ch 4 into front", bits 10/11/12 do the same
 /// for the rear destination.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct AudioMixMode {
     /// Mix channel 2 into the front-left channel.
     pub mix_2_to_front: bool,
@@ -490,8 +515,60 @@ pub struct AudioMixMode {
     pub raw: u16,
 }
 
+impl AudioMixMode {
+    /// Set `mix_2_to_front`.
+    #[must_use]
+    pub fn with_mix_2_to_front(mut self, v: bool) -> Self {
+        self.mix_2_to_front = v;
+        self
+    }
+
+    /// Set `mix_3_to_front`.
+    #[must_use]
+    pub fn with_mix_3_to_front(mut self, v: bool) -> Self {
+        self.mix_3_to_front = v;
+        self
+    }
+
+    /// Set `mix_4_to_front`.
+    #[must_use]
+    pub fn with_mix_4_to_front(mut self, v: bool) -> Self {
+        self.mix_4_to_front = v;
+        self
+    }
+
+    /// Set `mix_2_to_rear`.
+    #[must_use]
+    pub fn with_mix_2_to_rear(mut self, v: bool) -> Self {
+        self.mix_2_to_rear = v;
+        self
+    }
+
+    /// Set `mix_3_to_rear`.
+    #[must_use]
+    pub fn with_mix_3_to_rear(mut self, v: bool) -> Self {
+        self.mix_3_to_rear = v;
+        self
+    }
+
+    /// Set `mix_4_to_rear`.
+    #[must_use]
+    pub fn with_mix_4_to_rear(mut self, v: bool) -> Self {
+        self.mix_4_to_rear = v;
+        self
+    }
+
+    /// Set `raw`.
+    #[must_use]
+    pub fn with_raw(mut self, v: u16) -> Self {
+        self.raw = v;
+        self
+    }
+}
+
 /// Decoded view of SPRM 14 (video preference + current mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VideoPreference {
     /// Bits 10..=11 — preferred display aspect ratio.
     pub aspect: AspectRatio,
@@ -499,6 +576,34 @@ pub struct VideoPreference {
     pub mode: DisplayMode,
     /// Raw SPRM 14 word.
     pub raw: u16,
+}
+
+impl VideoPreference {
+    /// Build a `VideoPreference` from every field.
+    pub fn new(aspect: AspectRatio, mode: DisplayMode, raw: u16) -> Self {
+        Self { aspect, mode, raw }
+    }
+
+    /// Set `aspect`.
+    #[must_use]
+    pub fn with_aspect(mut self, v: AspectRatio) -> Self {
+        self.aspect = v;
+        self
+    }
+
+    /// Set `mode`.
+    #[must_use]
+    pub fn with_mode(mut self, v: DisplayMode) -> Self {
+        self.mode = v;
+        self
+    }
+
+    /// Set `raw`.
+    #[must_use]
+    pub fn with_raw(mut self, v: u16) -> Self {
+        self.raw = v;
+        self
+    }
 }
 
 /// Preferred display aspect-ratio code per SPRM 14 bits 10..=11.
@@ -554,7 +659,8 @@ impl DisplayMode {
 /// Decoded view of SPRM 15 (player audio capability bitmap).
 ///
 /// `false` in every slot ⇒ the spec page's "cannot play" interpretation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct AudioCapabilities {
     /// Bit 2 — SDDS karaoke.
     pub sdds_karaoke: bool,
@@ -576,6 +682,78 @@ pub struct AudioCapabilities {
     pub dolby: bool,
     /// Raw SPRM 15 word.
     pub raw: u16,
+}
+
+impl AudioCapabilities {
+    /// Set `sdds_karaoke`.
+    #[must_use]
+    pub fn with_sdds_karaoke(mut self, v: bool) -> Self {
+        self.sdds_karaoke = v;
+        self
+    }
+
+    /// Set `dts_karaoke`.
+    #[must_use]
+    pub fn with_dts_karaoke(mut self, v: bool) -> Self {
+        self.dts_karaoke = v;
+        self
+    }
+
+    /// Set `mpeg_karaoke`.
+    #[must_use]
+    pub fn with_mpeg_karaoke(mut self, v: bool) -> Self {
+        self.mpeg_karaoke = v;
+        self
+    }
+
+    /// Set `dolby_karaoke`.
+    #[must_use]
+    pub fn with_dolby_karaoke(mut self, v: bool) -> Self {
+        self.dolby_karaoke = v;
+        self
+    }
+
+    /// Set `pcm_karaoke`.
+    #[must_use]
+    pub fn with_pcm_karaoke(mut self, v: bool) -> Self {
+        self.pcm_karaoke = v;
+        self
+    }
+
+    /// Set `sdds`.
+    #[must_use]
+    pub fn with_sdds(mut self, v: bool) -> Self {
+        self.sdds = v;
+        self
+    }
+
+    /// Set `dts`.
+    #[must_use]
+    pub fn with_dts(mut self, v: bool) -> Self {
+        self.dts = v;
+        self
+    }
+
+    /// Set `mpeg`.
+    #[must_use]
+    pub fn with_mpeg(mut self, v: bool) -> Self {
+        self.mpeg = v;
+        self
+    }
+
+    /// Set `dolby`.
+    #[must_use]
+    pub fn with_dolby(mut self, v: bool) -> Self {
+        self.dolby = v;
+        self
+    }
+
+    /// Set `raw`.
+    #[must_use]
+    pub fn with_raw(mut self, v: u16) -> Self {
+        self.raw = v;
+        self
+    }
 }
 
 impl AudioCapabilities {
@@ -826,6 +1004,7 @@ impl SubpictureLanguageExt {
 /// operation": load a different PGC, start a different cell,
 /// resume from a saved CallSS state, etc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VmAction {
     /// Instruction completed; continue to the next word in the same
     /// command list. The interpreter's `pc` advances by one.

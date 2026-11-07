@@ -74,13 +74,30 @@ use crate::error::{Error, Result};
 /// SPU to the SP_DCSQT). The PXDtf / PXDbf offsets are not stored
 /// directly in the header — they are recovered from the SP_DSPXA
 /// (`0x06`) command in the first DCSQ.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SpuHeader {
     /// `SPDSZ` — total size in bytes of this SPU (the value at
     /// offset 0 in the unit).
     pub size: u16,
     /// `SP_DCSQTA` — offset within the SPU to the SP_DCSQT.
     pub dcsqt_offset: u16,
+}
+
+impl SpuHeader {
+    /// Set `size`.
+    #[must_use]
+    pub fn with_size(mut self, v: u16) -> Self {
+        self.size = v;
+        self
+    }
+
+    /// Set `dcsqt_offset`.
+    #[must_use]
+    pub fn with_dcsqt_offset(mut self, v: u16) -> Self {
+        self.dcsqt_offset = v;
+        self
+    }
 }
 
 impl SpuHeader {
@@ -195,7 +212,8 @@ impl SpuCommand {
 
 /// One `SP_DCSQ` block: a 4-byte header (delay + next-DCSQ pointer)
 /// followed by a stream of [`SpuCommand`]s terminated by `0xFF`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SpDcSq {
     /// `SP_DCSQ_STM` — delay before executing the commands. Units
     /// are 90 kHz/1024 ticks, so `delay * 1024 / 90` is the delay
@@ -210,6 +228,29 @@ pub struct SpDcSq {
     pub commands: Vec<SpuCommand>,
 }
 
+impl SpDcSq {
+    /// Set `start_time`.
+    #[must_use]
+    pub fn with_start_time(mut self, v: u16) -> Self {
+        self.start_time = v;
+        self
+    }
+
+    /// Set `next_offset`.
+    #[must_use]
+    pub fn with_next_offset(mut self, v: u16) -> Self {
+        self.next_offset = v;
+        self
+    }
+
+    /// Set `commands`.
+    #[must_use]
+    pub fn with_commands(mut self, v: Vec<SpuCommand>) -> Self {
+        self.commands = v;
+        self
+    }
+}
+
 /// Convert an `SP_DCSQ_STM` 90 kHz/1024 delay into milliseconds.
 ///
 /// Per the conversion table in mpucoder-spu.html the relationship is
@@ -220,13 +261,30 @@ pub fn spdcsq_stm_to_ms(stm: u16) -> u32 {
 }
 
 /// One fully parsed Sub-Picture Unit.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct SubPictureUnit {
     /// SPUH at the head of the buffer.
     pub header: SpuHeader,
     /// All `SP_DCSQ` blocks, walked in order from `SP_DCSQTA`
     /// onward via the per-block `SP_NXT_DCSQ_SA` pointer.
     pub control_sequences: Vec<SpDcSq>,
+}
+
+impl SubPictureUnit {
+    /// Set `header`.
+    #[must_use]
+    pub fn with_header(mut self, v: SpuHeader) -> Self {
+        self.header = v;
+        self
+    }
+
+    /// Set `control_sequences`.
+    #[must_use]
+    pub fn with_control_sequences(mut self, v: Vec<SpDcSq>) -> Self {
+        self.control_sequences = v;
+        self
+    }
 }
 
 impl SubPictureUnit {
@@ -692,7 +750,8 @@ pub fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
 /// caller overlays `rgba` at `(x, y)` over the decoded MPEG-2 frame;
 /// no scaling or field-deinterlace beyond the SPU's own top/bottom
 /// field interleave is applied here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SpuBitmap {
     /// Left edge of the overlay (the `SET_DAREA` `start_x`).
     pub x: u16,
@@ -704,6 +763,43 @@ pub struct SpuBitmap {
     pub height: u16,
     /// Row-major RGBA pixels, `width * height * 4` bytes.
     pub rgba: Vec<u8>,
+}
+
+impl SpuBitmap {
+    /// Set `x`.
+    #[must_use]
+    pub fn with_x(mut self, v: u16) -> Self {
+        self.x = v;
+        self
+    }
+
+    /// Set `y`.
+    #[must_use]
+    pub fn with_y(mut self, v: u16) -> Self {
+        self.y = v;
+        self
+    }
+
+    /// Set `width`.
+    #[must_use]
+    pub fn with_width(mut self, v: u16) -> Self {
+        self.width = v;
+        self
+    }
+
+    /// Set `height`.
+    #[must_use]
+    pub fn with_height(mut self, v: u16) -> Self {
+        self.height = v;
+        self
+    }
+
+    /// Set `rgba`.
+    #[must_use]
+    pub fn with_rgba(mut self, v: Vec<u8>) -> Self {
+        self.rgba = v;
+        self
+    }
 }
 
 /// Expand a 4-bit SPU contrast nibble (`0x0` transparent …

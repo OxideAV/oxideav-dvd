@@ -81,7 +81,8 @@ pub const SC_PRIVATE_STREAM_2: u8 = 0xBF;
 ///                 SCR_ext[8..0] 1`
 /// - bytes 10..13 `program_mux_rate[21..0] 11`
 /// - byte  13     `reserved[4..0] pack_stuffing_length[2..0]`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct PackHeader {
     /// 33-bit System Clock Reference base (90 kHz units; SCR / 300).
     pub scr_base: u64,
@@ -94,6 +95,36 @@ pub struct PackHeader {
     /// bytes that follow this 14-byte header before the next
     /// start-code prefix.
     pub stuffing_bytes: u8,
+}
+
+impl PackHeader {
+    /// Set `scr_base`.
+    #[must_use]
+    pub fn with_scr_base(mut self, v: u64) -> Self {
+        self.scr_base = v;
+        self
+    }
+
+    /// Set `scr_ext`.
+    #[must_use]
+    pub fn with_scr_ext(mut self, v: u16) -> Self {
+        self.scr_ext = v;
+        self
+    }
+
+    /// Set `mux_rate`.
+    #[must_use]
+    pub fn with_mux_rate(mut self, v: u32) -> Self {
+        self.mux_rate = v;
+        self
+    }
+
+    /// Set `stuffing_bytes`.
+    #[must_use]
+    pub fn with_stuffing_bytes(mut self, v: u8) -> Self {
+        self.stuffing_bytes = v;
+        self
+    }
 }
 
 impl PackHeader {
@@ -225,7 +256,8 @@ impl StreamBound {
 /// - `packet_rate_restriction_flag` — 1, `reserved_byte` — 7 bits
 ///
 /// followed by `header_length - 6` bytes of `stream_bound` entries.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SystemHeader {
     /// 22-bit `rate_bound` (≥ max `program_mux_rate`; 25200 on DVD).
     pub rate_bound: u32,
@@ -245,6 +277,71 @@ pub struct SystemHeader {
     pub packet_rate_restriction: bool,
     /// The trailing `stream_bound` entries (4 on a DVD nav-pack).
     pub stream_bounds: Vec<StreamBound>,
+}
+
+impl SystemHeader {
+    /// Set `rate_bound`.
+    #[must_use]
+    pub fn with_rate_bound(mut self, v: u32) -> Self {
+        self.rate_bound = v;
+        self
+    }
+
+    /// Set `audio_bound`.
+    #[must_use]
+    pub fn with_audio_bound(mut self, v: u8) -> Self {
+        self.audio_bound = v;
+        self
+    }
+
+    /// Set `fixed_flag`.
+    #[must_use]
+    pub fn with_fixed_flag(mut self, v: bool) -> Self {
+        self.fixed_flag = v;
+        self
+    }
+
+    /// Set `csps_flag`.
+    #[must_use]
+    pub fn with_csps_flag(mut self, v: bool) -> Self {
+        self.csps_flag = v;
+        self
+    }
+
+    /// Set `system_audio_lock`.
+    #[must_use]
+    pub fn with_system_audio_lock(mut self, v: bool) -> Self {
+        self.system_audio_lock = v;
+        self
+    }
+
+    /// Set `system_video_lock`.
+    #[must_use]
+    pub fn with_system_video_lock(mut self, v: bool) -> Self {
+        self.system_video_lock = v;
+        self
+    }
+
+    /// Set `video_bound`.
+    #[must_use]
+    pub fn with_video_bound(mut self, v: u8) -> Self {
+        self.video_bound = v;
+        self
+    }
+
+    /// Set `packet_rate_restriction`.
+    #[must_use]
+    pub fn with_packet_rate_restriction(mut self, v: bool) -> Self {
+        self.packet_rate_restriction = v;
+        self
+    }
+
+    /// Set `stream_bounds`.
+    #[must_use]
+    pub fn with_stream_bounds(mut self, v: Vec<StreamBound>) -> Self {
+        self.stream_bounds = v;
+        self
+    }
 }
 
 impl SystemHeader {
@@ -341,6 +438,7 @@ impl SystemHeader {
 /// to disambiguate, and the disc's IFO audio-attribute table records
 /// the same coding mode independently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum DvdSubstream {
     /// `0x20..=0x3F` — subpicture track (1 of 32).
     Subpicture(u8),
@@ -434,6 +532,7 @@ impl DvdSubstream {
 /// taxonomy of `dvd-substream-ids-and-copy-protection.md` §1 with
 /// the concrete ID byte abstracted away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum DvdSubstreamKind {
     /// `0x20..=0x3F` — RLE 4-colour overlay (subtitles, menu
     /// highlights); 32 tracks.
@@ -538,7 +637,8 @@ impl DvdSubstreamKind {
 /// `FrmCnt = 2` at `0x20`, `FirstAccUnit = 1` at `0x21..0x23`, AC-3
 /// sync `0B77` at `0x23 = 0x1F + 4 = 3 + 1`). [`Self::access_unit_offset`]
 /// applies that `3 + FirstAccUnit` rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct AudioSubstreamHeader {
     /// Substream-number byte (`0x80..=0x87` AC-3, `0x88..=0x8F` DTS,
     /// `0x90..=0x97` SDDS, `0xA0..=0xA7` LPCM) — mirrored from
@@ -552,6 +652,29 @@ pub struct AudioSubstreamHeader {
     /// unit begins in this packet" (the PTS, if any, applies to a
     /// frame carried over from an earlier packet).
     pub first_access_unit: u16,
+}
+
+impl AudioSubstreamHeader {
+    /// Set `sub_stream_id`.
+    #[must_use]
+    pub fn with_sub_stream_id(mut self, v: u8) -> Self {
+        self.sub_stream_id = v;
+        self
+    }
+
+    /// Set `frame_count`.
+    #[must_use]
+    pub fn with_frame_count(mut self, v: u8) -> Self {
+        self.frame_count = v;
+        self
+    }
+
+    /// Set `first_access_unit`.
+    #[must_use]
+    pub fn with_first_access_unit(mut self, v: u16) -> Self {
+        self.first_access_unit = v;
+        self
+    }
 }
 
 /// Length of the generic audio-substream header that prefixes every
@@ -687,6 +810,7 @@ impl PesPstdBuffer {
 /// is independently flagged by the extension's own first byte and
 /// appended to the header data field in this order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct PesExtension<'a> {
     /// 16 bytes of user-defined PES private data (if flagged).
     pub private_data: Option<&'a [u8]>,
@@ -702,12 +826,50 @@ pub struct PesExtension<'a> {
     pub extension_field_2: Option<&'a [u8]>,
 }
 
+impl<'a> PesExtension<'a> {
+    /// Set `private_data`.
+    #[must_use]
+    pub fn with_private_data(mut self, v: Option<&'a [u8]>) -> Self {
+        self.private_data = v;
+        self
+    }
+
+    /// Set `pack_header_field`.
+    #[must_use]
+    pub fn with_pack_header_field(mut self, v: Option<&'a [u8]>) -> Self {
+        self.pack_header_field = v;
+        self
+    }
+
+    /// Set `sequence_counter`.
+    #[must_use]
+    pub fn with_sequence_counter(mut self, v: Option<ProgramPacketSequenceCounter>) -> Self {
+        self.sequence_counter = v;
+        self
+    }
+
+    /// Set `pstd_buffer`.
+    #[must_use]
+    pub fn with_pstd_buffer(mut self, v: Option<PesPstdBuffer>) -> Self {
+        self.pstd_buffer = v;
+        self
+    }
+
+    /// Set `extension_field_2`.
+    #[must_use]
+    pub fn with_extension_field_2(mut self, v: Option<&'a [u8]>) -> Self {
+        self.extension_field_2 = v;
+        self
+    }
+}
+
 /// The decoded MPEG-2 PES header extension — bytes 6..8 flag fields
 /// plus every optional header-data group mpucoder-pes-hdr.html
 /// documents for the DVD stream subset. Present on every
 /// DVD-relevant stream except the padding stream and
 /// private_stream_2 (which carry no extension).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct PesHeaderExt<'a> {
     /// 2-bit `PES scrambling control` — `00` = not scrambled, other
     /// values are user-defined (on DVD: CSS).
@@ -740,9 +902,89 @@ pub struct PesHeaderExt<'a> {
     pub stuffing_len: usize,
 }
 
+impl<'a> PesHeaderExt<'a> {
+    /// Set `scrambling_control`.
+    #[must_use]
+    pub fn with_scrambling_control(mut self, v: u8) -> Self {
+        self.scrambling_control = v;
+        self
+    }
+
+    /// Set `priority`.
+    #[must_use]
+    pub fn with_priority(mut self, v: bool) -> Self {
+        self.priority = v;
+        self
+    }
+
+    /// Set `data_alignment`.
+    #[must_use]
+    pub fn with_data_alignment(mut self, v: bool) -> Self {
+        self.data_alignment = v;
+        self
+    }
+
+    /// Set `copyright`.
+    #[must_use]
+    pub fn with_copyright(mut self, v: bool) -> Self {
+        self.copyright = v;
+        self
+    }
+
+    /// Set `original`.
+    #[must_use]
+    pub fn with_original(mut self, v: bool) -> Self {
+        self.original = v;
+        self
+    }
+
+    /// Set `escr`.
+    #[must_use]
+    pub fn with_escr(mut self, v: Option<Escr>) -> Self {
+        self.escr = v;
+        self
+    }
+
+    /// Set `es_rate`.
+    #[must_use]
+    pub fn with_es_rate(mut self, v: Option<u32>) -> Self {
+        self.es_rate = v;
+        self
+    }
+
+    /// Set `additional_copy_info`.
+    #[must_use]
+    pub fn with_additional_copy_info(mut self, v: Option<u8>) -> Self {
+        self.additional_copy_info = v;
+        self
+    }
+
+    /// Set `prev_pes_crc`.
+    #[must_use]
+    pub fn with_prev_pes_crc(mut self, v: Option<u16>) -> Self {
+        self.prev_pes_crc = v;
+        self
+    }
+
+    /// Set `extension`.
+    #[must_use]
+    pub fn with_extension(mut self, v: Option<PesExtension<'a>>) -> Self {
+        self.extension = v;
+        self
+    }
+
+    /// Set `stuffing_len`.
+    #[must_use]
+    pub fn with_stuffing_len(mut self, v: usize) -> Self {
+        self.stuffing_len = v;
+        self
+    }
+}
+
 /// Parsed PES packet — header + raw payload slice (zero-copy into
 /// the caller's buffer).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct PesPacket<'a> {
     /// MPEG-PS stream identifier (byte 3 of the start code).
     pub stream_id: u8,
@@ -761,6 +1003,50 @@ pub struct PesPacket<'a> {
     /// On-wire size of the full PES packet (header + payload).
     /// Always `6 + PES_packet_length`.
     pub wire_size: usize,
+}
+
+impl<'a> PesPacket<'a> {
+    /// Set `stream_id`.
+    #[must_use]
+    pub fn with_stream_id(mut self, v: u8) -> Self {
+        self.stream_id = v;
+        self
+    }
+
+    /// Set `pts`.
+    #[must_use]
+    pub fn with_pts(mut self, v: Option<u64>) -> Self {
+        self.pts = v;
+        self
+    }
+
+    /// Set `dts`.
+    #[must_use]
+    pub fn with_dts(mut self, v: Option<u64>) -> Self {
+        self.dts = v;
+        self
+    }
+
+    /// Set `header_ext`.
+    #[must_use]
+    pub fn with_header_ext(mut self, v: Option<PesHeaderExt<'a>>) -> Self {
+        self.header_ext = v;
+        self
+    }
+
+    /// Set `payload`.
+    #[must_use]
+    pub fn with_payload(mut self, v: &'a [u8]) -> Self {
+        self.payload = v;
+        self
+    }
+
+    /// Set `wire_size`.
+    #[must_use]
+    pub fn with_wire_size(mut self, v: usize) -> Self {
+        self.wire_size = v;
+        self
+    }
 }
 
 impl<'a> PesPacket<'a> {
@@ -1091,12 +1377,29 @@ pub struct SlColiCell {
 /// for both the *selection* and *action* highlight states, exactly
 /// as laid out in the SL_COLI sub-table of `mpucoder-pci_pkt.html`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SlColi {
     /// Selection-state cells, indexed by emphasis code 0..=3
     /// (`[background, pattern, emphasis1, emphasis2]`).
     pub selection: [SlColiCell; 4],
     /// Action-state cells, indexed by emphasis code 0..=3.
     pub action: [SlColiCell; 4],
+}
+
+impl SlColi {
+    /// Set `selection`.
+    #[must_use]
+    pub fn with_selection(mut self, v: [SlColiCell; 4]) -> Self {
+        self.selection = v;
+        self
+    }
+
+    /// Set `action`.
+    #[must_use]
+    pub fn with_action(mut self, v: [SlColiCell; 4]) -> Self {
+        self.action = v;
+        self
+    }
 }
 
 impl SlColi {
@@ -1141,7 +1444,8 @@ impl SlColi {
 /// rectangular pixel region (10-bit X/Y coordinates), an auto-action
 /// flag, four adjacent-button selectors for D-pad navigation, and an
 /// 8-byte VM command executed when the button is actioned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct ButtonInfo {
     /// `btn_coln` — colour-scheme selector (0 = none, 1..=3 pick
     /// `SL_COLI_1..3`). 2-bit field.
@@ -1168,6 +1472,85 @@ pub struct ButtonInfo {
     /// The 8-byte VM command run on action. Surfaced raw; executing
     /// it is Phase 3c VM work (`mpucoder-vmi.html`).
     pub command: [u8; 8],
+}
+
+impl ButtonInfo {
+    /// Set `btn_coln`.
+    #[must_use]
+    pub fn with_btn_coln(mut self, v: u8) -> Self {
+        self.btn_coln = v;
+        self
+    }
+
+    /// Set `start_x`.
+    #[must_use]
+    pub fn with_start_x(mut self, v: u16) -> Self {
+        self.start_x = v;
+        self
+    }
+
+    /// Set `end_x`.
+    #[must_use]
+    pub fn with_end_x(mut self, v: u16) -> Self {
+        self.end_x = v;
+        self
+    }
+
+    /// Set `start_y`.
+    #[must_use]
+    pub fn with_start_y(mut self, v: u16) -> Self {
+        self.start_y = v;
+        self
+    }
+
+    /// Set `end_y`.
+    #[must_use]
+    pub fn with_end_y(mut self, v: u16) -> Self {
+        self.end_y = v;
+        self
+    }
+
+    /// Set `auto_action`.
+    #[must_use]
+    pub fn with_auto_action(mut self, v: bool) -> Self {
+        self.auto_action = v;
+        self
+    }
+
+    /// Set `up`.
+    #[must_use]
+    pub fn with_up(mut self, v: u8) -> Self {
+        self.up = v;
+        self
+    }
+
+    /// Set `down`.
+    #[must_use]
+    pub fn with_down(mut self, v: u8) -> Self {
+        self.down = v;
+        self
+    }
+
+    /// Set `left`.
+    #[must_use]
+    pub fn with_left(mut self, v: u8) -> Self {
+        self.left = v;
+        self
+    }
+
+    /// Set `right`.
+    #[must_use]
+    pub fn with_right(mut self, v: u8) -> Self {
+        self.right = v;
+        self
+    }
+
+    /// Set `command`.
+    #[must_use]
+    pub fn with_command(mut self, v: [u8; 8]) -> Self {
+        self.command = v;
+        self
+    }
 }
 
 impl ButtonInfo {
@@ -1233,7 +1616,8 @@ impl ButtonInfo {
 /// `mpucoder-pci_pkt.html`. Only present when `hli_ss & 0b11` selects
 /// "all new" or "use previous" highlight info; [`PciPacket::parse`]
 /// only materialises it when `btn_ns > 0`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct HighlightInfo {
     /// `hli_s_ptm` — highlight start presentation time (90 kHz).
     pub hli_s_ptm: u32,
@@ -1263,6 +1647,85 @@ pub struct HighlightInfo {
     /// The button table — exactly `btn_ns` entries (a VOBU declares
     /// up to 36 buttons).
     pub buttons: Vec<ButtonInfo>,
+}
+
+impl HighlightInfo {
+    /// Set `hli_s_ptm`.
+    #[must_use]
+    pub fn with_hli_s_ptm(mut self, v: u32) -> Self {
+        self.hli_s_ptm = v;
+        self
+    }
+
+    /// Set `hli_e_ptm`.
+    #[must_use]
+    pub fn with_hli_e_ptm(mut self, v: u32) -> Self {
+        self.hli_e_ptm = v;
+        self
+    }
+
+    /// Set `btn_sl_e_ptm`.
+    #[must_use]
+    pub fn with_btn_sl_e_ptm(mut self, v: u32) -> Self {
+        self.btn_sl_e_ptm = v;
+        self
+    }
+
+    /// Set `btn_md`.
+    #[must_use]
+    pub fn with_btn_md(mut self, v: u16) -> Self {
+        self.btn_md = v;
+        self
+    }
+
+    /// Set `btn_sn`.
+    #[must_use]
+    pub fn with_btn_sn(mut self, v: u8) -> Self {
+        self.btn_sn = v;
+        self
+    }
+
+    /// Set `btn_ns`.
+    #[must_use]
+    pub fn with_btn_ns(mut self, v: u8) -> Self {
+        self.btn_ns = v;
+        self
+    }
+
+    /// Set `nsl_btn_ns`.
+    #[must_use]
+    pub fn with_nsl_btn_ns(mut self, v: u8) -> Self {
+        self.nsl_btn_ns = v;
+        self
+    }
+
+    /// Set `fosl_btnn`.
+    #[must_use]
+    pub fn with_fosl_btnn(mut self, v: u8) -> Self {
+        self.fosl_btnn = v;
+        self
+    }
+
+    /// Set `foac_btnn`.
+    #[must_use]
+    pub fn with_foac_btnn(mut self, v: u8) -> Self {
+        self.foac_btnn = v;
+        self
+    }
+
+    /// Set `sl_coli`.
+    #[must_use]
+    pub fn with_sl_coli(mut self, v: [SlColi; 3]) -> Self {
+        self.sl_coli = v;
+        self
+    }
+
+    /// Set `buttons`.
+    #[must_use]
+    pub fn with_buttons(mut self, v: Vec<ButtonInfo>) -> Self {
+        self.buttons = v;
+        self
+    }
 }
 
 impl HighlightInfo {
@@ -1517,10 +1980,20 @@ impl NsmlAngleCell {
 /// switch to angle *N* at the next VOBU reads `cells[N - 1].dsta` and
 /// re-seeks by that relative sector offset. A title with no multi-angle
 /// data leaves every cell at [`NsmlAngleCell::ABSENT`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct NsmlAgli {
     /// The 9 non-seamless angle jump descriptors (angle 1..=9).
     pub cells: [NsmlAngleCell; 9],
+}
+
+impl NsmlAgli {
+    /// Set `cells`.
+    #[must_use]
+    pub fn with_cells(mut self, v: [NsmlAngleCell; 9]) -> Self {
+        self.cells = v;
+        self
+    }
 }
 
 impl NsmlAgli {
@@ -1584,7 +2057,8 @@ impl NsmlAgli {
 /// information block (timing + UOP mask) plus the NSML_AGLI
 /// non-seamless angle jump table and, when the VOBU carries a menu, the
 /// decoded [`HighlightInfo`] (HLI_GI + SL_COLI + BTN_IT).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct PciPacket {
     /// `PCI_GI 00` — `nv_pck_lbn`: disc-LBA of this NAV pack.
     pub nv_pck_lbn: u32,
@@ -1650,6 +2124,92 @@ pub struct PciPacket {
     /// not attempt to decode it. Use [`PciPacket::has_reci`] to test
     /// whether the region carries any non-zero byte.
     pub reci: Vec<u8>,
+}
+
+impl PciPacket {
+    /// Set `nv_pck_lbn`.
+    #[must_use]
+    pub fn with_nv_pck_lbn(mut self, v: u32) -> Self {
+        self.nv_pck_lbn = v;
+        self
+    }
+
+    /// Set `vobu_cat`.
+    #[must_use]
+    pub fn with_vobu_cat(mut self, v: u16) -> Self {
+        self.vobu_cat = v;
+        self
+    }
+
+    /// Set `vobu_uop_ctl`.
+    #[must_use]
+    pub fn with_vobu_uop_ctl(mut self, v: u32) -> Self {
+        self.vobu_uop_ctl = v;
+        self
+    }
+
+    /// Set `vobu_s_ptm`.
+    #[must_use]
+    pub fn with_vobu_s_ptm(mut self, v: u32) -> Self {
+        self.vobu_s_ptm = v;
+        self
+    }
+
+    /// Set `vobu_e_ptm`.
+    #[must_use]
+    pub fn with_vobu_e_ptm(mut self, v: u32) -> Self {
+        self.vobu_e_ptm = v;
+        self
+    }
+
+    /// Set `vobu_se_e_ptm`.
+    #[must_use]
+    pub fn with_vobu_se_e_ptm(mut self, v: u32) -> Self {
+        self.vobu_se_e_ptm = v;
+        self
+    }
+
+    /// Set `c_eltm`.
+    #[must_use]
+    pub fn with_c_eltm(mut self, v: u32) -> Self {
+        self.c_eltm = v;
+        self
+    }
+
+    /// Set `vobu_isrc`.
+    #[must_use]
+    pub fn with_vobu_isrc(mut self, v: [u8; 32]) -> Self {
+        self.vobu_isrc = v;
+        self
+    }
+
+    /// Set `nsml_agli`.
+    #[must_use]
+    pub fn with_nsml_agli(mut self, v: NsmlAgli) -> Self {
+        self.nsml_agli = v;
+        self
+    }
+
+    /// Set `hli_ss`.
+    #[must_use]
+    pub fn with_hli_ss(mut self, v: u16) -> Self {
+        self.hli_ss = v;
+        self
+    }
+
+    /// Set `highlight`.
+    #[must_use]
+    pub fn with_highlight(mut self, v: Option<HighlightInfo>) -> Self {
+        self.highlight = v;
+        self
+    }
+
+    /// Set `reci`.
+    #[must_use]
+    pub fn with_reci(mut self, v: Vec<u8>) -> Self {
+        self.reci = v;
+        self
+    }
 }
 
 impl PciPacket {
@@ -1940,7 +2500,8 @@ impl PciPacket {
 /// | `0x1A` | reserved (00)    | 1    |
 /// | `0x1B` | `vobu_c_idn`     | 1    |
 /// | `0x1C` | `c_eltm`         | 4    |
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct DsiGi {
     /// System clock reference for this nav-pack.
     pub nv_pck_scr: u32,
@@ -1962,6 +2523,71 @@ pub struct DsiGi {
     /// (last) byte encode the frame rate: `11` = 30 fps, `01` = 25 fps,
     /// other combinations are spec-illegal.
     pub c_eltm: u32,
+}
+
+impl DsiGi {
+    /// Set `nv_pck_scr`.
+    #[must_use]
+    pub fn with_nv_pck_scr(mut self, v: u32) -> Self {
+        self.nv_pck_scr = v;
+        self
+    }
+
+    /// Set `nv_pck_lbn`.
+    #[must_use]
+    pub fn with_nv_pck_lbn(mut self, v: u32) -> Self {
+        self.nv_pck_lbn = v;
+        self
+    }
+
+    /// Set `vobu_ea`.
+    #[must_use]
+    pub fn with_vobu_ea(mut self, v: u32) -> Self {
+        self.vobu_ea = v;
+        self
+    }
+
+    /// Set `vobu_1stref_ea`.
+    #[must_use]
+    pub fn with_vobu_1stref_ea(mut self, v: u32) -> Self {
+        self.vobu_1stref_ea = v;
+        self
+    }
+
+    /// Set `vobu_2ndref_ea`.
+    #[must_use]
+    pub fn with_vobu_2ndref_ea(mut self, v: u32) -> Self {
+        self.vobu_2ndref_ea = v;
+        self
+    }
+
+    /// Set `vobu_3rdref_ea`.
+    #[must_use]
+    pub fn with_vobu_3rdref_ea(mut self, v: u32) -> Self {
+        self.vobu_3rdref_ea = v;
+        self
+    }
+
+    /// Set `vobu_vob_idn`.
+    #[must_use]
+    pub fn with_vobu_vob_idn(mut self, v: u16) -> Self {
+        self.vobu_vob_idn = v;
+        self
+    }
+
+    /// Set `vobu_c_idn`.
+    #[must_use]
+    pub fn with_vobu_c_idn(mut self, v: u8) -> Self {
+        self.vobu_c_idn = v;
+        self
+    }
+
+    /// Set `c_eltm`.
+    #[must_use]
+    pub fn with_c_eltm(mut self, v: u32) -> Self {
+        self.c_eltm = v;
+        self
+    }
 }
 
 impl DsiGi {
@@ -2021,6 +2647,7 @@ impl DsiGi {
 /// sub-table, each stream gets the same 16-byte quad of
 /// `{ stp_ptm1, stp_ptm2, gap_len1, gap_len2 }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SmlAudioGap {
     /// PTM of the first audio-gap stop for this stream (90 kHz).
     pub stp_ptm1: u32,
@@ -2030,6 +2657,36 @@ pub struct SmlAudioGap {
     pub gap_len1: u32,
     /// Duration of the second audio gap (90 kHz clocks).
     pub gap_len2: u32,
+}
+
+impl SmlAudioGap {
+    /// Set `stp_ptm1`.
+    #[must_use]
+    pub fn with_stp_ptm1(mut self, v: u32) -> Self {
+        self.stp_ptm1 = v;
+        self
+    }
+
+    /// Set `stp_ptm2`.
+    #[must_use]
+    pub fn with_stp_ptm2(mut self, v: u32) -> Self {
+        self.stp_ptm2 = v;
+        self
+    }
+
+    /// Set `gap_len1`.
+    #[must_use]
+    pub fn with_gap_len1(mut self, v: u32) -> Self {
+        self.gap_len1 = v;
+        self
+    }
+
+    /// Set `gap_len2`.
+    #[must_use]
+    pub fn with_gap_len2(mut self, v: u32) -> Self {
+        self.gap_len2 = v;
+        self
+    }
 }
 
 impl SmlAudioGap {
@@ -2096,7 +2753,8 @@ pub enum NextIlvu {
 /// | `0x2C` | `vob_v_s_ptm`  | 4    |
 /// | `0x30` | `vob_v_e_ptm`  | 4    |
 /// | `0x34..0xB4` | 8 × [`SmlAudioGap`] | 16 each |
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SmlPbi {
     /// ILVU flag word. Only the top 4 bits of the first byte are
     /// defined; the rest is reserved-zero. Decode via
@@ -2120,6 +2778,57 @@ pub struct SmlPbi {
     pub vob_v_e_ptm: u32,
     /// Per-audio-stream A/V-sync gap pairs (8 streams).
     pub audio_gaps: [SmlAudioGap; 8],
+}
+
+impl SmlPbi {
+    /// Set `ilvu`.
+    #[must_use]
+    pub fn with_ilvu(mut self, v: u16) -> Self {
+        self.ilvu = v;
+        self
+    }
+
+    /// Set `ilvu_ea`.
+    #[must_use]
+    pub fn with_ilvu_ea(mut self, v: u32) -> Self {
+        self.ilvu_ea = v;
+        self
+    }
+
+    /// Set `nxt_ilvu_sa`.
+    #[must_use]
+    pub fn with_nxt_ilvu_sa(mut self, v: u32) -> Self {
+        self.nxt_ilvu_sa = v;
+        self
+    }
+
+    /// Set `nxt_ilvu_sz`.
+    #[must_use]
+    pub fn with_nxt_ilvu_sz(mut self, v: u16) -> Self {
+        self.nxt_ilvu_sz = v;
+        self
+    }
+
+    /// Set `vob_v_s_ptm`.
+    #[must_use]
+    pub fn with_vob_v_s_ptm(mut self, v: u32) -> Self {
+        self.vob_v_s_ptm = v;
+        self
+    }
+
+    /// Set `vob_v_e_ptm`.
+    #[must_use]
+    pub fn with_vob_v_e_ptm(mut self, v: u32) -> Self {
+        self.vob_v_e_ptm = v;
+        self
+    }
+
+    /// Set `audio_gaps`.
+    #[must_use]
+    pub fn with_audio_gaps(mut self, v: [SmlAudioGap; 8]) -> Self {
+        self.audio_gaps = v;
+        self
+    }
 }
 
 impl SmlPbi {
@@ -2247,11 +2956,21 @@ pub struct SmlAngleCell {
 /// 54-byte block at packet offset `0xB4..0xEA` covering the 9 angle
 /// cells of the multi-angle interleaved block. Each cell occupies
 /// 6 bytes (`dsta` 4 + `sz` 2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SmlAgli {
     /// SML_AGLI start offset within the DSI packet body.
     /// 9 angle cells per `mpucoder-dsi_pkt.html`.
     pub cells: [SmlAngleCell; 9],
+}
+
+impl SmlAgli {
+    /// Set `cells`.
+    #[must_use]
+    pub fn with_cells(mut self, v: [SmlAngleCell; 9]) -> Self {
+        self.cells = v;
+        self
+    }
 }
 
 impl SmlAgli {
@@ -2394,7 +3113,8 @@ impl SriPointer {
 /// `forward` / `backward` are decoded as raw 19-entry tables; the
 /// caller masks bits 30/31 with the helpers below to recover the
 /// offset + flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VobuSri {
     /// Offset to the next VOBU **with video** (forward; bit 31 = valid).
     pub sri_nvwv: u32,
@@ -2423,6 +3143,50 @@ pub struct VobuSri {
     pub backward: [u32; 19],
     /// Offset to the previous VOBU **with video** (backward; bit 31 = valid).
     pub sri_pvwv: u32,
+}
+
+impl VobuSri {
+    /// Set `sri_nvwv`.
+    #[must_use]
+    pub fn with_sri_nvwv(mut self, v: u32) -> Self {
+        self.sri_nvwv = v;
+        self
+    }
+
+    /// Set `forward`.
+    #[must_use]
+    pub fn with_forward(mut self, v: [u32; 19]) -> Self {
+        self.forward = v;
+        self
+    }
+
+    /// Set `sri_nv`.
+    #[must_use]
+    pub fn with_sri_nv(mut self, v: u32) -> Self {
+        self.sri_nv = v;
+        self
+    }
+
+    /// Set `sri_pv`.
+    #[must_use]
+    pub fn with_sri_pv(mut self, v: u32) -> Self {
+        self.sri_pv = v;
+        self
+    }
+
+    /// Set `backward`.
+    #[must_use]
+    pub fn with_backward(mut self, v: [u32; 19]) -> Self {
+        self.backward = v;
+        self
+    }
+
+    /// Set `sri_pvwv`.
+    #[must_use]
+    pub fn with_sri_pvwv(mut self, v: u32) -> Self {
+        self.sri_pvwv = v;
+        self
+    }
 }
 
 impl VobuSri {
@@ -2794,6 +3558,7 @@ impl Synci {
 /// Total decoded payload: 546 bytes. The remainder of the 0x3FA-
 /// byte private-stream-2 packet is reserved-zero per spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DsiPacket {
     /// DSI_GI — general information block (packet `0x00..0x20`).
     pub general_info: DsiGi,
@@ -2805,6 +3570,60 @@ pub struct DsiPacket {
     pub vobu_sri: VobuSri,
     /// SYNCI — A/V sync pointer table (packet `0x192..0x222`).
     pub synci: Synci,
+}
+
+impl DsiPacket {
+    /// Build a `DsiPacket` from every field.
+    pub fn new(
+        general_info: DsiGi,
+        sml_pbi: SmlPbi,
+        sml_agli: SmlAgli,
+        vobu_sri: VobuSri,
+        synci: Synci,
+    ) -> Self {
+        Self {
+            general_info,
+            sml_pbi,
+            sml_agli,
+            vobu_sri,
+            synci,
+        }
+    }
+
+    /// Set `general_info`.
+    #[must_use]
+    pub fn with_general_info(mut self, v: DsiGi) -> Self {
+        self.general_info = v;
+        self
+    }
+
+    /// Set `sml_pbi`.
+    #[must_use]
+    pub fn with_sml_pbi(mut self, v: SmlPbi) -> Self {
+        self.sml_pbi = v;
+        self
+    }
+
+    /// Set `sml_agli`.
+    #[must_use]
+    pub fn with_sml_agli(mut self, v: SmlAgli) -> Self {
+        self.sml_agli = v;
+        self
+    }
+
+    /// Set `vobu_sri`.
+    #[must_use]
+    pub fn with_vobu_sri(mut self, v: VobuSri) -> Self {
+        self.vobu_sri = v;
+        self
+    }
+
+    /// Set `synci`.
+    #[must_use]
+    pub fn with_synci(mut self, v: Synci) -> Self {
+        self.synci = v;
+        self
+    }
 }
 
 impl DsiPacket {
@@ -2877,12 +3696,45 @@ impl DsiPacket {
 ///   [pack hdr 14B][sys hdr ~24B][PCI: 0xBF substream 0x00, 0x3D4 B]
 ///   [DSI: 0xBF substream 0x01, 0x3FA B]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct NavPack {
     pub pci: PciPacket,
     pub dsi: DsiPacket,
     /// The decoded Program Stream System Header that sits between the
     /// pack header and the PCI packet (per `stnsoft-sys_hdr.html`).
     pub system_header: SystemHeader,
+}
+
+impl NavPack {
+    /// Build a `NavPack` from every field.
+    pub fn new(pci: PciPacket, dsi: DsiPacket, system_header: SystemHeader) -> Self {
+        Self {
+            pci,
+            dsi,
+            system_header,
+        }
+    }
+
+    /// Set `pci`.
+    #[must_use]
+    pub fn with_pci(mut self, v: PciPacket) -> Self {
+        self.pci = v;
+        self
+    }
+
+    /// Set `dsi`.
+    #[must_use]
+    pub fn with_dsi(mut self, v: DsiPacket) -> Self {
+        self.dsi = v;
+        self
+    }
+
+    /// Set `system_header`.
+    #[must_use]
+    pub fn with_system_header(mut self, v: SystemHeader) -> Self {
+        self.system_header = v;
+        self
+    }
 }
 
 impl NavPack {
@@ -2968,6 +3820,7 @@ pub const VOB_FILE_SPLIT_SECTORS: u32 = 0x7_FFFF;
 /// The single content kind a DVD pack carries — "The information in
 /// one pack is all of one kind" (`stnsoft-vobov.html`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PackKind {
     /// NAV pack: system header + the PCI and DSI packets.
     Nav,
@@ -3004,6 +3857,7 @@ impl PackKind {
 
 /// The result of [`classify_pack`] on a structurally valid sector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PackClass {
     /// The pack's single content kind.
     pub kind: PackKind,
@@ -3014,6 +3868,38 @@ pub struct PackClass {
     /// content packet ("The last video pack in each VOBU is padded
     /// if needed with either a padding stream or stuffing bytes").
     pub padded: bool,
+}
+
+impl PackClass {
+    /// Build a `PackClass` from every field.
+    pub fn new(kind: PackKind, packet_count: u8, padded: bool) -> Self {
+        Self {
+            kind,
+            packet_count,
+            padded,
+        }
+    }
+
+    /// Set `kind`.
+    #[must_use]
+    pub fn with_kind(mut self, v: PackKind) -> Self {
+        self.kind = v;
+        self
+    }
+
+    /// Set `packet_count`.
+    #[must_use]
+    pub fn with_packet_count(mut self, v: u8) -> Self {
+        self.packet_count = v;
+        self
+    }
+
+    /// Set `padded`.
+    #[must_use]
+    pub fn with_padded(mut self, v: bool) -> Self {
+        self.padded = v;
+        self
+    }
 }
 
 /// Classify one 2048-byte sector against the pack-structure rules of
@@ -3117,6 +4003,7 @@ pub fn classify_pack(sector: &[u8]) -> Result<PackClass> {
 
 /// Logical destination for a PES payload routed by [`VobDemuxer`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ElementaryStream {
     /// MPEG-2 video — `stream_id` in `0xE0..=0xEF` (DVD allows at
     /// most one video stream).
@@ -3136,6 +4023,7 @@ pub enum ElementaryStream {
 
 /// Per-elementary-stream byte buffers extracted by [`VobDemuxer`].
 #[derive(Debug, Default, Clone)]
+#[non_exhaustive]
 pub struct VobStreams {
     /// Raw MPEG-2 video elementary stream bytes (DVD permits only
     /// one video stream, so this is a single `Vec<u8>`).
@@ -3165,9 +4053,68 @@ pub struct VobStreams {
     pub substream_census: BTreeMap<u8, SubstreamStat>,
 }
 
+impl VobStreams {
+    /// Set `video`.
+    #[must_use]
+    pub fn with_video(mut self, v: Vec<u8>) -> Self {
+        self.video = v;
+        self
+    }
+
+    /// Set `ac3`.
+    #[must_use]
+    pub fn with_ac3(mut self, v: BTreeMap<u8, Vec<u8>>) -> Self {
+        self.ac3 = v;
+        self
+    }
+
+    /// Set `dts`.
+    #[must_use]
+    pub fn with_dts(mut self, v: BTreeMap<u8, Vec<u8>>) -> Self {
+        self.dts = v;
+        self
+    }
+
+    /// Set `sdds`.
+    #[must_use]
+    pub fn with_sdds(mut self, v: BTreeMap<u8, Vec<u8>>) -> Self {
+        self.sdds = v;
+        self
+    }
+
+    /// Set `lpcm`.
+    #[must_use]
+    pub fn with_lpcm(mut self, v: BTreeMap<u8, Vec<u8>>) -> Self {
+        self.lpcm = v;
+        self
+    }
+
+    /// Set `subpicture`.
+    #[must_use]
+    pub fn with_subpicture(mut self, v: BTreeMap<u8, Vec<u8>>) -> Self {
+        self.subpicture = v;
+        self
+    }
+
+    /// Set `nav_packs`.
+    #[must_use]
+    pub fn with_nav_packs(mut self, v: Vec<NavPack>) -> Self {
+        self.nav_packs = v;
+        self
+    }
+
+    /// Set `substream_census`.
+    #[must_use]
+    pub fn with_substream_census(mut self, v: BTreeMap<u8, SubstreamStat>) -> Self {
+        self.substream_census = v;
+        self
+    }
+}
+
 /// Per-substream-ID demux statistics (one row of
 /// [`VobStreams::substream_census`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SubstreamStat {
     /// Number of private_stream_1 PES packets seen carrying this
     /// substream-ID byte.
@@ -3175,6 +4122,22 @@ pub struct SubstreamStat {
     /// Total payload bytes those packets carried (the substream-ID
     /// byte itself excluded).
     pub bytes: u64,
+}
+
+impl SubstreamStat {
+    /// Set `packets`.
+    #[must_use]
+    pub fn with_packets(mut self, v: u64) -> Self {
+        self.packets = v;
+        self
+    }
+
+    /// Set `bytes`.
+    #[must_use]
+    pub fn with_bytes(mut self, v: u64) -> Self {
+        self.bytes = v;
+        self
+    }
 }
 
 impl VobStreams {

@@ -27,6 +27,7 @@ use crate::error::{Error, Result};
 
 /// Parsed `dvd://` URI.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DvdUri {
     /// `dvd://` — auto-detect (Phase 2).
     AutoDetect,

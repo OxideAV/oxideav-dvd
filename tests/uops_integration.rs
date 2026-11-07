@@ -14,15 +14,14 @@ use oxideav_dvd::vob::PciPacket;
 /// Build a TT_SRPT title entry by hand — bypasses the on-disc
 /// parser so the test only validates the accessor logic.
 fn make_title_entry(title_type: u8) -> DvdTitleEntry {
-    DvdTitleEntry {
-        title_type,
-        angle_count: 1,
-        chapter_count: 1,
-        parental_mask: 0,
-        vts_number: 1,
-        vts_title_number: 1,
-        vts_start_sector: 0,
-    }
+    DvdTitleEntry::default()
+        .with_title_type(title_type)
+        .with_angle_count(1)
+        .with_chapter_count(1)
+        .with_parental_mask(0)
+        .with_vts_number(1)
+        .with_vts_title_number(1)
+        .with_vts_start_sector(0)
 }
 
 /// Build a minimal PGC byte buffer whose only meaningful field is

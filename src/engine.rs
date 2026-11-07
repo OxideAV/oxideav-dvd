@@ -215,6 +215,7 @@ pub struct PgcPosition {
 /// number, or a chapter (which the caller resolves through
 /// `VTS_PTT_SRPT`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LinkOutcome {
     /// `LinkNoLink` (subset `Nop`) — no transfer; the surrounding
     /// command list keeps walking.
@@ -383,6 +384,7 @@ pub fn resolve_link(
 /// post commands — and emits one of these each time something the
 /// playback engine must act on happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PlaybackEvent {
     /// Present cell `cell` (1-based, already angle-resolved): demux
     /// the VOB-relative sector span `first_sector ..= last_sector`
@@ -844,6 +846,7 @@ pub enum ButtonMove {
 
 /// The result of [`select_button`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ButtonPress {
     /// The button became the highlighted one (SPRM 8 updated); the
     /// user still has to action it.
@@ -944,7 +947,8 @@ pub fn forced_action(vm: &mut Vm, hli: &crate::vob::HighlightInfo) -> Option<VmA
 // =====================================================================
 
 /// One entry of a static title playback plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct PlannedCell {
     /// 1-based PGCN the cell lives in.
     pub pgcn: u16,
@@ -956,6 +960,43 @@ pub struct PlannedCell {
     pub first_sector: u32,
     /// C_PBI `last VOBU end sector` (VOB-relative).
     pub last_sector: u32,
+}
+
+impl PlannedCell {
+    /// Set `pgcn`.
+    #[must_use]
+    pub fn with_pgcn(mut self, v: u16) -> Self {
+        self.pgcn = v;
+        self
+    }
+
+    /// Set `program`.
+    #[must_use]
+    pub fn with_program(mut self, v: u8) -> Self {
+        self.program = v;
+        self
+    }
+
+    /// Set `cell`.
+    #[must_use]
+    pub fn with_cell(mut self, v: u8) -> Self {
+        self.cell = v;
+        self
+    }
+
+    /// Set `first_sector`.
+    #[must_use]
+    pub fn with_first_sector(mut self, v: u32) -> Self {
+        self.first_sector = v;
+        self
+    }
+
+    /// Set `last_sector`.
+    #[must_use]
+    pub fn with_last_sector(mut self, v: u32) -> Self {
+        self.last_sector = v;
+        self
+    }
 }
 
 /// Compute the **static** cell schedule of a VTS-internal title —
@@ -1037,6 +1078,7 @@ pub fn plan_title_cells(
 /// these; the caller then parses / looks up the named structure
 /// (VTS IFO, entry PGC, menu LU) and builds a fresh [`PgcRunner`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JumpResolution {
     /// `JumpTT ttn` resolved through TT_SRPT: parse title set `vts`
     /// (its first sector is `vts_start_sector`) and enter the entry
@@ -1175,6 +1217,7 @@ pub fn note_title_position(vm: &mut Vm, ttn: u8, vts_ttn: u8, pgcn: u16, pttn: O
 /// [`PlaybackEvent::Transfer`] carries a `CallSs`; pop it when the
 /// VM surfaces [`VmAction::Resume`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ResumeContext {
     /// Domain the CallSS left (per `mpucoder-vmi-jmp.html` rows
     /// 10..12 this is always the VTS Title domain on a conforming
@@ -1186,6 +1229,46 @@ pub struct ResumeContext {
     pub pgcn: u16,
     /// 1-based cell that was being presented when the call fired.
     pub cell: u8,
+}
+
+impl ResumeContext {
+    /// Build a `ResumeContext` from every field.
+    pub fn new(domain: Domain, vts: u8, pgcn: u16, cell: u8) -> Self {
+        Self {
+            domain,
+            vts,
+            pgcn,
+            cell,
+        }
+    }
+
+    /// Set `domain`.
+    #[must_use]
+    pub fn with_domain(mut self, v: Domain) -> Self {
+        self.domain = v;
+        self
+    }
+
+    /// Set `vts`.
+    #[must_use]
+    pub fn with_vts(mut self, v: u8) -> Self {
+        self.vts = v;
+        self
+    }
+
+    /// Set `pgcn`.
+    #[must_use]
+    pub fn with_pgcn(mut self, v: u16) -> Self {
+        self.pgcn = v;
+        self
+    }
+
+    /// Set `cell`.
+    #[must_use]
+    pub fn with_cell(mut self, v: u8) -> Self {
+        self.cell = v;
+        self
+    }
 }
 
 impl ResumeContext {
@@ -1209,6 +1292,7 @@ impl ResumeContext {
 
 /// Where a still hold currently stands — see [`StillClock`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StillPhase {
     /// No still was authored (`StillTime::None`) — playback proceeds
     /// immediately.
@@ -1697,6 +1781,7 @@ pub fn select_subpicture_stream(
 /// carries guide melodies 1/2; channels 3/4 carry guide melody A/B
 /// plus sound effects A/B).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct KaraokeChannelContent {
     /// Guide vocal 1 present on this channel.
     pub guide_vocal_1: bool,
@@ -1711,10 +1796,48 @@ pub struct KaraokeChannelContent {
     pub sound_effect: bool,
 }
 
+impl KaraokeChannelContent {
+    /// Set `guide_vocal_1`.
+    #[must_use]
+    pub fn with_guide_vocal_1(mut self, v: bool) -> Self {
+        self.guide_vocal_1 = v;
+        self
+    }
+
+    /// Set `guide_vocal_2`.
+    #[must_use]
+    pub fn with_guide_vocal_2(mut self, v: bool) -> Self {
+        self.guide_vocal_2 = v;
+        self
+    }
+
+    /// Set `guide_melody_primary`.
+    #[must_use]
+    pub fn with_guide_melody_primary(mut self, v: bool) -> Self {
+        self.guide_melody_primary = v;
+        self
+    }
+
+    /// Set `guide_melody_secondary`.
+    #[must_use]
+    pub fn with_guide_melody_secondary(mut self, v: bool) -> Self {
+        self.guide_melody_secondary = v;
+        self
+    }
+
+    /// Set `sound_effect`.
+    #[must_use]
+    pub fn with_sound_effect(mut self, v: bool) -> Self {
+        self.sound_effect = v;
+        self
+    }
+}
+
 /// One row of the karaoke downmix plan: whether SPRM 11 currently
 /// mixes source channel [`channel`](Self::channel) into the front /
 /// rear destinations, and what content the title says lives there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct KaraokeChannelRoute {
     /// Source audio channel (`2..=4` — the only channels SPRM 11
     /// allocates mix bits for).
@@ -1725,6 +1848,36 @@ pub struct KaraokeChannelRoute {
     pub to_rear: bool,
     /// Content flags from the stream's multichannel-extension entry.
     pub content: KaraokeChannelContent,
+}
+
+impl KaraokeChannelRoute {
+    /// Set `channel`.
+    #[must_use]
+    pub fn with_channel(mut self, v: u8) -> Self {
+        self.channel = v;
+        self
+    }
+
+    /// Set `to_front`.
+    #[must_use]
+    pub fn with_to_front(mut self, v: bool) -> Self {
+        self.to_front = v;
+        self
+    }
+
+    /// Set `to_rear`.
+    #[must_use]
+    pub fn with_to_rear(mut self, v: bool) -> Self {
+        self.to_rear = v;
+        self
+    }
+
+    /// Set `content`.
+    #[must_use]
+    pub fn with_content(mut self, v: KaraokeChannelContent) -> Self {
+        self.content = v;
+        self
+    }
 }
 
 /// Combine the SPRM 11 karaoke mixing mode with a stream's
@@ -1793,6 +1946,7 @@ pub enum ScanDirection {
 
 /// The outcome of one trick-play step — see [`scan_step`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TrickStep {
     /// Seek to the nav pack at absolute logical block `lbn` and
     /// decode its first reference frame (see

@@ -183,17 +183,17 @@ fn lpcm_payload() -> Vec<u8> {
 }
 
 fn cell(first: u32, last: u32, still: u8) -> CellPlaybackInfo {
-    CellPlaybackInfo {
-        category_byte0: 0,
-        restricted: false,
-        still_time: still,
-        cell_command: 0,
-        playback_time: PgcTime::from_bytes([0, 0, 0, 0]),
-        first_vobu_start_sector: first,
-        first_ilvu_end_sector: 0,
-        last_vobu_start_sector: last,
-        last_vobu_end_sector: last,
-    }
+    CellPlaybackInfo::new(
+        0,
+        false,
+        still,
+        0,
+        PgcTime::from_bytes([0, 0, 0, 0]),
+        first,
+        0,
+        last,
+        last,
+    )
 }
 
 /// Build the two-cell PGC: audio logical 0 → physical 0, sub-picture
@@ -207,17 +207,15 @@ fn build_pgc() -> Pgc {
     pgc.cells = vec![cell(0, 3, 0), cell(4, 5, 2)];
     pgc.still_time = 255;
     pgc.prohibited_user_ops = UopMask::NONE.with(UserOp::StillOff).raw();
-    pgc.audio_stream_control[0] = AudioStreamControl {
-        available: true,
-        stream_number: 0,
-    };
-    pgc.subpicture_stream_control[0] = SubpictureStreamControl {
-        available: true,
-        stream_4x3: 0,
-        stream_wide: 0,
-        stream_letterbox: 0,
-        stream_pan_scan: 0,
-    };
+    pgc.audio_stream_control[0] = AudioStreamControl::default()
+        .with_available(true)
+        .with_stream_number(0);
+    pgc.subpicture_stream_control[0] = SubpictureStreamControl::default()
+        .with_available(true)
+        .with_stream_4x3(0)
+        .with_stream_wide(0)
+        .with_stream_letterbox(0)
+        .with_stream_pan_scan(0);
     pgc.palette[5] = PaletteEntry {
         y: 235,
         cr: 128,

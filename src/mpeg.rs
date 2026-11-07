@@ -185,6 +185,7 @@ impl FrameRateCode {
 /// - `load_intra_quantiser_matrix` — 1 bit (+ 64-byte table if set)
 /// - `load_non_intra_quantiser_matrix` — 1 bit (+ 64-byte table)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SequenceHeader {
     /// 12-bit coded horizontal size (the low 12 bits; a Sequence
     /// Extension may add 2 high bits — see [`SequenceExtension`]).
@@ -206,6 +207,97 @@ pub struct SequenceHeader {
     pub load_intra_quant_matrix: bool,
     /// Whether a custom non-intra quantiser matrix follows.
     pub load_non_intra_quant_matrix: bool,
+}
+
+impl SequenceHeader {
+    /// Build a `SequenceHeader` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        horizontal_size: u16,
+        vertical_size: u16,
+        aspect_ratio: AspectRatioCode,
+        frame_rate: FrameRateCode,
+        bit_rate_value: u32,
+        vbv_buffer_size: u16,
+        constrained_parameters: bool,
+        load_intra_quant_matrix: bool,
+        load_non_intra_quant_matrix: bool,
+    ) -> Self {
+        Self {
+            horizontal_size,
+            vertical_size,
+            aspect_ratio,
+            frame_rate,
+            bit_rate_value,
+            vbv_buffer_size,
+            constrained_parameters,
+            load_intra_quant_matrix,
+            load_non_intra_quant_matrix,
+        }
+    }
+
+    /// Set `horizontal_size`.
+    #[must_use]
+    pub fn with_horizontal_size(mut self, v: u16) -> Self {
+        self.horizontal_size = v;
+        self
+    }
+
+    /// Set `vertical_size`.
+    #[must_use]
+    pub fn with_vertical_size(mut self, v: u16) -> Self {
+        self.vertical_size = v;
+        self
+    }
+
+    /// Set `aspect_ratio`.
+    #[must_use]
+    pub fn with_aspect_ratio(mut self, v: AspectRatioCode) -> Self {
+        self.aspect_ratio = v;
+        self
+    }
+
+    /// Set `frame_rate`.
+    #[must_use]
+    pub fn with_frame_rate(mut self, v: FrameRateCode) -> Self {
+        self.frame_rate = v;
+        self
+    }
+
+    /// Set `bit_rate_value`.
+    #[must_use]
+    pub fn with_bit_rate_value(mut self, v: u32) -> Self {
+        self.bit_rate_value = v;
+        self
+    }
+
+    /// Set `vbv_buffer_size`.
+    #[must_use]
+    pub fn with_vbv_buffer_size(mut self, v: u16) -> Self {
+        self.vbv_buffer_size = v;
+        self
+    }
+
+    /// Set `constrained_parameters`.
+    #[must_use]
+    pub fn with_constrained_parameters(mut self, v: bool) -> Self {
+        self.constrained_parameters = v;
+        self
+    }
+
+    /// Set `load_intra_quant_matrix`.
+    #[must_use]
+    pub fn with_load_intra_quant_matrix(mut self, v: bool) -> Self {
+        self.load_intra_quant_matrix = v;
+        self
+    }
+
+    /// Set `load_non_intra_quant_matrix`.
+    #[must_use]
+    pub fn with_load_non_intra_quant_matrix(mut self, v: bool) -> Self {
+        self.load_non_intra_quant_matrix = v;
+        self
+    }
 }
 
 impl SequenceHeader {
@@ -308,7 +400,8 @@ impl SequenceHeader {
 /// Always 6 bytes after the `00 00 01 B5` start code. The presence of
 /// this extension is what distinguishes an MPEG-2 stream from a bare
 /// MPEG-1 one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SequenceExtension {
     /// 8-bit `profile_and_level_indication`.
     pub profile_and_level: u8,
@@ -330,6 +423,78 @@ pub struct SequenceExtension {
     pub frame_rate_extension_n: u8,
     /// 5-bit `frame_rate_extension_d`.
     pub frame_rate_extension_d: u8,
+}
+
+impl SequenceExtension {
+    /// Set `profile_and_level`.
+    #[must_use]
+    pub fn with_profile_and_level(mut self, v: u8) -> Self {
+        self.profile_and_level = v;
+        self
+    }
+
+    /// Set `progressive_sequence`.
+    #[must_use]
+    pub fn with_progressive_sequence(mut self, v: bool) -> Self {
+        self.progressive_sequence = v;
+        self
+    }
+
+    /// Set `chroma_format`.
+    #[must_use]
+    pub fn with_chroma_format(mut self, v: u8) -> Self {
+        self.chroma_format = v;
+        self
+    }
+
+    /// Set `horizontal_size_extension`.
+    #[must_use]
+    pub fn with_horizontal_size_extension(mut self, v: u8) -> Self {
+        self.horizontal_size_extension = v;
+        self
+    }
+
+    /// Set `vertical_size_extension`.
+    #[must_use]
+    pub fn with_vertical_size_extension(mut self, v: u8) -> Self {
+        self.vertical_size_extension = v;
+        self
+    }
+
+    /// Set `bit_rate_extension`.
+    #[must_use]
+    pub fn with_bit_rate_extension(mut self, v: u16) -> Self {
+        self.bit_rate_extension = v;
+        self
+    }
+
+    /// Set `vbv_buffer_size_extension`.
+    #[must_use]
+    pub fn with_vbv_buffer_size_extension(mut self, v: u8) -> Self {
+        self.vbv_buffer_size_extension = v;
+        self
+    }
+
+    /// Set `low_delay`.
+    #[must_use]
+    pub fn with_low_delay(mut self, v: bool) -> Self {
+        self.low_delay = v;
+        self
+    }
+
+    /// Set `frame_rate_extension_n`.
+    #[must_use]
+    pub fn with_frame_rate_extension_n(mut self, v: u8) -> Self {
+        self.frame_rate_extension_n = v;
+        self
+    }
+
+    /// Set `frame_rate_extension_d`.
+    #[must_use]
+    pub fn with_frame_rate_extension_d(mut self, v: u8) -> Self {
+        self.frame_rate_extension_d = v;
+        self
+    }
 }
 
 impl SequenceExtension {
@@ -420,7 +585,8 @@ pub struct ColourDescription {
 /// - `display_horizontal_size` — 14 bits
 /// - marker bit — 1
 /// - `display_vertical_size` — 14 bits
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SequenceDisplayExtension {
     /// 3-bit `video_format` (0 = component, 1 = PAL, 2 = NTSC,
     /// 3 = SECAM, 4 = MAC, 5 = unspecified).
@@ -432,6 +598,36 @@ pub struct SequenceDisplayExtension {
     pub display_horizontal_size: u16,
     /// 14-bit `display_vertical_size`.
     pub display_vertical_size: u16,
+}
+
+impl SequenceDisplayExtension {
+    /// Set `video_format`.
+    #[must_use]
+    pub fn with_video_format(mut self, v: u8) -> Self {
+        self.video_format = v;
+        self
+    }
+
+    /// Set `colour`.
+    #[must_use]
+    pub fn with_colour(mut self, v: Option<ColourDescription>) -> Self {
+        self.colour = v;
+        self
+    }
+
+    /// Set `display_horizontal_size`.
+    #[must_use]
+    pub fn with_display_horizontal_size(mut self, v: u16) -> Self {
+        self.display_horizontal_size = v;
+        self
+    }
+
+    /// Set `display_vertical_size`.
+    #[must_use]
+    pub fn with_display_vertical_size(mut self, v: u16) -> Self {
+        self.display_vertical_size = v;
+        self
+    }
 }
 
 impl SequenceDisplayExtension {
@@ -510,7 +706,8 @@ impl SequenceDisplayExtension {
 /// - `closed_gop` — 1
 /// - `broken_link` — 1
 /// - 5 reserved zero bits
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct GopHeader {
     /// `drop_frame_flag` (NTSC drop-frame time-code).
     pub drop_frame: bool,
@@ -527,6 +724,57 @@ pub struct GopHeader {
     /// `broken_link` — editing severed the prior reference (display
     /// the leading B-frames at the player's discretion).
     pub broken_link: bool,
+}
+
+impl GopHeader {
+    /// Set `drop_frame`.
+    #[must_use]
+    pub fn with_drop_frame(mut self, v: bool) -> Self {
+        self.drop_frame = v;
+        self
+    }
+
+    /// Set `hours`.
+    #[must_use]
+    pub fn with_hours(mut self, v: u8) -> Self {
+        self.hours = v;
+        self
+    }
+
+    /// Set `minutes`.
+    #[must_use]
+    pub fn with_minutes(mut self, v: u8) -> Self {
+        self.minutes = v;
+        self
+    }
+
+    /// Set `seconds`.
+    #[must_use]
+    pub fn with_seconds(mut self, v: u8) -> Self {
+        self.seconds = v;
+        self
+    }
+
+    /// Set `frames`.
+    #[must_use]
+    pub fn with_frames(mut self, v: u8) -> Self {
+        self.frames = v;
+        self
+    }
+
+    /// Set `closed_gop`.
+    #[must_use]
+    pub fn with_closed_gop(mut self, v: bool) -> Self {
+        self.closed_gop = v;
+        self
+    }
+
+    /// Set `broken_link`.
+    #[must_use]
+    pub fn with_broken_link(mut self, v: bool) -> Self {
+        self.broken_link = v;
+        self
+    }
 }
 
 impl GopHeader {
@@ -620,6 +868,7 @@ impl PictureCodingType {
 /// and the real motion `f_code` values live in the
 /// [`PictureCodingExtension`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PictureHeader {
     /// 10-bit `temporal_reference` (display order within the GOP).
     pub temporal_reference: u16,
@@ -627,6 +876,38 @@ pub struct PictureHeader {
     pub coding_type: PictureCodingType,
     /// 16-bit `vbv_delay`.
     pub vbv_delay: u16,
+}
+
+impl PictureHeader {
+    /// Build a `PictureHeader` from every field.
+    pub fn new(temporal_reference: u16, coding_type: PictureCodingType, vbv_delay: u16) -> Self {
+        Self {
+            temporal_reference,
+            coding_type,
+            vbv_delay,
+        }
+    }
+
+    /// Set `temporal_reference`.
+    #[must_use]
+    pub fn with_temporal_reference(mut self, v: u16) -> Self {
+        self.temporal_reference = v;
+        self
+    }
+
+    /// Set `coding_type`.
+    #[must_use]
+    pub fn with_coding_type(mut self, v: PictureCodingType) -> Self {
+        self.coding_type = v;
+        self
+    }
+
+    /// Set `vbv_delay`.
+    #[must_use]
+    pub fn with_vbv_delay(mut self, v: u16) -> Self {
+        self.vbv_delay = v;
+        self
+    }
 }
 
 impl PictureHeader {
@@ -700,6 +981,7 @@ impl PictureStructure {
 /// - `progressive_frame` — 1 bit
 /// - `composite_display_flag` — 1 bit (+ trailer when set; not decoded)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PictureCodingExtension {
     /// `f_code[0][0]` — forward horizontal.
     pub f_code_fwd_horiz: u8,
@@ -733,6 +1015,160 @@ pub struct PictureCodingExtension {
     pub progressive_frame: bool,
     /// `composite_display_flag`.
     pub composite_display_flag: bool,
+}
+
+impl PictureCodingExtension {
+    /// Build a `PictureCodingExtension` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        f_code_fwd_horiz: u8,
+        f_code_fwd_vert: u8,
+        f_code_bwd_horiz: u8,
+        f_code_bwd_vert: u8,
+        intra_dc_precision: u8,
+        picture_structure: PictureStructure,
+        top_field_first: bool,
+        frame_pred_frame_dct: bool,
+        concealment_motion_vectors: bool,
+        q_scale_type: bool,
+        intra_vlc_format: bool,
+        alternate_scan: bool,
+        repeat_first_field: bool,
+        chroma_420_type: bool,
+        progressive_frame: bool,
+        composite_display_flag: bool,
+    ) -> Self {
+        Self {
+            f_code_fwd_horiz,
+            f_code_fwd_vert,
+            f_code_bwd_horiz,
+            f_code_bwd_vert,
+            intra_dc_precision,
+            picture_structure,
+            top_field_first,
+            frame_pred_frame_dct,
+            concealment_motion_vectors,
+            q_scale_type,
+            intra_vlc_format,
+            alternate_scan,
+            repeat_first_field,
+            chroma_420_type,
+            progressive_frame,
+            composite_display_flag,
+        }
+    }
+
+    /// Set `f_code_fwd_horiz`.
+    #[must_use]
+    pub fn with_f_code_fwd_horiz(mut self, v: u8) -> Self {
+        self.f_code_fwd_horiz = v;
+        self
+    }
+
+    /// Set `f_code_fwd_vert`.
+    #[must_use]
+    pub fn with_f_code_fwd_vert(mut self, v: u8) -> Self {
+        self.f_code_fwd_vert = v;
+        self
+    }
+
+    /// Set `f_code_bwd_horiz`.
+    #[must_use]
+    pub fn with_f_code_bwd_horiz(mut self, v: u8) -> Self {
+        self.f_code_bwd_horiz = v;
+        self
+    }
+
+    /// Set `f_code_bwd_vert`.
+    #[must_use]
+    pub fn with_f_code_bwd_vert(mut self, v: u8) -> Self {
+        self.f_code_bwd_vert = v;
+        self
+    }
+
+    /// Set `intra_dc_precision`.
+    #[must_use]
+    pub fn with_intra_dc_precision(mut self, v: u8) -> Self {
+        self.intra_dc_precision = v;
+        self
+    }
+
+    /// Set `picture_structure`.
+    #[must_use]
+    pub fn with_picture_structure(mut self, v: PictureStructure) -> Self {
+        self.picture_structure = v;
+        self
+    }
+
+    /// Set `top_field_first`.
+    #[must_use]
+    pub fn with_top_field_first(mut self, v: bool) -> Self {
+        self.top_field_first = v;
+        self
+    }
+
+    /// Set `frame_pred_frame_dct`.
+    #[must_use]
+    pub fn with_frame_pred_frame_dct(mut self, v: bool) -> Self {
+        self.frame_pred_frame_dct = v;
+        self
+    }
+
+    /// Set `concealment_motion_vectors`.
+    #[must_use]
+    pub fn with_concealment_motion_vectors(mut self, v: bool) -> Self {
+        self.concealment_motion_vectors = v;
+        self
+    }
+
+    /// Set `q_scale_type`.
+    #[must_use]
+    pub fn with_q_scale_type(mut self, v: bool) -> Self {
+        self.q_scale_type = v;
+        self
+    }
+
+    /// Set `intra_vlc_format`.
+    #[must_use]
+    pub fn with_intra_vlc_format(mut self, v: bool) -> Self {
+        self.intra_vlc_format = v;
+        self
+    }
+
+    /// Set `alternate_scan`.
+    #[must_use]
+    pub fn with_alternate_scan(mut self, v: bool) -> Self {
+        self.alternate_scan = v;
+        self
+    }
+
+    /// Set `repeat_first_field`.
+    #[must_use]
+    pub fn with_repeat_first_field(mut self, v: bool) -> Self {
+        self.repeat_first_field = v;
+        self
+    }
+
+    /// Set `chroma_420_type`.
+    #[must_use]
+    pub fn with_chroma_420_type(mut self, v: bool) -> Self {
+        self.chroma_420_type = v;
+        self
+    }
+
+    /// Set `progressive_frame`.
+    #[must_use]
+    pub fn with_progressive_frame(mut self, v: bool) -> Self {
+        self.progressive_frame = v;
+        self
+    }
+
+    /// Set `composite_display_flag`.
+    #[must_use]
+    pub fn with_composite_display_flag(mut self, v: bool) -> Self {
+        self.composite_display_flag = v;
+        self
+    }
 }
 
 impl PictureCodingExtension {
@@ -847,6 +1283,7 @@ pub fn iter_start_codes(stream: &[u8]) -> impl Iterator<Item = StartCode> + '_ {
 /// entry point. Fields are `Option` because a stream may be a bare
 /// MPEG-1 sequence (no extensions) or be truncated before a GOP.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VideoSequenceInfo {
     /// The first Sequence Header (`00 00 01 B3`).
     pub sequence: Option<SequenceHeader>,
@@ -859,6 +1296,43 @@ pub struct VideoSequenceInfo {
     pub first_gop: Option<GopHeader>,
     /// The first picture header (`00 00 01 00`), if reached.
     pub first_picture: Option<PictureHeader>,
+}
+
+impl VideoSequenceInfo {
+    /// Set `sequence`.
+    #[must_use]
+    pub fn with_sequence(mut self, v: Option<SequenceHeader>) -> Self {
+        self.sequence = v;
+        self
+    }
+
+    /// Set `sequence_extension`.
+    #[must_use]
+    pub fn with_sequence_extension(mut self, v: Option<SequenceExtension>) -> Self {
+        self.sequence_extension = v;
+        self
+    }
+
+    /// Set `display_extension`.
+    #[must_use]
+    pub fn with_display_extension(mut self, v: Option<SequenceDisplayExtension>) -> Self {
+        self.display_extension = v;
+        self
+    }
+
+    /// Set `first_gop`.
+    #[must_use]
+    pub fn with_first_gop(mut self, v: Option<GopHeader>) -> Self {
+        self.first_gop = v;
+        self
+    }
+
+    /// Set `first_picture`.
+    #[must_use]
+    pub fn with_first_picture(mut self, v: Option<PictureHeader>) -> Self {
+        self.first_picture = v;
+        self
+    }
 }
 
 impl VideoSequenceInfo {
@@ -968,6 +1442,7 @@ impl TvSystem {
 /// One violated DVD restriction from the `mpucoder-dvdmpeg.html`
 /// "Restrictions" table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DvdVideoViolation {
     /// No sequence header was found — nothing else can be checked.
     NoSequenceHeader,
@@ -1048,6 +1523,7 @@ pub enum DvdVideoViolation {
 /// stream, produced by [`scan_gop_stats`] for the GOP-length
 /// restrictions in `mpucoder-dvdmpeg.html`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct GopStats {
     /// Number of GOP headers seen.
     pub gop_count: u32,
@@ -1060,6 +1536,36 @@ pub struct GopStats {
     /// Coding Extension `picture_structure`; MPEG-1 pictures are
     /// always frames).
     pub max_fields_per_gop: u32,
+}
+
+impl GopStats {
+    /// Set `gop_count`.
+    #[must_use]
+    pub fn with_gop_count(mut self, v: u32) -> Self {
+        self.gop_count = v;
+        self
+    }
+
+    /// Set `picture_count`.
+    #[must_use]
+    pub fn with_picture_count(mut self, v: u32) -> Self {
+        self.picture_count = v;
+        self
+    }
+
+    /// Set `max_pictures_per_gop`.
+    #[must_use]
+    pub fn with_max_pictures_per_gop(mut self, v: u32) -> Self {
+        self.max_pictures_per_gop = v;
+        self
+    }
+
+    /// Set `max_fields_per_gop`.
+    #[must_use]
+    pub fn with_max_fields_per_gop(mut self, v: u32) -> Self {
+        self.max_fields_per_gop = v;
+        self
+    }
 }
 
 /// Walk every start code of a video elementary stream and collect

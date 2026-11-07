@@ -139,7 +139,8 @@ fn decode_ascii_with_pad(field: &[u8]) -> String {
 }
 
 /// Primary Volume Descriptor (§8.4) — only the fields we need.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct PrimaryVolumeDescriptor {
     pub volume_id: String,
     pub system_id: String,
@@ -151,6 +152,78 @@ pub struct PrimaryVolumeDescriptor {
     pub l_path_table_lba: u32,   // LE path table LBA
     pub m_path_table_lba: u32,   // BE path table LBA
     pub logical_block_size: u16, // bytes — always 2048 on DVD
+}
+
+impl PrimaryVolumeDescriptor {
+    /// Set `volume_id`.
+    #[must_use]
+    pub fn with_volume_id(mut self, v: String) -> Self {
+        self.volume_id = v;
+        self
+    }
+
+    /// Set `system_id`.
+    #[must_use]
+    pub fn with_system_id(mut self, v: String) -> Self {
+        self.system_id = v;
+        self
+    }
+
+    /// Set `set_id`.
+    #[must_use]
+    pub fn with_set_id(mut self, v: String) -> Self {
+        self.set_id = v;
+        self
+    }
+
+    /// Set `publisher_id`.
+    #[must_use]
+    pub fn with_publisher_id(mut self, v: String) -> Self {
+        self.publisher_id = v;
+        self
+    }
+
+    /// Set `volume_space_size`.
+    #[must_use]
+    pub fn with_volume_space_size(mut self, v: u32) -> Self {
+        self.volume_space_size = v;
+        self
+    }
+
+    /// Set `root_record`.
+    #[must_use]
+    pub fn with_root_record(mut self, v: DirectoryRecord) -> Self {
+        self.root_record = v;
+        self
+    }
+
+    /// Set `path_table_size`.
+    #[must_use]
+    pub fn with_path_table_size(mut self, v: u32) -> Self {
+        self.path_table_size = v;
+        self
+    }
+
+    /// Set `l_path_table_lba`.
+    #[must_use]
+    pub fn with_l_path_table_lba(mut self, v: u32) -> Self {
+        self.l_path_table_lba = v;
+        self
+    }
+
+    /// Set `m_path_table_lba`.
+    #[must_use]
+    pub fn with_m_path_table_lba(mut self, v: u32) -> Self {
+        self.m_path_table_lba = v;
+        self
+    }
+
+    /// Set `logical_block_size`.
+    #[must_use]
+    pub fn with_logical_block_size(mut self, v: u16) -> Self {
+        self.logical_block_size = v;
+        self
+    }
 }
 
 impl PrimaryVolumeDescriptor {
@@ -219,7 +292,8 @@ impl PrimaryVolumeDescriptor {
 }
 
 /// A single Directory Record (§9.1).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct DirectoryRecord {
     /// Length of this record (1..=255). 0 means "skip to next sector".
     pub length: u8,
@@ -233,6 +307,71 @@ pub struct DirectoryRecord {
     pub volume_sequence_number: u16,
     /// File identifier — decoded. Length is at offset 32.
     pub identifier: String,
+}
+
+impl DirectoryRecord {
+    /// Set `length`.
+    #[must_use]
+    pub fn with_length(mut self, v: u8) -> Self {
+        self.length = v;
+        self
+    }
+
+    /// Set `extended_attribute_record_length`.
+    #[must_use]
+    pub fn with_extended_attribute_record_length(mut self, v: u8) -> Self {
+        self.extended_attribute_record_length = v;
+        self
+    }
+
+    /// Set `extent_lba`.
+    #[must_use]
+    pub fn with_extent_lba(mut self, v: u32) -> Self {
+        self.extent_lba = v;
+        self
+    }
+
+    /// Set `data_length`.
+    #[must_use]
+    pub fn with_data_length(mut self, v: u32) -> Self {
+        self.data_length = v;
+        self
+    }
+
+    /// Set `file_flags`.
+    #[must_use]
+    pub fn with_file_flags(mut self, v: u8) -> Self {
+        self.file_flags = v;
+        self
+    }
+
+    /// Set `file_unit_size`.
+    #[must_use]
+    pub fn with_file_unit_size(mut self, v: u8) -> Self {
+        self.file_unit_size = v;
+        self
+    }
+
+    /// Set `interleave_gap_size`.
+    #[must_use]
+    pub fn with_interleave_gap_size(mut self, v: u8) -> Self {
+        self.interleave_gap_size = v;
+        self
+    }
+
+    /// Set `volume_sequence_number`.
+    #[must_use]
+    pub fn with_volume_sequence_number(mut self, v: u16) -> Self {
+        self.volume_sequence_number = v;
+        self
+    }
+
+    /// Set `identifier`.
+    #[must_use]
+    pub fn with_identifier(mut self, v: String) -> Self {
+        self.identifier = v;
+        self
+    }
 }
 
 impl DirectoryRecord {
@@ -317,7 +456,8 @@ fn decode_file_identifier(bytes: &[u8]) -> String {
 }
 
 /// A walked file or directory entry produced by [`Iso9660Volume::list_dir`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Iso9660Entry {
     pub name: String,
     pub is_dir: bool,
@@ -325,11 +465,63 @@ pub struct Iso9660Entry {
     pub size: u32,
 }
 
+impl Iso9660Entry {
+    /// Set `name`.
+    #[must_use]
+    pub fn with_name(mut self, v: String) -> Self {
+        self.name = v;
+        self
+    }
+
+    /// Set `is_dir`.
+    #[must_use]
+    pub fn with_is_dir(mut self, v: bool) -> Self {
+        self.is_dir = v;
+        self
+    }
+
+    /// Set `lba`.
+    #[must_use]
+    pub fn with_lba(mut self, v: u32) -> Self {
+        self.lba = v;
+        self
+    }
+
+    /// Set `size`.
+    #[must_use]
+    pub fn with_size(mut self, v: u32) -> Self {
+        self.size = v;
+        self
+    }
+}
+
 /// A successfully parsed ISO 9660 volume. Held alongside the reader
 /// so directory walks can pull more sectors lazily.
+#[non_exhaustive]
 pub struct Iso9660Volume<R: Read + Seek> {
     pub reader: R,
     pub pvd: PrimaryVolumeDescriptor,
+}
+
+impl<R: Read + Seek> Iso9660Volume<R> {
+    /// Build a `Iso9660Volume` from every field.
+    pub fn new(reader: R, pvd: PrimaryVolumeDescriptor) -> Self {
+        Self { reader, pvd }
+    }
+
+    /// Set `reader`.
+    #[must_use]
+    pub fn with_reader(mut self, v: R) -> Self {
+        self.reader = v;
+        self
+    }
+
+    /// Set `pvd`.
+    #[must_use]
+    pub fn with_pvd(mut self, v: PrimaryVolumeDescriptor) -> Self {
+        self.pvd = v;
+        self
+    }
 }
 
 impl<R: Read + Seek> std::fmt::Debug for Iso9660Volume<R> {
@@ -416,11 +608,35 @@ impl<R: Read + Seek> Iso9660Volume<R> {
 }
 
 /// A single L-Path table entry (§9.4.1).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct PathTableEntry {
     pub name: String,
     pub extent_lba: u32,
     pub parent_dir_number: u16,
+}
+
+impl PathTableEntry {
+    /// Set `name`.
+    #[must_use]
+    pub fn with_name(mut self, v: String) -> Self {
+        self.name = v;
+        self
+    }
+
+    /// Set `extent_lba`.
+    #[must_use]
+    pub fn with_extent_lba(mut self, v: u32) -> Self {
+        self.extent_lba = v;
+        self
+    }
+
+    /// Set `parent_dir_number`.
+    #[must_use]
+    pub fn with_parent_dir_number(mut self, v: u16) -> Self {
+        self.parent_dir_number = v;
+        self
+    }
 }
 
 /// Parse the L-Path table (little-endian) byte buffer.

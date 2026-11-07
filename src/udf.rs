@@ -70,6 +70,7 @@ pub const AVDP_SECTOR_SECONDARY: u64 = 512;
 /// ECMA-167 §3/7.2.1 unless otherwise noted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum TagId {
     PrimaryVolume = 1,
     AnchorVolumeDescriptorPointer = 2,
@@ -135,6 +136,7 @@ impl TagId {
 ///  12  TagLocation          u32 LE   (sector this tag is recorded at)
 /// ```
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct DescriptorTag {
     pub id: TagId,
     pub descriptor_version: u16,
@@ -142,6 +144,69 @@ pub struct DescriptorTag {
     pub crc: u16,
     pub crc_length: u16,
     pub location: u32,
+}
+
+impl DescriptorTag {
+    /// Build a `DescriptorTag` from every field.
+    pub fn new(
+        id: TagId,
+        descriptor_version: u16,
+        serial_number: u16,
+        crc: u16,
+        crc_length: u16,
+        location: u32,
+    ) -> Self {
+        Self {
+            id,
+            descriptor_version,
+            serial_number,
+            crc,
+            crc_length,
+            location,
+        }
+    }
+
+    /// Set `id`.
+    #[must_use]
+    pub fn with_id(mut self, v: TagId) -> Self {
+        self.id = v;
+        self
+    }
+
+    /// Set `descriptor_version`.
+    #[must_use]
+    pub fn with_descriptor_version(mut self, v: u16) -> Self {
+        self.descriptor_version = v;
+        self
+    }
+
+    /// Set `serial_number`.
+    #[must_use]
+    pub fn with_serial_number(mut self, v: u16) -> Self {
+        self.serial_number = v;
+        self
+    }
+
+    /// Set `crc`.
+    #[must_use]
+    pub fn with_crc(mut self, v: u16) -> Self {
+        self.crc = v;
+        self
+    }
+
+    /// Set `crc_length`.
+    #[must_use]
+    pub fn with_crc_length(mut self, v: u16) -> Self {
+        self.crc_length = v;
+        self
+    }
+
+    /// Set `location`.
+    #[must_use]
+    pub fn with_location(mut self, v: u32) -> Self {
+        self.location = v;
+        self
+    }
 }
 
 impl DescriptorTag {
@@ -438,10 +503,47 @@ pub fn decode_dstring_field(field: &[u8]) -> Result<String> {
 // ─────────────────────── AnchorVolumeDescriptorPointer (§10.2) ───────────────────────
 
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct AnchorVolumeDescriptorPointer {
     pub tag: DescriptorTag,
     pub main_volume_descriptor_sequence: ExtentAd,
     pub reserve_volume_descriptor_sequence: ExtentAd,
+}
+
+impl AnchorVolumeDescriptorPointer {
+    /// Build a `AnchorVolumeDescriptorPointer` from every field.
+    pub fn new(
+        tag: DescriptorTag,
+        main_volume_descriptor_sequence: ExtentAd,
+        reserve_volume_descriptor_sequence: ExtentAd,
+    ) -> Self {
+        Self {
+            tag,
+            main_volume_descriptor_sequence,
+            reserve_volume_descriptor_sequence,
+        }
+    }
+
+    /// Set `tag`.
+    #[must_use]
+    pub fn with_tag(mut self, v: DescriptorTag) -> Self {
+        self.tag = v;
+        self
+    }
+
+    /// Set `main_volume_descriptor_sequence`.
+    #[must_use]
+    pub fn with_main_volume_descriptor_sequence(mut self, v: ExtentAd) -> Self {
+        self.main_volume_descriptor_sequence = v;
+        self
+    }
+
+    /// Set `reserve_volume_descriptor_sequence`.
+    #[must_use]
+    pub fn with_reserve_volume_descriptor_sequence(mut self, v: ExtentAd) -> Self {
+        self.reserve_volume_descriptor_sequence = v;
+        self
+    }
 }
 
 impl AnchorVolumeDescriptorPointer {
@@ -463,11 +565,57 @@ impl AnchorVolumeDescriptorPointer {
 // ─────────────────────── PrimaryVolumeDescriptor (§10.1) ───────────────────────
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PrimaryVolumeDescriptor {
     pub tag: DescriptorTag,
     pub volume_descriptor_sequence_number: u32,
     pub primary_volume_descriptor_number: u32,
     pub volume_identifier: String,
+}
+
+impl PrimaryVolumeDescriptor {
+    /// Build a `PrimaryVolumeDescriptor` from every field.
+    pub fn new(
+        tag: DescriptorTag,
+        volume_descriptor_sequence_number: u32,
+        primary_volume_descriptor_number: u32,
+        volume_identifier: String,
+    ) -> Self {
+        Self {
+            tag,
+            volume_descriptor_sequence_number,
+            primary_volume_descriptor_number,
+            volume_identifier,
+        }
+    }
+
+    /// Set `tag`.
+    #[must_use]
+    pub fn with_tag(mut self, v: DescriptorTag) -> Self {
+        self.tag = v;
+        self
+    }
+
+    /// Set `volume_descriptor_sequence_number`.
+    #[must_use]
+    pub fn with_volume_descriptor_sequence_number(mut self, v: u32) -> Self {
+        self.volume_descriptor_sequence_number = v;
+        self
+    }
+
+    /// Set `primary_volume_descriptor_number`.
+    #[must_use]
+    pub fn with_primary_volume_descriptor_number(mut self, v: u32) -> Self {
+        self.primary_volume_descriptor_number = v;
+        self
+    }
+
+    /// Set `volume_identifier`.
+    #[must_use]
+    pub fn with_volume_identifier(mut self, v: String) -> Self {
+        self.volume_identifier = v;
+        self
+    }
 }
 
 impl PrimaryVolumeDescriptor {
@@ -494,6 +642,7 @@ impl PrimaryVolumeDescriptor {
 // ─────────────────────── PartitionDescriptor (§10.5) ───────────────────────
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PartitionDescriptor {
     pub tag: DescriptorTag,
     pub volume_descriptor_sequence_number: u32,
@@ -501,6 +650,69 @@ pub struct PartitionDescriptor {
     pub partition_number: u16,
     pub partition_starting_location: u32,
     pub partition_length: u32,
+}
+
+impl PartitionDescriptor {
+    /// Build a `PartitionDescriptor` from every field.
+    pub fn new(
+        tag: DescriptorTag,
+        volume_descriptor_sequence_number: u32,
+        partition_flags: u16,
+        partition_number: u16,
+        partition_starting_location: u32,
+        partition_length: u32,
+    ) -> Self {
+        Self {
+            tag,
+            volume_descriptor_sequence_number,
+            partition_flags,
+            partition_number,
+            partition_starting_location,
+            partition_length,
+        }
+    }
+
+    /// Set `tag`.
+    #[must_use]
+    pub fn with_tag(mut self, v: DescriptorTag) -> Self {
+        self.tag = v;
+        self
+    }
+
+    /// Set `volume_descriptor_sequence_number`.
+    #[must_use]
+    pub fn with_volume_descriptor_sequence_number(mut self, v: u32) -> Self {
+        self.volume_descriptor_sequence_number = v;
+        self
+    }
+
+    /// Set `partition_flags`.
+    #[must_use]
+    pub fn with_partition_flags(mut self, v: u16) -> Self {
+        self.partition_flags = v;
+        self
+    }
+
+    /// Set `partition_number`.
+    #[must_use]
+    pub fn with_partition_number(mut self, v: u16) -> Self {
+        self.partition_number = v;
+        self
+    }
+
+    /// Set `partition_starting_location`.
+    #[must_use]
+    pub fn with_partition_starting_location(mut self, v: u32) -> Self {
+        self.partition_starting_location = v;
+        self
+    }
+
+    /// Set `partition_length`.
+    #[must_use]
+    pub fn with_partition_length(mut self, v: u32) -> Self {
+        self.partition_length = v;
+        self
+    }
 }
 
 impl PartitionDescriptor {
@@ -531,12 +743,67 @@ impl PartitionDescriptor {
 // ─────────────────────── LogicalVolumeDescriptor (§10.6) ───────────────────────
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LogicalVolumeDescriptor {
     pub tag: DescriptorTag,
     pub volume_descriptor_sequence_number: u32,
     pub logical_volume_identifier: String,
     pub logical_block_size: u32,
     pub file_set_descriptor_location: LongAd,
+}
+
+impl LogicalVolumeDescriptor {
+    /// Build a `LogicalVolumeDescriptor` from every field.
+    pub fn new(
+        tag: DescriptorTag,
+        volume_descriptor_sequence_number: u32,
+        logical_volume_identifier: String,
+        logical_block_size: u32,
+        file_set_descriptor_location: LongAd,
+    ) -> Self {
+        Self {
+            tag,
+            volume_descriptor_sequence_number,
+            logical_volume_identifier,
+            logical_block_size,
+            file_set_descriptor_location,
+        }
+    }
+
+    /// Set `tag`.
+    #[must_use]
+    pub fn with_tag(mut self, v: DescriptorTag) -> Self {
+        self.tag = v;
+        self
+    }
+
+    /// Set `volume_descriptor_sequence_number`.
+    #[must_use]
+    pub fn with_volume_descriptor_sequence_number(mut self, v: u32) -> Self {
+        self.volume_descriptor_sequence_number = v;
+        self
+    }
+
+    /// Set `logical_volume_identifier`.
+    #[must_use]
+    pub fn with_logical_volume_identifier(mut self, v: String) -> Self {
+        self.logical_volume_identifier = v;
+        self
+    }
+
+    /// Set `logical_block_size`.
+    #[must_use]
+    pub fn with_logical_block_size(mut self, v: u32) -> Self {
+        self.logical_block_size = v;
+        self
+    }
+
+    /// Set `file_set_descriptor_location`.
+    #[must_use]
+    pub fn with_file_set_descriptor_location(mut self, v: LongAd) -> Self {
+        self.file_set_descriptor_location = v;
+        self
+    }
 }
 
 impl LogicalVolumeDescriptor {
@@ -598,9 +865,34 @@ impl LogicalVolumeIntegrityDescriptor {
 // ─────────────────────── FileSetDescriptor (§14.1) ───────────────────────
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FileSetDescriptor {
     pub tag: DescriptorTag,
     pub root_directory_icb: LongAd,
+}
+
+impl FileSetDescriptor {
+    /// Build a `FileSetDescriptor` from every field.
+    pub fn new(tag: DescriptorTag, root_directory_icb: LongAd) -> Self {
+        Self {
+            tag,
+            root_directory_icb,
+        }
+    }
+
+    /// Set `tag`.
+    #[must_use]
+    pub fn with_tag(mut self, v: DescriptorTag) -> Self {
+        self.tag = v;
+        self
+    }
+
+    /// Set `root_directory_icb`.
+    #[must_use]
+    pub fn with_root_directory_icb(mut self, v: LongAd) -> Self {
+        self.root_directory_icb = v;
+        self
+    }
 }
 
 impl FileSetDescriptor {
@@ -623,6 +915,7 @@ impl FileSetDescriptor {
 // ─────────────────────── FileIdentifierDescriptor (§14.4) ───────────────────────
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FileIdentifierDescriptor {
     pub tag: DescriptorTag,
     pub file_version_number: u16,
@@ -632,6 +925,69 @@ pub struct FileIdentifierDescriptor {
     /// Total padded size of the FID record on disc (§14.4.9: round up
     /// to the next 4-byte boundary).
     pub total_size: usize,
+}
+
+impl FileIdentifierDescriptor {
+    /// Build a `FileIdentifierDescriptor` from every field.
+    pub fn new(
+        tag: DescriptorTag,
+        file_version_number: u16,
+        file_characteristics: u8,
+        identifier: String,
+        icb: LongAd,
+        total_size: usize,
+    ) -> Self {
+        Self {
+            tag,
+            file_version_number,
+            file_characteristics,
+            identifier,
+            icb,
+            total_size,
+        }
+    }
+
+    /// Set `tag`.
+    #[must_use]
+    pub fn with_tag(mut self, v: DescriptorTag) -> Self {
+        self.tag = v;
+        self
+    }
+
+    /// Set `file_version_number`.
+    #[must_use]
+    pub fn with_file_version_number(mut self, v: u16) -> Self {
+        self.file_version_number = v;
+        self
+    }
+
+    /// Set `file_characteristics`.
+    #[must_use]
+    pub fn with_file_characteristics(mut self, v: u8) -> Self {
+        self.file_characteristics = v;
+        self
+    }
+
+    /// Set `identifier`.
+    #[must_use]
+    pub fn with_identifier(mut self, v: String) -> Self {
+        self.identifier = v;
+        self
+    }
+
+    /// Set `icb`.
+    #[must_use]
+    pub fn with_icb(mut self, v: LongAd) -> Self {
+        self.icb = v;
+        self
+    }
+
+    /// Set `total_size`.
+    #[must_use]
+    pub fn with_total_size(mut self, v: usize) -> Self {
+        self.total_size = v;
+        self
+    }
 }
 
 impl FileIdentifierDescriptor {
@@ -679,6 +1035,7 @@ impl FileIdentifierDescriptor {
 // ─────────────────────── FileEntry / ICB (§14.6, §14.9) ───────────────────────
 
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct IcbTag {
     pub prior_recorded_entries: u32,
     pub strategy_type: u16,
@@ -687,6 +1044,78 @@ pub struct IcbTag {
     pub file_type: u8,
     pub parent_icb: LbAddr,
     pub flags: u16,
+}
+
+impl IcbTag {
+    /// Build a `IcbTag` from every field.
+    pub fn new(
+        prior_recorded_entries: u32,
+        strategy_type: u16,
+        strategy_parameter: u16,
+        max_entries: u16,
+        file_type: u8,
+        parent_icb: LbAddr,
+        flags: u16,
+    ) -> Self {
+        Self {
+            prior_recorded_entries,
+            strategy_type,
+            strategy_parameter,
+            max_entries,
+            file_type,
+            parent_icb,
+            flags,
+        }
+    }
+
+    /// Set `prior_recorded_entries`.
+    #[must_use]
+    pub fn with_prior_recorded_entries(mut self, v: u32) -> Self {
+        self.prior_recorded_entries = v;
+        self
+    }
+
+    /// Set `strategy_type`.
+    #[must_use]
+    pub fn with_strategy_type(mut self, v: u16) -> Self {
+        self.strategy_type = v;
+        self
+    }
+
+    /// Set `strategy_parameter`.
+    #[must_use]
+    pub fn with_strategy_parameter(mut self, v: u16) -> Self {
+        self.strategy_parameter = v;
+        self
+    }
+
+    /// Set `max_entries`.
+    #[must_use]
+    pub fn with_max_entries(mut self, v: u16) -> Self {
+        self.max_entries = v;
+        self
+    }
+
+    /// Set `file_type`.
+    #[must_use]
+    pub fn with_file_type(mut self, v: u8) -> Self {
+        self.file_type = v;
+        self
+    }
+
+    /// Set `parent_icb`.
+    #[must_use]
+    pub fn with_parent_icb(mut self, v: LbAddr) -> Self {
+        self.parent_icb = v;
+        self
+    }
+
+    /// Set `flags`.
+    #[must_use]
+    pub fn with_flags(mut self, v: u16) -> Self {
+        self.flags = v;
+        self
+    }
 }
 
 impl IcbTag {
@@ -744,6 +1173,7 @@ pub struct Extent {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FileEntry {
     pub tag: DescriptorTag,
     pub icb_tag: IcbTag,
@@ -761,6 +1191,160 @@ pub struct FileEntry {
     pub extents: Vec<Extent>,
     pub embedded_data: Vec<u8>,
     pub ad_type: AdType,
+}
+
+impl FileEntry {
+    /// Build a `FileEntry` from every field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        tag: DescriptorTag,
+        icb_tag: IcbTag,
+        uid: u32,
+        gid: u32,
+        permissions: u32,
+        file_link_count: u16,
+        record_format: u8,
+        record_display_attributes: u8,
+        record_length: u32,
+        information_length: u64,
+        logical_blocks_recorded: u64,
+        length_of_extended_attributes: u32,
+        length_of_allocation_descriptors: u32,
+        extents: Vec<Extent>,
+        embedded_data: Vec<u8>,
+        ad_type: AdType,
+    ) -> Self {
+        Self {
+            tag,
+            icb_tag,
+            uid,
+            gid,
+            permissions,
+            file_link_count,
+            record_format,
+            record_display_attributes,
+            record_length,
+            information_length,
+            logical_blocks_recorded,
+            length_of_extended_attributes,
+            length_of_allocation_descriptors,
+            extents,
+            embedded_data,
+            ad_type,
+        }
+    }
+
+    /// Set `tag`.
+    #[must_use]
+    pub fn with_tag(mut self, v: DescriptorTag) -> Self {
+        self.tag = v;
+        self
+    }
+
+    /// Set `icb_tag`.
+    #[must_use]
+    pub fn with_icb_tag(mut self, v: IcbTag) -> Self {
+        self.icb_tag = v;
+        self
+    }
+
+    /// Set `uid`.
+    #[must_use]
+    pub fn with_uid(mut self, v: u32) -> Self {
+        self.uid = v;
+        self
+    }
+
+    /// Set `gid`.
+    #[must_use]
+    pub fn with_gid(mut self, v: u32) -> Self {
+        self.gid = v;
+        self
+    }
+
+    /// Set `permissions`.
+    #[must_use]
+    pub fn with_permissions(mut self, v: u32) -> Self {
+        self.permissions = v;
+        self
+    }
+
+    /// Set `file_link_count`.
+    #[must_use]
+    pub fn with_file_link_count(mut self, v: u16) -> Self {
+        self.file_link_count = v;
+        self
+    }
+
+    /// Set `record_format`.
+    #[must_use]
+    pub fn with_record_format(mut self, v: u8) -> Self {
+        self.record_format = v;
+        self
+    }
+
+    /// Set `record_display_attributes`.
+    #[must_use]
+    pub fn with_record_display_attributes(mut self, v: u8) -> Self {
+        self.record_display_attributes = v;
+        self
+    }
+
+    /// Set `record_length`.
+    #[must_use]
+    pub fn with_record_length(mut self, v: u32) -> Self {
+        self.record_length = v;
+        self
+    }
+
+    /// Set `information_length`.
+    #[must_use]
+    pub fn with_information_length(mut self, v: u64) -> Self {
+        self.information_length = v;
+        self
+    }
+
+    /// Set `logical_blocks_recorded`.
+    #[must_use]
+    pub fn with_logical_blocks_recorded(mut self, v: u64) -> Self {
+        self.logical_blocks_recorded = v;
+        self
+    }
+
+    /// Set `length_of_extended_attributes`.
+    #[must_use]
+    pub fn with_length_of_extended_attributes(mut self, v: u32) -> Self {
+        self.length_of_extended_attributes = v;
+        self
+    }
+
+    /// Set `length_of_allocation_descriptors`.
+    #[must_use]
+    pub fn with_length_of_allocation_descriptors(mut self, v: u32) -> Self {
+        self.length_of_allocation_descriptors = v;
+        self
+    }
+
+    /// Set `extents`.
+    #[must_use]
+    pub fn with_extents(mut self, v: Vec<Extent>) -> Self {
+        self.extents = v;
+        self
+    }
+
+    /// Set `embedded_data`.
+    #[must_use]
+    pub fn with_embedded_data(mut self, v: Vec<u8>) -> Self {
+        self.embedded_data = v;
+        self
+    }
+
+    /// Set `ad_type`.
+    #[must_use]
+    pub fn with_ad_type(mut self, v: AdType) -> Self {
+        self.ad_type = v;
+        self
+    }
 }
 
 impl FileEntry {
@@ -899,6 +1483,7 @@ impl FileEntry {
 
 /// Where a file's bytes live on disc, as in-partition extents.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct UdfFile {
     pub name: String,
     pub is_dir: bool,
@@ -909,7 +1494,56 @@ pub struct UdfFile {
     pub icb: LongAd,
 }
 
+impl UdfFile {
+    /// Build a `UdfFile` from every field.
+    pub fn new(name: String, is_dir: bool, extents: Vec<Extent>, length: u64, icb: LongAd) -> Self {
+        Self {
+            name,
+            is_dir,
+            extents,
+            length,
+            icb,
+        }
+    }
+
+    /// Set `name`.
+    #[must_use]
+    pub fn with_name(mut self, v: String) -> Self {
+        self.name = v;
+        self
+    }
+
+    /// Set `is_dir`.
+    #[must_use]
+    pub fn with_is_dir(mut self, v: bool) -> Self {
+        self.is_dir = v;
+        self
+    }
+
+    /// Set `extents`.
+    #[must_use]
+    pub fn with_extents(mut self, v: Vec<Extent>) -> Self {
+        self.extents = v;
+        self
+    }
+
+    /// Set `length`.
+    #[must_use]
+    pub fn with_length(mut self, v: u64) -> Self {
+        self.length = v;
+        self
+    }
+
+    /// Set `icb`.
+    #[must_use]
+    pub fn with_icb(mut self, v: LongAd) -> Self {
+        self.icb = v;
+        self
+    }
+}
+
 /// A mounted UDF 1.02 volume with its file enumeration pre-computed.
+#[non_exhaustive]
 pub struct UdfVolume<R: Read + Seek> {
     pub reader: R,
     pub partition_start_sector: u64,
@@ -917,6 +1551,69 @@ pub struct UdfVolume<R: Read + Seek> {
     pub volume_identifier: String,
     pub logical_volume_identifier: String,
     pub root_directory_icb: LongAd,
+}
+
+impl<R: Read + Seek> UdfVolume<R> {
+    /// Build a `UdfVolume` from every field.
+    pub fn new(
+        reader: R,
+        partition_start_sector: u64,
+        logical_block_size: u32,
+        volume_identifier: String,
+        logical_volume_identifier: String,
+        root_directory_icb: LongAd,
+    ) -> Self {
+        Self {
+            reader,
+            partition_start_sector,
+            logical_block_size,
+            volume_identifier,
+            logical_volume_identifier,
+            root_directory_icb,
+        }
+    }
+
+    /// Set `reader`.
+    #[must_use]
+    pub fn with_reader(mut self, v: R) -> Self {
+        self.reader = v;
+        self
+    }
+
+    /// Set `partition_start_sector`.
+    #[must_use]
+    pub fn with_partition_start_sector(mut self, v: u64) -> Self {
+        self.partition_start_sector = v;
+        self
+    }
+
+    /// Set `logical_block_size`.
+    #[must_use]
+    pub fn with_logical_block_size(mut self, v: u32) -> Self {
+        self.logical_block_size = v;
+        self
+    }
+
+    /// Set `volume_identifier`.
+    #[must_use]
+    pub fn with_volume_identifier(mut self, v: String) -> Self {
+        self.volume_identifier = v;
+        self
+    }
+
+    /// Set `logical_volume_identifier`.
+    #[must_use]
+    pub fn with_logical_volume_identifier(mut self, v: String) -> Self {
+        self.logical_volume_identifier = v;
+        self
+    }
+
+    /// Set `root_directory_icb`.
+    #[must_use]
+    pub fn with_root_directory_icb(mut self, v: LongAd) -> Self {
+        self.root_directory_icb = v;
+        self
+    }
 }
 
 impl<R: Read + Seek> std::fmt::Debug for UdfVolume<R> {
