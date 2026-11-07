@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.6](https://github.com/OxideAV/oxideav-dvd/compare/v0.0.5...v0.0.6) - 2026-11-07
+
+### Other
+
+- API hygiene: non_exhaustive records/events + builders
+
 ### Added
 
 - `Default` on the parsed records whose fields all have a default, and `with_<field>` setters on every newly `#[non_exhaustive]` record. Records with a field that has no default get a full-field `new` instead: `Ac3Header::new`, `CopyControlInfo::new`, `CprMai::new`, `DvdFile::new`, `DtsHeader::new`, `ResumeContext::new`, `VideoAttributes::new`, `AudioAttributes::new`, `SubpictureAttributes::new`, `CellCategory::new`, `CellPlaybackInfo::new`, `Pgc::new`, `DvdChapter::new`, `Iso9660Volume::new`, `LpcmHeader::new`, `SequenceHeader::new`, `PictureHeader::new`, `PictureCodingExtension::new`, `DescriptorTag::new`, `AnchorVolumeDescriptorPointer::new`, `udf::PrimaryVolumeDescriptor::new`, `PartitionDescriptor::new`, `LogicalVolumeDescriptor::new`, `FileSetDescriptor::new`, `FileIdentifierDescriptor::new`, `IcbTag::new`, `FileEntry::new`, `UdfFile::new`, `UdfVolume::new`, `VideoPreference::new`, `DsiPacket::new`, `NavPack::new`, `PackClass::new`.
